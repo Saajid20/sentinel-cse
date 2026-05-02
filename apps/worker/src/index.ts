@@ -1,2 +1,1 @@
-// mock implementation
-console.log("Starting worker...");
+export * from './pipeline.js';

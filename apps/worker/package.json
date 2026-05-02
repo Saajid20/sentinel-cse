@@ -7,7 +7,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@sentinel/core": "workspace:*"
+    "@sentinel/core": "workspace:*",
+    "@sentinel/db": "workspace:*",
+    "@sentinel/strategies": "workspace:*",
+    "@sentinel/telegram": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.5"

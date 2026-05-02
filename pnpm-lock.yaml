@@ -33,6 +33,15 @@ importers:
       '@sentinel/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@sentinel/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@sentinel/strategies':
+        specifier: workspace:*
+        version: link:../../packages/strategies
+      '@sentinel/telegram':
+        specifier: workspace:*
+        version: link:../../packages/telegram
     devDependencies:
       typescript:
         specifier: ^5.4.5
