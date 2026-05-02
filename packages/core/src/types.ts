@@ -32,8 +32,21 @@ export interface Signal {
   targets: number[];
   validUntil: number;
   features: Record<string, any>;
-  status: 'ACTIVE' | 'EXPIRED' | 'TRIGGERED' | 'INVALIDATED';
+  status: SignalStatus;
+  maxFavorableMovePercent?: number;
+  maxAdverseMovePercent?: number;
+  latestPrice?: number;
+  lastCheckedAt?: number;
+  statusReason?: string;
 }
+
+export type SignalStatus =
+  | 'ACTIVE'
+  | 'EXPIRED'
+  | 'INVALIDATED'
+  | 'TARGET_HIT'
+  | 'STOP_HIT'
+  | 'ENDED';
 
 export interface SignalOutcome {
   signalId: string;
