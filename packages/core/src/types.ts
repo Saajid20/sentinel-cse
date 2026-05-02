@@ -50,12 +50,25 @@ export type SignalStatus =
 
 export interface SignalOutcome {
   signalId: string;
-  maxFavorableMove: number;
-  maxAdverseMove: number;
-  outcome5m: string;
-  outcome15m: string;
-  outcome1h: string;
-  eodOutcome: string;
+  finalStatus: SignalStatus;
+  entryPrice: number;
+  exitPrice: number;
+  returnPercent: number;
+  maxFavorableMovePercent: number;
+  maxAdverseMovePercent: number;
+  openedAt: number;
+  closedAt: number;
+  closeReason: string;
+}
+
+export interface SignalEvent {
+  id: string;
+  signalId: string;
+  timestamp: number;
+  previousStatus: SignalStatus;
+  newStatus: SignalStatus;
+  reason: string;
+  latestPrice: number;
 }
 
 export interface StrategyPipeline {
@@ -96,6 +109,12 @@ export interface MonitorAgent {
 
 export interface MemoryAgent {
   saveSignal(signal: Signal): Promise<void>;
-  updateSignalOutcome(outcome: SignalOutcome): Promise<void>;
-  getSignal(id: string): Promise<Signal | null>;
+  recordEvent(event: SignalEvent): Promise<void>;
+  updateSignal(signal: Signal): Promise<void>;
+  closeSignalOutcome(outcome: SignalOutcome): Promise<void>;
+  getSignal(signalId: string): Promise<Signal | null>;
+  listSignalsByTicker(ticker: string): Promise<Signal[]>;
+  listActiveSignals(): Promise<Signal[]>;
+  getOutcomesByStrategy(strategy: string): Promise<SignalOutcome[]>;
+  listEventsBySignal(signalId: string): Promise<SignalEvent[]>;
 }
