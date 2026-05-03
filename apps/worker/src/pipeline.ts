@@ -1,7 +1,6 @@
 import {
   BasicCandleAgent,
   BasicMonitorAgent,
-  Candle,
   InMemorySignalMemory,
   MarketSnapshot,
   Signal,
@@ -10,11 +9,12 @@ import {
   SignalStatus
 } from '@sentinel/core';
 import {
-  DbSignal,
-  DbSignalEvent,
-  DbSignalOutcome,
   InMemoryDbAdapter,
-  JsonObject
+  mapCandleToDbCandle,
+  mapMarketSnapshotToDbMarketSnapshot,
+  mapSignalEventToDbSignalEvent,
+  mapSignalOutcomeToDbSignalOutcome,
+  mapSignalToDbSignal
 } from '@sentinel/db';
 import { OpeningMomentumDetector } from '@sentinel/strategies';
 import {
@@ -64,11 +64,11 @@ export class SentinelPipeline {
   async processSnapshot(snapshot: MarketSnapshot): Promise<ProcessSnapshotResult> {
     const messagesBefore = this.sender.listSentMessages().length;
 
-    await this.db.marketSnapshots.save(this.toDbMarketSnapshot(snapshot));
+    await this.db.marketSnapshots.save(mapMarketSnapshotToDbMarketSnapshot(snapshot));
 
     const closedCandle = this.candleAgent.process(snapshot);
     if (closedCandle) {
-      await this.db.candles.save(this.toDbCandle(closedCandle));
+      await this.db.candles.save(mapCandleToDbCandle(closedCandle));
     }
 
     const activeBefore = (await this.memory.listActiveSignals()).filter(
@@ -106,14 +106,14 @@ export class SentinelPipeline {
       updatedSignals.push(updatedSignal);
 
       await this.memory.updateSignal(updatedSignal);
-      await this.db.signals.update(this.toDbSignal(updatedSignal));
+      await this.db.signals.update(mapSignalToDbSignal(updatedSignal));
 
       if (updatedSignal.status !== activeSignal.status) {
         const event = this.toSignalEvent(activeSignal, updatedSignal);
         events.push(event);
 
         await this.memory.recordEvent(event);
-        await this.db.signalEvents.record(this.toDbSignalEvent(event));
+        await this.db.signalEvents.record(mapSignalEventToDbSignalEvent(event));
 
         const updateMessage = this.formatter.formatSignalUpdate(updatedSignal);
         await this.sender.send(updateMessage);
@@ -122,7 +122,7 @@ export class SentinelPipeline {
       if (FINAL_STATUSES.has(updatedSignal.status)) {
         const outcome = this.toSignalOutcome(updatedSignal);
         await this.memory.closeSignalOutcome(outcome);
-        await this.db.signalOutcomes.save(this.toDbSignalOutcome(outcome, updatedSignal));
+        await this.db.signalOutcomes.save(mapSignalOutcomeToDbSignalOutcome(outcome, updatedSignal));
       }
     }
 
@@ -137,7 +137,7 @@ export class SentinelPipeline {
     const signal = this.toSignal(setup, snapshot);
 
     await this.memory.saveSignal(signal);
-    await this.db.signals.save(this.toDbSignal(signal));
+    await this.db.signals.save(mapSignalToDbSignal(signal));
 
     const alert = this.formatter.formatBuyWatch(signal);
     await this.sender.send(alert);
@@ -202,98 +202,6 @@ export class SentinelPipeline {
     };
   }
 
-  private toDbMarketSnapshot(snapshot: MarketSnapshot) {
-    return {
-      id: `snapshot-${snapshot.ticker}-${snapshot.timestamp}`,
-      ticker: snapshot.ticker,
-      snapshotTime: snapshot.timestamp,
-      lastPrice: snapshot.lastPrice,
-      bestBid: snapshot.bestBid,
-      bestAsk: snapshot.bestAsk,
-      bidDepth: snapshot.bidDepth,
-      askDepth: snapshot.askDepth,
-      volume: snapshot.volume,
-      totalTurnover: snapshot.totalTurnover,
-      metadata: {},
-      createdAt: snapshot.timestamp
-    };
-  }
-
-  private toDbCandle(candle: Candle) {
-    return {
-      id: `candle-${candle.ticker}-5m-${candle.timestamp}`,
-      ticker: candle.ticker,
-      timeframe: '5m',
-      candleTime: candle.timestamp,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
-      volume: candle.volume,
-      vwap: candle.vwap,
-      metadata: {},
-      createdAt: candle.timestamp
-    };
-  }
-
-  private toDbSignal(signal: Signal): DbSignal {
-    const [entryZoneLow, entryZoneHigh] = signal.entryZone;
-
-    return {
-      id: signal.id,
-      ticker: signal.ticker,
-      strategy: signal.strategy,
-      direction: signal.type,
-      status: signal.status,
-      entryZoneLow,
-      entryZoneHigh,
-      stopLoss: signal.stopLoss,
-      target1: signal.targets[0],
-      target2: signal.targets[1],
-      confidence: this.optionalNumberFeature(signal, 'confidence'),
-      validUntil: signal.validUntil,
-      features: this.toJsonObject(signal.features),
-      statusReason: signal.statusReason,
-      latestPrice: signal.latestPrice,
-      maxFavorableMovePercent: signal.maxFavorableMovePercent,
-      maxAdverseMovePercent: signal.maxAdverseMovePercent,
-      createdAt: signal.timestamp,
-      updatedAt: signal.lastCheckedAt ?? signal.timestamp
-    };
-  }
-
-  private toDbSignalEvent(event: SignalEvent): DbSignalEvent {
-    return {
-      id: event.id,
-      signalId: event.signalId,
-      previousStatus: event.previousStatus,
-      newStatus: event.newStatus,
-      reason: event.reason,
-      latestPrice: event.latestPrice,
-      eventTime: event.timestamp,
-      createdAt: event.timestamp
-    };
-  }
-
-  private toDbSignalOutcome(outcome: SignalOutcome, signal: Signal): DbSignalOutcome {
-    return {
-      id: `outcome-${outcome.signalId}`,
-      signalId: outcome.signalId,
-      ticker: signal.ticker,
-      strategy: signal.strategy,
-      finalStatus: outcome.finalStatus,
-      entryPrice: outcome.entryPrice,
-      exitPrice: outcome.exitPrice,
-      returnPercent: outcome.returnPercent,
-      maxFavorableMovePercent: outcome.maxFavorableMovePercent,
-      maxAdverseMovePercent: outcome.maxAdverseMovePercent,
-      openedAt: outcome.openedAt,
-      closedAt: outcome.closedAt,
-      closeReason: outcome.closeReason,
-      createdAt: outcome.closedAt
-    };
-  }
-
   private entryPrice(signal: Signal): number {
     const [low, high] = signal.entryZone;
     return (low + high) / 2;
@@ -304,15 +212,6 @@ export class SentinelPipeline {
 
     const rawReturn = ((exitPrice - entryPrice) / entryPrice) * 100;
     return signal.type === 'SELL' || signal.type === 'SELL_WATCH' ? -rawReturn : rawReturn;
-  }
-
-  private optionalNumberFeature(signal: Signal, key: string): number | undefined {
-    const value = signal.features[key];
-    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-  }
-
-  private toJsonObject(value: Record<string, unknown>): JsonObject {
-    return JSON.parse(JSON.stringify(value)) as JsonObject;
   }
 
   private signalId(ticker: string, strategy: string, timestamp: number): string {
