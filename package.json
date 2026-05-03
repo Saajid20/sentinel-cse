@@ -7,6 +7,7 @@
     "pnpm": ">=8.0.0"
   },
   "scripts": {
+    "basket:test": "tsx scripts/manualBasketReplay.ts",
     "build": "pnpm -r run build",
     "supabase:test": "tsx scripts/manualSupabaseTest.ts",
     "telegram:test": "tsx scripts/manualTelegramTest.ts",

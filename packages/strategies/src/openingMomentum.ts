@@ -59,7 +59,7 @@ export class OpeningMomentumDetector implements SetupDetectorAgent {
       timestamp: snapshot.timestamp,
       type: 'BUY_WATCH',
       entryZone: [snapshot.lastPrice * 0.99, snapshot.lastPrice * 1.01],
-      stopLoss: Math.min(first5MinHigh, vwap),
+      stopLoss: Math.min(first5MinHigh, vwap) * 0.99,
       targets: [snapshot.lastPrice * 1.05, snapshot.lastPrice * 1.10],
       validUntil: snapshot.timestamp + 10 * 60 * 1000, // 10 minutes validity
       features: {
