@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "pnpm -r run build",
+    "supabase:test": "tsx scripts/manualSupabaseTest.ts",
     "telegram:test": "tsx scripts/manualTelegramTest.ts",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -96,3 +96,5 @@ For local manual verification only, `pnpm telegram:test` sends one fixed Telegra
 ## Supabase Persistence Boundary
 
 Supabase persistence is optional and not wired into the runtime pipeline yet. The database package exposes mapper helpers and repository interfaces so a future application can pass an already-created Supabase client into the adapter layer. `packages/db` must not read `SUPABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY`; those credentials must live only in a local `.env` file or shell environment and must never be committed.
+
+For local manual verification only, first apply `packages/db/migrations/001_initial_schema.sql` to the Supabase project. Then `pnpm supabase:test` can insert and read back one harmless `market_snapshots` row using `SUPABASE_URL` plus either `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_ANON_KEY` from the local shell environment. This script is optional, is not used by unit tests, and is not wired into the trading pipeline.
