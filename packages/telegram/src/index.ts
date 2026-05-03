@@ -184,3 +184,83 @@ export class MockTelegramAlertSender {
     this.sentMessages = [];
   }
 }
+
+export interface TelegramBotApiSenderConfig {
+  botToken: string;
+  chatId: string;
+  apiBaseUrl?: string;
+}
+
+export interface TelegramTransportResponse {
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+}
+
+export type TelegramTransport = (
+  url: string,
+  init: {
+    method: 'POST';
+    headers: Record<string, string>;
+    body: string;
+  }
+) => Promise<TelegramTransportResponse>;
+
+export class TelegramBotApiSender {
+  private readonly botToken: string;
+  private readonly chatId: string;
+  private readonly apiBaseUrl: string;
+  private readonly transport: TelegramTransport;
+
+  constructor(config: TelegramBotApiSenderConfig, transport: TelegramTransport = defaultTelegramTransport) {
+    const botToken = config.botToken.trim();
+    const chatId = config.chatId.trim();
+
+    if (!botToken) {
+      throw new Error('Telegram bot token is required');
+    }
+
+    if (!chatId) {
+      throw new Error('Telegram chat ID is required');
+    }
+
+    this.botToken = botToken;
+    this.chatId = chatId;
+    this.apiBaseUrl = (config.apiBaseUrl ?? 'https://api.telegram.org').replace(/\/+$/, '');
+    this.transport = transport;
+  }
+
+  async send(message: TelegramAlertMessage): Promise<void> {
+    const response = await this.transport(this.sendMessageUrl(), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        chat_id: this.chatId,
+        text: message.text,
+        disable_web_page_preview: true
+      })
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Telegram sendMessage failed with status ${response.status}: ${body}`);
+    }
+  }
+
+  private sendMessageUrl(): string {
+    return `${this.apiBaseUrl}/bot${this.botToken}/sendMessage`;
+  }
+}
+
+export const RealTelegramAlertSender = TelegramBotApiSender;
+
+const defaultTelegramTransport: TelegramTransport = async (url, init) => {
+  const response = await fetch(url, init);
+  return {
+    ok: response.ok,
+    status: response.status,
+    text: () => response.text()
+  };
+};

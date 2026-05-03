@@ -86,3 +86,9 @@ Every signal must be stored with:
 - No `.env` commits.
 - No Playwright session file commits.
 - All trade recommendations are alerts only.
+
+## Telegram Delivery Boundary
+
+Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.
+
+For local manual verification only, `pnpm telegram:test` sends one fixed Telegram test message using `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from the local shell environment. This command is optional, is not used by unit tests, and is not wired into the signal pipeline.

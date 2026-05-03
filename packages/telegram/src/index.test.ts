@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { Signal } from '@sentinel/core';
-import { MockTelegramAlertSender, TelegramAlertFormatter } from './index.js';
+import {
+  MockTelegramAlertSender,
+  TelegramAlertFormatter,
+  TelegramBotApiSender,
+  TelegramTransport
+} from './index.js';
 
 const makeSignal = (overrides: Partial<Signal> = {}): Signal => ({
   id: 'sig-1',
@@ -100,5 +105,131 @@ describe('MockTelegramAlertSender', () => {
 
     sender.clear();
     expect(sender.listSentMessages()).toEqual([]);
+  });
+});
+
+describe('TelegramBotApiSender', () => {
+  it('builds the correct Telegram sendMessage request', async () => {
+    const calls: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
+    const transport: TelegramTransport = async (url, init) => {
+      calls.push({
+        url,
+        body: JSON.parse(init.body) as unknown,
+        headers: init.headers
+      });
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '{"ok":true}'
+      };
+    };
+    const sender = new TelegramBotApiSender(
+      {
+        botToken: 'test-token',
+        chatId: 'chat-123',
+        apiBaseUrl: 'https://telegram.test'
+      },
+      transport
+    );
+
+    await sender.send({
+      id: 'msg-1',
+      kind: 'BUY_WATCH',
+      text: 'BUY WATCH: SAMP.N0000',
+      createdAt: 1_000
+    });
+
+    expect(calls).toEqual([
+      {
+        url: 'https://telegram.test/bottest-token/sendMessage',
+        headers: {
+          'content-type': 'application/json'
+        },
+        body: {
+          chat_id: 'chat-123',
+          text: 'BUY WATCH: SAMP.N0000',
+          disable_web_page_preview: true
+        }
+      }
+    ]);
+  });
+
+  it('rejects missing bot token', () => {
+    expect(
+      () =>
+        new TelegramBotApiSender(
+          {
+            botToken: ' ',
+            chatId: 'chat-123'
+          },
+          async () => ({
+            ok: true,
+            status: 200,
+            text: async () => ''
+          })
+        )
+    ).toThrow('Telegram bot token is required');
+  });
+
+  it('rejects missing chat ID', () => {
+    expect(
+      () =>
+        new TelegramBotApiSender(
+          {
+            botToken: 'test-token',
+            chatId: ' '
+          },
+          async () => ({
+            ok: true,
+            status: 200,
+            text: async () => ''
+          })
+        )
+    ).toThrow('Telegram chat ID is required');
+  });
+
+  it('does not call the real Telegram API in tests', async () => {
+    let calledUrl = '';
+    const transport: TelegramTransport = async (url) => {
+      calledUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => ''
+      };
+    };
+    const sender = new TelegramBotApiSender(
+      {
+        botToken: 'test-token',
+        chatId: 'chat-123',
+        apiBaseUrl: 'https://telegram.test'
+      },
+      transport
+    );
+
+    await sender.send({
+      id: 'msg-1',
+      kind: 'BUY_WATCH',
+      text: 'mock only',
+      createdAt: 1_000
+    });
+
+    expect(calledUrl).toBe('https://telegram.test/bottest-token/sendMessage');
+    expect(calledUrl).not.toContain('api.telegram.org');
+  });
+
+  it('keeps MockTelegramAlertSender working', async () => {
+    const sender = new MockTelegramAlertSender();
+    const message = {
+      id: 'msg-1',
+      kind: 'BUY_WATCH' as const,
+      text: 'mock message',
+      createdAt: 1_000
+    };
+
+    await sender.send(message);
+
+    expect(sender.listSentMessages()).toEqual([message]);
   });
 });
