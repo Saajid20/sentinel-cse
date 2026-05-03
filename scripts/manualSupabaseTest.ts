@@ -7,8 +7,9 @@ import {
   SupabaseResult,
   SupabaseRow
 } from '../packages/db/src/index.js';
+import { pathToFileURL } from 'node:url';
 
-async function main(): Promise<void> {
+export async function runManualSupabaseTest(): Promise<string> {
   const supabaseUrl = requiredEnv('SUPABASE_URL');
   const supabaseKey = optionalEnv('SUPABASE_SERVICE_ROLE_KEY') ?? optionalEnv('SUPABASE_ANON_KEY');
 
@@ -47,7 +48,12 @@ async function main(): Promise<void> {
     throw new Error(`Inserted market snapshot ${snapshot.id} was not found`);
   }
 
-  console.log(`Supabase manual test succeeded: inserted and read market_snapshots row ${snapshot.id}`);
+  return snapshot.id;
+}
+
+async function main(): Promise<void> {
+  const snapshotId = await runManualSupabaseTest();
+  console.log(`Supabase manual test succeeded: inserted and read market_snapshots row ${snapshotId}`);
 }
 
 interface SupabaseRestConfig {
@@ -218,7 +224,7 @@ function normalizeIncomingRow(row: SupabaseRow): SupabaseRow {
   return normalized;
 }
 
-function requiredEnv(name: string): string {
+export function requiredEnv(name: string): string {
   const value = optionalEnv(name);
   if (!value) {
     throw new Error(`${name} is required for the manual Supabase test`);
@@ -227,13 +233,15 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-function optionalEnv(name: string): string | undefined {
+export function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Manual Supabase test failed: ${message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Manual Supabase test failed: ${message}`);
+    process.exitCode = 1;
+  });
+}

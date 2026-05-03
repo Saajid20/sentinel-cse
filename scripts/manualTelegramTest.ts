@@ -1,8 +1,9 @@
 import { RealTelegramAlertSender, TelegramAlertMessage } from '../packages/telegram/src/index.js';
+import { pathToFileURL } from 'node:url';
 
 const testMessageText = 'Sentinel-CSE Telegram test alert. Signal-only mode is active.';
 
-async function main(): Promise<void> {
+export async function runManualTelegramTest(): Promise<void> {
   const botToken = requiredEnv('TELEGRAM_BOT_TOKEN');
   const chatId = requiredEnv('TELEGRAM_CHAT_ID');
 
@@ -19,10 +20,14 @@ async function main(): Promise<void> {
   };
 
   await sender.send(message);
+}
+
+async function main(): Promise<void> {
+  await runManualTelegramTest();
   console.log('Sent one manual Telegram test message.');
 }
 
-function requiredEnv(name: string): string {
+export function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`${name} is required for the manual Telegram test`);
@@ -31,8 +36,10 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Manual Telegram test failed: ${message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Manual Telegram test failed: ${message}`);
+    process.exitCode = 1;
+  });
+}

@@ -9,6 +9,7 @@
   "scripts": {
     "basket:test": "tsx scripts/manualBasketReplay.ts",
     "build": "pnpm -r run build",
+    "sentinel": "tsx scripts/sentinel.ts",
     "supabase:test": "tsx scripts/manualSupabaseTest.ts",
     "telegram:test": "tsx scripts/manualTelegramTest.ts",
     "test": "vitest run",
