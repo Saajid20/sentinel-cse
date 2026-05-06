@@ -1,9 +1,20 @@
 import { pathToFileURL } from 'node:url';
+import {
+  defaultOpeningMomentumExperimentVariants,
+  StrategyExperimentResult,
+  StrategyExperimentRunner
+} from '../apps/worker/src/index.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
 import { runManualSupabaseTest } from './manualSupabaseTest.js';
 import { runManualTelegramTest } from './manualTelegramTest.js';
 
-export type SentinelCommand = 'status' | 'basket' | 'telegram-test' | 'supabase-test' | 'help';
+export type SentinelCommand =
+  | 'status'
+  | 'basket'
+  | 'experiment'
+  | 'telegram-test'
+  | 'supabase-test'
+  | 'help';
 
 export interface SentinelCommandResult {
   exitCode: number;
@@ -24,6 +35,11 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
       return {
         exitCode: 0,
         output: await formatBasketSummary()
+      };
+    case 'experiment':
+      return {
+        exitCode: 0,
+        output: await formatExperimentSummary()
       };
     case 'telegram-test':
       await runManualTelegramTest();
@@ -95,6 +111,19 @@ export async function formatBasketSummary(): Promise<string> {
   ].join('\n');
 }
 
+export async function formatExperimentSummary(): Promise<string> {
+  const runner = new StrategyExperimentRunner();
+  const results = await runner.run(defaultOpeningMomentumExperimentVariants);
+
+  return [
+    'Sentinel-CSE strategy experiment summary',
+    'Mode: signal-only paper-trading',
+    'Experiment set: Opening Momentum parameter variants',
+    '',
+    ...results.flatMap((result, index) => formatExperimentResult(result, index))
+  ].join('\n');
+}
+
 export function formatHelp(): string {
   return [
     'Sentinel-CSE operator console',
@@ -102,6 +131,7 @@ export function formatHelp(): string {
     'Usage:',
     '  pnpm sentinel status',
     '  pnpm sentinel basket',
+    '  pnpm sentinel experiment',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
     '  pnpm sentinel help',
@@ -109,6 +139,7 @@ export function formatHelp(): string {
     'Commands:',
     '  status         Show local capability and safety status.',
     '  basket         Run the mock basket replay evaluator.',
+    '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'
@@ -126,6 +157,52 @@ function formatSignedPercent(value: number): string {
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : String(value);
+}
+
+function formatExperimentResult(result: StrategyExperimentResult, index: number): string[] {
+  const recommendation = result.recommendations[0];
+  const { metrics } = result;
+
+  return [
+    `${index + 1}. Variant: ${result.variant.name}`,
+    `   Strategy: ${result.variant.parameters.strategyName}`,
+    `   Signals generated: ${metrics.signalsGenerated}`,
+    `   Signals blocked: ${metrics.signalsBlocked}`,
+    `   Wins: ${metrics.wins}`,
+    `   Losses: ${metrics.losses}`,
+    `   Expired: ${metrics.expired}`,
+    `   Invalidated: ${metrics.invalidated}`,
+    `   Win rate: ${formatPercent(metrics.winRate)}`,
+    `   Average return: ${formatSignedPercent(metrics.averageReturnPercent)}`,
+    `   Profit factor: ${formatNumber(metrics.profitFactor)}`,
+    `   Best scenario: ${formatScenario(metrics.bestScenario)}`,
+    `   Worst scenario: ${formatScenario(metrics.worstScenario)}`,
+    `   Top recommendation: ${formatRecommendation(recommendation)}`,
+    ''
+  ];
+}
+
+function formatScenario(
+  scenario: { name: string; returnPercent: number } | undefined
+): string {
+  if (!scenario) return 'n/a';
+  return `${scenario.name} (${formatSignedPercent(scenario.returnPercent)})`;
+}
+
+function formatRecommendation(
+  recommendation:
+    | {
+        recommendation: string;
+        severity: 'low' | 'medium' | 'high';
+        confidence: number;
+      }
+    | undefined
+): string {
+  if (!recommendation) return 'n/a';
+
+  return `${recommendation.recommendation} (${recommendation.severity}, confidence ${formatPercent(
+    recommendation.confidence
+  )})`;
 }
 
 async function main(): Promise<void> {
