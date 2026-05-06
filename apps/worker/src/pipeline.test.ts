@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MarketSnapshot } from '@sentinel/core';
+import { MarketDataSanitizer, MarketSnapshot } from '@sentinel/core';
 import { OpeningMomentumDetector } from '@sentinel/strategies';
 import { SentinelPipeline } from './pipeline.js';
 
@@ -191,5 +191,71 @@ describe('SentinelPipeline', () => {
     expect(result.generatedSignal).toBeUndefined();
     expect(pipeline.sender.listSentMessages()).toEqual([]);
     await expect(pipeline.memory.listActiveSignals()).resolves.toEqual([]);
+  });
+
+  it('continues accepting MarketSnapshot input without automatic sanitizer wiring', async () => {
+    const sanitizer = new MarketDataSanitizer();
+    const pipeline = makePipeline();
+    const sanitize = (raw: Record<string, string | number>) => {
+      const result = sanitizer.sanitize(raw);
+      if (!result.accepted || !result.snapshot) {
+        throw new Error(`Expected accepted snapshot, got ${result.issues.map((issue) => issue.code).join(', ')}`);
+      }
+
+      return result.snapshot;
+    };
+
+    await pipeline.processSnapshot(
+      sanitize({
+        ticker,
+        timestamp: '0',
+        lastPrice: '50',
+        bestBid: '49.5',
+        bestAsk: '50',
+        bidDepth: '1000',
+        askDepth: '800',
+        volume: '100'
+      })
+    );
+    await pipeline.processSnapshot(
+      sanitize({
+        ticker,
+        timestamp: '60000',
+        lastPrice: '52',
+        bestBid: '51.5',
+        bestAsk: '52',
+        bidDepth: '1000',
+        askDepth: '800',
+        volume: '50'
+      })
+    );
+    await pipeline.processSnapshot(
+      sanitize({
+        ticker,
+        timestamp: '300000',
+        lastPrice: '52',
+        bestBid: '51.5',
+        bestAsk: '52',
+        bidDepth: '1000',
+        askDepth: '800',
+        volume: '0'
+      })
+    );
+
+    const result = await pipeline.processSnapshot(
+      sanitize({
+        ticker,
+        timestamp: '301000',
+        lastPrice: '55',
+        bestBid: '54.5',
+        bestAsk: '55',
+        bidDepth: '2000',
+        askDepth: '1000',
+        volume: '300'
+      })
+    );
+
+    expect(result.generatedSignal).toBeDefined();
+    expect(result.generatedSignal?.strategy).toBe('CSE_OPENING_MOMENTUM_V1');
   });
 });

@@ -10,6 +10,58 @@ export interface MarketSnapshot {
   totalTurnover: number;
 }
 
+export type RawMarketSnapshotValue = number | string | null | undefined;
+
+export interface RawMarketSnapshot {
+  ticker?: RawMarketSnapshotValue;
+  timestamp?: RawMarketSnapshotValue;
+  lastPrice?: RawMarketSnapshotValue;
+  bestBid?: RawMarketSnapshotValue;
+  bestAsk?: RawMarketSnapshotValue;
+  bidDepth?: RawMarketSnapshotValue;
+  askDepth?: RawMarketSnapshotValue;
+  volume?: RawMarketSnapshotValue;
+  totalTurnover?: RawMarketSnapshotValue;
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type MarketDataSanitizationIssueCode =
+  | 'MISSING_TICKER'
+  | 'INVALID_TIMESTAMP'
+  | 'INVALID_LAST_PRICE'
+  | 'INVALID_BID_ASK'
+  | 'BID_GREATER_THAN_ASK'
+  | 'INVALID_DEPTH'
+  | 'INVALID_VOLUME'
+  | 'STALE_TIMESTAMP'
+  | 'DUPLICATE_SNAPSHOT'
+  | 'UNREALISTIC_SPREAD'
+  | 'OUTLIER_PRICE_MOVE';
+
+export interface MarketDataSanitizationIssue {
+  code: MarketDataSanitizationIssueCode;
+  message: string;
+  field?: string;
+  value?: RawMarketSnapshotValue;
+  source?: string;
+}
+
+export interface SanitizedMarketSnapshotResult {
+  accepted: boolean;
+  snapshot?: MarketSnapshot;
+  issues: MarketDataSanitizationIssue[];
+  warnings: MarketDataSanitizationIssue[];
+}
+
+export interface MarketDataSanitizerConfig {
+  maxSpreadPercent: number;
+  maxPriceMovePercentPerTick: number;
+  allowZeroDepth?: boolean;
+  staleTimestampToleranceMs?: number;
+  source?: string;
+}
+
 export interface Candle {
   ticker: string;
   timestamp: number;
