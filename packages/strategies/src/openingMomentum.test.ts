@@ -3,43 +3,51 @@ import { OpeningMomentumDetector } from './openingMomentum.js';
 import { MarketSnapshot, Candle } from '@sentinel/core';
 
 describe('OpeningMomentumDetector', () => {
-  it('should detect a valid setup', async () => {
-    const detector = new OpeningMomentumDetector();
-    
-    // Setup environment
+  const createDetector = (parameters = {}) => {
+    const detector = new OpeningMomentumDetector(parameters);
     detector.averageVolumeMap['SAMP.N0000'] = 100;
-    
-    const snapshot: MarketSnapshot = {
-      ticker: 'SAMP.N0000',
-      timestamp: 1000000,
-      lastPrice: 55,
-      bestBid: 54.5,
-      bestAsk: 55, // Spread = 0.5, Spread % = 0.5 / 55 = ~0.9% (< 1.5%)
-      bidDepth: 200,
-      askDepth: 100, // Bid > Ask
-      volume: 300, // Volume ratio = 300 / 100 = 3 (> 2)
-      totalTurnover: 16500
-    };
-    
-    const candles: Candle[] = [
-      { ticker: 'SAMP.N0000', timestamp: 0, open: 50, high: 52, low: 50, close: 51, volume: 1000 }
-      // first5MinHigh = 52. 
-      // lastPrice = 55 (55 > 52)
-      // vwap = 51 (typical = (52+50+51)/3 = 51)
-      // lastPrice > vwap (55 > 51)
-    ];
+    return detector;
+  };
 
+  const snapshot: MarketSnapshot = {
+    ticker: 'SAMP.N0000',
+    timestamp: 1000000,
+    lastPrice: 55,
+    bestBid: 54.5,
+    bestAsk: 55,
+    bidDepth: 200,
+    askDepth: 100,
+    volume: 300,
+    totalTurnover: 16500
+  };
+
+  const candles: Candle[] = [
+    {
+      ticker: 'SAMP.N0000',
+      timestamp: 0,
+      open: 50,
+      high: 52,
+      low: 50,
+      close: 51,
+      volume: 1000
+    }
+  ];
+
+  it('should detect a valid setup with default parameters', async () => {
+    const detector = createDetector();
     const signal = await detector.detect(snapshot, candles);
-    
+
     expect(signal).not.toBeNull();
     expect(signal?.type).toBe('BUY_WATCH');
     expect(signal?.strategy).toBe('CSE_OPENING_MOMENTUM_V1');
+    expect(signal?.stopLoss).toBe(50.49);
+    expect(signal?.validUntil).toBe(1600000);
+    expect(signal?.features?.vwapDistancePercent).toBeCloseTo(7.8431372549019605);
   });
 
   it('should reject if spread is too wide', async () => {
-    const detector = new OpeningMomentumDetector();
-    detector.averageVolumeMap['SAMP.N0000'] = 100;
-    
+    const detector = createDetector();
+
     const snapshot: MarketSnapshot = {
       ticker: 'SAMP.N0000',
       timestamp: 1000000,
@@ -56,6 +64,47 @@ describe('OpeningMomentumDetector', () => {
     ];
 
     const signal = await detector.detect(snapshot, candles);
+    expect(signal).toBeNull();
+  });
+
+  it('should reject when a custom spread threshold is exceeded', async () => {
+    const detector = createDetector({ spreadPercentThreshold: 0.8 });
+
+    const signal = await detector.detect(snapshot, candles);
+
+    expect(signal).toBeNull();
+  });
+
+  it('should reject when volume ratio is below a custom threshold', async () => {
+    const detector = createDetector({ volumeRatioThreshold: 3.5 });
+
+    const signal = await detector.detect(snapshot, candles);
+
+    expect(signal).toBeNull();
+  });
+
+  it('should reject when order-book imbalance is below a custom threshold', async () => {
+    const detector = createDetector({ orderBookImbalanceThreshold: 0.4 });
+
+    const signal = await detector.detect(snapshot, candles);
+
+    expect(signal).toBeNull();
+  });
+
+  it('should use a custom strategy name in generated signals', async () => {
+    const detector = createDetector({ strategyName: 'CSE_OPENING_MOMENTUM_TEST' });
+
+    const signal = await detector.detect(snapshot, candles);
+
+    expect(signal).not.toBeNull();
+    expect(signal?.strategy).toBe('CSE_OPENING_MOMENTUM_TEST');
+  });
+
+  it('should reject an overextended signal when max VWAP distance is configured', async () => {
+    const detector = createDetector({ maxVwapDistancePercent: 5 });
+
+    const signal = await detector.detect(snapshot, candles);
+
     expect(signal).toBeNull();
   });
 });
