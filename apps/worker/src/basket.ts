@@ -57,14 +57,20 @@ export interface LearningRecommendation {
 
 export type PipelineFactory = (scenario: BasketReplayScenario) => SentinelPipeline;
 
+export interface BasketReplayRunnerOptions {
+  outcomeStrategyName?: string;
+}
+
 export class BasketReplayRunner {
   constructor(
     private readonly replayEngine: MarketReplayEngine = new MarketReplayEngine(),
-    private readonly pipelineFactory: PipelineFactory = defaultPipelineFactory
+    private readonly pipelineFactory: PipelineFactory = defaultPipelineFactory,
+    private readonly options: BasketReplayRunnerOptions = {}
   ) {}
 
   async run(scenarios: BasketReplayScenario[]): Promise<BasketReplayResult> {
     const scenarioResults: BasketScenarioResult[] = [];
+    const outcomeStrategyName = this.options.outcomeStrategyName ?? 'CSE_OPENING_MOMENTUM_V1';
 
     for (const scenario of scenarios) {
       const pipeline = this.pipelineFactory(scenario);
@@ -73,7 +79,7 @@ export class BasketReplayRunner {
       const signals = (
         await Promise.all(tickers.map((ticker) => pipeline.memory.listSignalsByTicker(ticker)))
       ).flat();
-      const outcomes = await pipeline.memory.getOutcomesByStrategy('CSE_OPENING_MOMENTUM_V1');
+      const outcomes = await pipeline.memory.getOutcomesByStrategy(outcomeStrategyName);
 
       scenarioResults.push({
         name: scenario.name,
