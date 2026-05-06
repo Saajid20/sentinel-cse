@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Signal, SignalOutcome } from '@sentinel/core';
+import { OpeningMomentumDetector } from '@sentinel/strategies';
 import {
   BasketReplayResult,
   BasketReplayRunner,
@@ -33,6 +34,26 @@ describe('BasketReplayRunner', () => {
 
     expect(pipelines).toHaveLength(3);
     expect(new Set(pipelines).size).toBe(3);
+  });
+
+  it('can run basket replay with explicit PAPER_ALERT pipelines', async () => {
+    const runner = new BasketReplayRunner(undefined, (scenario: BasketReplayScenario) => {
+      const detector = new OpeningMomentumDetector();
+      detector.averageVolumeMap = Object.fromEntries(
+        [...new Set(scenario.snapshots.map((snapshot) => snapshot.ticker))].map((ticker) => [ticker, 100])
+      );
+
+      return new SentinelPipeline({
+        detector,
+        runtime: { mode: 'PAPER_ALERT', orderPlacementEnabled: false }
+      });
+    });
+
+    const result = await runner.run(basketReplayScenarios.slice(0, 1));
+
+    expect(result.totals.signalsGenerated).toBe(1);
+    expect(result.totals.alertsSent).toBe(2);
+    expect(result.totals.outcomesClosed).toBe(1);
   });
 });
 

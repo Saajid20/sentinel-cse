@@ -2,15 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { OpeningMomentumDetector } from '@sentinel/strategies';
 import { MarketReplayEngine } from './replay.js';
 import { replayScenarios } from './replayScenarios.js';
-import { SentinelPipeline } from './pipeline.js';
+import { SentinelPipeline, SentinelRunMode } from './pipeline.js';
 
 const ticker = 'SAMP.N0000';
 
-const makePipeline = (): SentinelPipeline => {
+const makePipeline = (mode?: SentinelRunMode): SentinelPipeline => {
   const detector = new OpeningMomentumDetector();
   detector.averageVolumeMap[ticker] = 100;
 
-  return new SentinelPipeline({ detector });
+  return new SentinelPipeline({
+    detector,
+    runtime: mode ? { mode, orderPlacementEnabled: false } : undefined
+  });
 };
 
 describe('MarketReplayEngine', () => {
@@ -30,7 +33,7 @@ describe('MarketReplayEngine', () => {
   });
 
   it('generates a BUY WATCH alert for a qualifying scenario', async () => {
-    const pipeline = makePipeline();
+    const pipeline = makePipeline('PAPER_ALERT');
     const engine = new MarketReplayEngine();
 
     const summary = await engine.replay(replayScenarios.openingMomentumTargetHit(), pipeline);
@@ -107,7 +110,7 @@ describe('MarketReplayEngine', () => {
   });
 
   it('returns correct replay summary counts', async () => {
-    const pipeline = makePipeline();
+    const pipeline = makePipeline('PAPER_ALERT');
     const engine = new MarketReplayEngine();
 
     const summary = await engine.replay(replayScenarios.openingMomentumTargetHit(), pipeline);
@@ -121,5 +124,16 @@ describe('MarketReplayEngine', () => {
       startTime: 0,
       endTime: 361_000
     });
+  });
+
+  it('runs replay in SHADOW mode without alerts', async () => {
+    const pipeline = makePipeline();
+    const engine = new MarketReplayEngine();
+
+    const summary = await engine.replay(replayScenarios.openingMomentumTargetHit(), pipeline);
+
+    expect(summary.signalsGenerated).toBe(1);
+    expect(summary.alertsSent).toBe(0);
+    expect(pipeline.sender.listSentMessages()).toEqual([]);
   });
 });

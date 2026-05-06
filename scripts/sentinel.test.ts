@@ -17,6 +17,8 @@ describe('sentinel operator console', () => {
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain('Sentinel-CSE v0.1 operator console');
     expect(result.output).toContain('signal-only paper-trading');
+    expect(result.output).toContain('default runtime mode: SHADOW');
+    expect(result.output).toContain('PAPER_ALERT mode available only when explicitly configured');
     expect(result.output).toContain('auto-trading disabled');
     expect(result.output).toContain('ATrad live connection disabled');
   });

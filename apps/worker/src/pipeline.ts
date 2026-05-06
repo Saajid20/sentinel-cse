@@ -25,6 +25,18 @@ import {
 
 const FINAL_STATUSES = new Set<SignalStatus>(['EXPIRED', 'INVALIDATED', 'TARGET_HIT', 'STOP_HIT', 'ENDED']);
 
+export type SentinelRunMode = 'SHADOW' | 'PAPER_ALERT';
+
+export interface SentinelRuntimeConfig {
+  mode: SentinelRunMode;
+  orderPlacementEnabled: false;
+}
+
+export const DEFAULT_SENTINEL_RUNTIME_CONFIG: SentinelRuntimeConfig = {
+  mode: 'SHADOW',
+  orderPlacementEnabled: false
+};
+
 export interface SentinelPipelineOptions {
   candleAgent?: BasicCandleAgent;
   monitorAgent?: BasicMonitorAgent;
@@ -33,6 +45,7 @@ export interface SentinelPipelineOptions {
   db?: InMemoryDbAdapter;
   formatter?: TelegramAlertFormatter;
   sender?: MockTelegramAlertSender;
+  runtime?: Partial<SentinelRuntimeConfig>;
 }
 
 export interface ProcessSnapshotResult {
@@ -50,6 +63,7 @@ export class SentinelPipeline {
   public readonly db: InMemoryDbAdapter;
   public readonly formatter: TelegramAlertFormatter;
   public readonly sender: MockTelegramAlertSender;
+  public readonly runtime: SentinelRuntimeConfig;
 
   constructor(options: SentinelPipelineOptions = {}) {
     this.candleAgent = options.candleAgent ?? new BasicCandleAgent();
@@ -59,6 +73,11 @@ export class SentinelPipeline {
     this.db = options.db ?? new InMemoryDbAdapter();
     this.formatter = options.formatter ?? new TelegramAlertFormatter();
     this.sender = options.sender ?? new MockTelegramAlertSender();
+    this.runtime = {
+      ...DEFAULT_SENTINEL_RUNTIME_CONFIG,
+      ...options.runtime,
+      orderPlacementEnabled: false
+    };
   }
 
   async processSnapshot(snapshot: MarketSnapshot): Promise<ProcessSnapshotResult> {
@@ -115,8 +134,10 @@ export class SentinelPipeline {
         await this.memory.recordEvent(event);
         await this.db.signalEvents.record(mapSignalEventToDbSignalEvent(event));
 
-        const updateMessage = this.formatter.formatSignalUpdate(updatedSignal);
-        await this.sender.send(updateMessage);
+        if (this.shouldSendAlerts()) {
+          const updateMessage = this.formatter.formatSignalUpdate(updatedSignal);
+          await this.sender.send(updateMessage);
+        }
       }
 
       if (FINAL_STATUSES.has(updatedSignal.status)) {
@@ -139,10 +160,16 @@ export class SentinelPipeline {
     await this.memory.saveSignal(signal);
     await this.db.signals.save(mapSignalToDbSignal(signal));
 
-    const alert = this.formatter.formatBuyWatch(signal);
-    await this.sender.send(alert);
+    if (this.shouldSendAlerts()) {
+      const alert = this.formatter.formatBuyWatch(signal);
+      await this.sender.send(alert);
+    }
 
     return signal;
+  }
+
+  private shouldSendAlerts(): boolean {
+    return this.runtime.mode === 'PAPER_ALERT';
   }
 
   private toSignal(setup: Partial<Signal>, snapshot: MarketSnapshot): Signal {

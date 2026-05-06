@@ -87,6 +87,14 @@ Every signal must be stored with:
 - No Playwright session file commits.
 - All trade recommendations are alerts only.
 
+## Runtime Modes
+
+Sentinel-CSE defaults to `SHADOW` mode. In this mode the pipeline processes market snapshots, generates signals, records signal lifecycle events, and stores outcomes, but it does not send Telegram alerts and it does not place orders.
+
+`PAPER_ALERT` mode is available only when explicitly configured by the application. It keeps the same signal and paper-tracking behavior, but sends alerts through the injected alert sender. It still does not place orders.
+
+Real ATrad market observation is not connected yet. ATrad remains mock-only, and no runtime mode enables broker login, browser selectors, order placement, or auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

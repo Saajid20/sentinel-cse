@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MarketDataSanitizer, MarketSnapshot } from '@sentinel/core';
 import { OpeningMomentumDetector } from '@sentinel/strategies';
-import { SentinelPipeline } from './pipeline.js';
+import { SentinelPipeline, SentinelRunMode } from './pipeline.js';
 
 const ticker = 'SAMP.N0000';
 
@@ -18,11 +18,14 @@ const snapshot = (overrides: Partial<MarketSnapshot>): MarketSnapshot => ({
   ...overrides
 });
 
-const makePipeline = (): SentinelPipeline => {
+const makePipeline = (mode?: SentinelRunMode): SentinelPipeline => {
   const detector = new OpeningMomentumDetector();
   detector.averageVolumeMap[ticker] = 100;
 
-  return new SentinelPipeline({ detector });
+  return new SentinelPipeline({
+    detector,
+    runtime: mode ? { mode, orderPlacementEnabled: false } : undefined
+  });
 };
 
 const buildFirstCandle = async (pipeline: SentinelPipeline): Promise<void> => {
@@ -52,6 +55,15 @@ const createSignal = async (pipeline: SentinelPipeline) => {
 };
 
 describe('SentinelPipeline', () => {
+  it('defaults to SHADOW mode with order placement disabled', () => {
+    const pipeline = makePipeline();
+
+    expect(pipeline.runtime).toEqual({
+      mode: 'SHADOW',
+      orderPlacementEnabled: false
+    });
+  });
+
   it('creates a signal from qualifying mock snapshots', async () => {
     const pipeline = makePipeline();
 
@@ -63,8 +75,18 @@ describe('SentinelPipeline', () => {
     expect(signal.type).toBe('BUY_WATCH');
   });
 
-  it('sends a mock BUY WATCH alert', async () => {
+  it('generates and stores signals in SHADOW mode without sending alerts', async () => {
     const pipeline = makePipeline();
+
+    const signal = await createSignal(pipeline);
+
+    expect(signal.strategy).toBe('CSE_OPENING_MOMENTUM_V1');
+    expect(pipeline.sender.listSentMessages()).toEqual([]);
+    await expect(pipeline.memory.getSignal(signal.id)).resolves.toEqual(signal);
+  });
+
+  it('sends a mock BUY WATCH alert in PAPER_ALERT mode', async () => {
+    const pipeline = makePipeline('PAPER_ALERT');
 
     const signal = await createSignal(pipeline);
     const messages = pipeline.sender.listSentMessages();
@@ -92,7 +114,7 @@ describe('SentinelPipeline', () => {
     });
   });
 
-  it('records an event when a signal expires', async () => {
+  it('records an event when a signal expires in SHADOW mode without sending alerts', async () => {
     const pipeline = makePipeline();
     const signal = await createSignal(pipeline);
 
@@ -115,10 +137,11 @@ describe('SentinelPipeline', () => {
     });
     await expect(pipeline.memory.listEventsBySignal(signal.id)).resolves.toHaveLength(1);
     await expect(pipeline.db.signalEvents.listBySignal(signal.id)).resolves.toHaveLength(1);
+    expect(pipeline.sender.listSentMessages()).toEqual([]);
   });
 
-  it('sends a lifecycle update when target is hit', async () => {
-    const pipeline = makePipeline();
+  it('sends a lifecycle update in PAPER_ALERT mode when target is hit', async () => {
+    const pipeline = makePipeline('PAPER_ALERT');
     const signal = await createSignal(pipeline);
 
     await pipeline.processSnapshot(
@@ -169,6 +192,15 @@ describe('SentinelPipeline', () => {
         finalStatus: 'TARGET_HIT'
       }
     ]);
+  });
+
+  it('keeps order placement disabled even when PAPER_ALERT mode is configured', () => {
+    const pipeline = makePipeline('PAPER_ALERT');
+
+    expect(pipeline.runtime).toEqual({
+      mode: 'PAPER_ALERT',
+      orderPlacementEnabled: false
+    });
   });
 
   it('does not create a signal when risk checks fail', async () => {
