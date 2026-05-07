@@ -4,6 +4,10 @@ import {
   StrategyExperimentResult,
   StrategyExperimentRunner
 } from '../apps/worker/src/index.js';
+import {
+  createManualATradLoginAndObserveConfig,
+  runManualATradLoginAndObserve
+} from './manualATradLoginAndObserve.js';
 import { createManualATradLoginConfig, runManualATradLogin } from './manualATradLogin.js';
 import { createManualATradObserveOnceConfig, runManualATradObserveOnce } from './manualATradObserveOnce.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
@@ -15,6 +19,7 @@ export type SentinelCommand =
   | 'basket'
   | 'experiment'
   | 'atrad-login'
+  | 'atrad-login-and-observe'
   | 'atrad-observe-once'
   | 'telegram-test'
   | 'supabase-test'
@@ -53,6 +58,15 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
         output: config.persistentProfile
           ? `ATrad persistent profile ready at ${sessionPath}. Storage state also saved to ${config.storageStatePath}`
           : `ATrad manual login storage state saved to ${sessionPath}`
+      };
+    }
+    case 'atrad-login-and-observe': {
+      const result = await runManualATradLoginAndObserve(
+        createManualATradLoginAndObserveConfig(args.slice(1))
+      );
+      return {
+        exitCode: result.ok ? 0 : 1,
+        output: result.message
       };
     }
     case 'atrad-observe-once': {
@@ -158,6 +172,7 @@ export function formatHelp(): string {
     '  pnpm sentinel basket',
     '  pnpm sentinel experiment',
     '  pnpm sentinel atrad-login',
+    '  pnpm sentinel atrad-login-and-observe',
     '  pnpm sentinel atrad-observe-once',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
@@ -168,6 +183,7 @@ export function formatHelp(): string {
     '  basket         Run the mock basket replay evaluator.',
     '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
     '  atrad-login    Open a local manual ATrad login browser and save ignored session state. Supports --persistent-profile.',
+    '  atrad-login-and-observe  Log in manually, then observe the current same-session page without reopening the browser.',
     '  atrad-observe-once  Read Market Watch rows once using saved local storage state or --persistent-profile.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',

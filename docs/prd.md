@@ -109,6 +109,8 @@ The `pnpm atrad:observe-once` script is a local read-only prototype that reuses 
 
 This command sends no Telegram alerts, writes no Supabase records, does not run the trading pipeline, and places no orders.
 
+ATrad session restore may still fail even when storage state and a persistent profile were saved. For that case, `pnpm atrad:login-and-observe -- --base-url <url>` keeps the manual login and the read-only observation inside the same live browser context. The user still logs in manually, Market Watch observation remains read-only, and no order placement or auto-trading is enabled.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

@@ -13,6 +13,7 @@
     "supabase:test": "tsx scripts/manualSupabaseTest.ts",
     "telegram:test": "tsx scripts/manualTelegramTest.ts",
     "atrad:login": "tsx scripts/manualATradLogin.ts",
+    "atrad:login-and-observe": "tsx scripts/manualATradLoginAndObserve.ts",
     "atrad:observe-once": "tsx scripts/manualATradObserveOnce.ts",
     "test": "vitest run",
     "test:watch": "vitest",
