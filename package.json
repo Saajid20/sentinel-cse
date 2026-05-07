@@ -12,6 +12,7 @@
     "sentinel": "tsx scripts/sentinel.ts",
     "supabase:test": "tsx scripts/manualSupabaseTest.ts",
     "telegram:test": "tsx scripts/manualTelegramTest.ts",
+    "atrad:login": "tsx scripts/manualATradLogin.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r run typecheck"
@@ -20,6 +21,7 @@
     "typescript": "^5.4.5",
     "tsx": "^4.20.6",
     "vitest": "^1.6.0",
-    "@types/node": "^20.12.11"
+    "@types/node": "^20.12.11",
+    "playwright": "^1.45.0"
   }
 }

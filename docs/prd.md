@@ -95,6 +95,12 @@ Sentinel-CSE defaults to `SHADOW` mode. In this mode the pipeline processes mark
 
 Real ATrad market observation is not connected yet. ATrad remains mock-only, and no runtime mode enables broker login, browser selectors, order placement, or auto-trading.
 
+## ATrad Manual Session Capture
+
+ATrad browser session capture is local-only. The `pnpm atrad:login` script opens a visible browser and requires the user to log in manually and complete 2FA manually before storage state is saved.
+
+The storage state file is written to `playwright/.auth/atrad-storage-state.json`, which is ignored by Git. This step does not scrape market data, does not add ATrad selectors, does not automate credential entry, and does not enable order placement or auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

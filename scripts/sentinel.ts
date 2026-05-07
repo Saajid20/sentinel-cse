@@ -4,6 +4,7 @@ import {
   StrategyExperimentResult,
   StrategyExperimentRunner
 } from '../apps/worker/src/index.js';
+import { createManualATradLoginConfig, runManualATradLogin } from './manualATradLogin.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
 import { runManualSupabaseTest } from './manualSupabaseTest.js';
 import { runManualTelegramTest } from './manualTelegramTest.js';
@@ -12,6 +13,7 @@ export type SentinelCommand =
   | 'status'
   | 'basket'
   | 'experiment'
+  | 'atrad-login'
   | 'telegram-test'
   | 'supabase-test'
   | 'help';
@@ -41,6 +43,13 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
         exitCode: 0,
         output: await formatExperimentSummary()
       };
+    case 'atrad-login': {
+      const storageStatePath = await runManualATradLogin(createManualATradLoginConfig(args.slice(1)));
+      return {
+        exitCode: 0,
+        output: `ATrad manual login storage state saved to ${storageStatePath}`
+      };
+    }
     case 'telegram-test':
       await runManualTelegramTest();
       return {
@@ -136,6 +145,7 @@ export function formatHelp(): string {
     '  pnpm sentinel status',
     '  pnpm sentinel basket',
     '  pnpm sentinel experiment',
+    '  pnpm sentinel atrad-login',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
     '  pnpm sentinel help',
@@ -144,6 +154,7 @@ export function formatHelp(): string {
     '  status         Show local capability and safety status.',
     '  basket         Run the mock basket replay evaluator.',
     '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
+    '  atrad-login    Open a local manual ATrad login browser and save ignored storage state.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'

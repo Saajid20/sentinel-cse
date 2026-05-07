@@ -72,7 +72,10 @@ web_modules/
 
 # Playwright auth/session state
 playwright/.auth
+playwright/.auth/
+playwright/.auth/*
 storageState.json
+**/storageState.json
 *.auth.json
 
 # parcel-bundler cache (https://parceljs.org/)
