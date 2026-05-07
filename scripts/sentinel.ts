@@ -5,6 +5,7 @@ import {
   StrategyExperimentRunner
 } from '../apps/worker/src/index.js';
 import { createManualATradLoginConfig, runManualATradLogin } from './manualATradLogin.js';
+import { createManualATradObserveOnceConfig, runManualATradObserveOnce } from './manualATradObserveOnce.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
 import { runManualSupabaseTest } from './manualSupabaseTest.js';
 import { runManualTelegramTest } from './manualTelegramTest.js';
@@ -14,6 +15,7 @@ export type SentinelCommand =
   | 'basket'
   | 'experiment'
   | 'atrad-login'
+  | 'atrad-observe-once'
   | 'telegram-test'
   | 'supabase-test'
   | 'help';
@@ -48,6 +50,13 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
       return {
         exitCode: 0,
         output: `ATrad manual login storage state saved to ${storageStatePath}`
+      };
+    }
+    case 'atrad-observe-once': {
+      const result = await runManualATradObserveOnce(createManualATradObserveOnceConfig(args.slice(1)));
+      return {
+        exitCode: result.ok ? 0 : 1,
+        output: result.message
       };
     }
     case 'telegram-test':
@@ -146,6 +155,7 @@ export function formatHelp(): string {
     '  pnpm sentinel basket',
     '  pnpm sentinel experiment',
     '  pnpm sentinel atrad-login',
+    '  pnpm sentinel atrad-observe-once',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
     '  pnpm sentinel help',
@@ -155,6 +165,7 @@ export function formatHelp(): string {
     '  basket         Run the mock basket replay evaluator.',
     '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
     '  atrad-login    Open a local manual ATrad login browser and save ignored storage state.',
+    '  atrad-observe-once  Read Market Watch rows once using saved local ATrad storage state.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'

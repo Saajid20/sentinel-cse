@@ -101,6 +101,12 @@ ATrad browser session capture is local-only. The `pnpm atrad:login` script opens
 
 The storage state file is written to `playwright/.auth/atrad-storage-state.json`, which is ignored by Git. This step does not scrape market data, does not add ATrad selectors, does not automate credential entry, and does not enable order placement or auto-trading.
 
+## ATrad Observe-Once Read-Only Prototype
+
+The `pnpm atrad:observe-once` script is a local read-only prototype that reuses the saved Playwright storage state and extracts visible Market Watch table rows only. It converts those rows into raw market snapshots, passes them through the market data sanitizer, and prints accepted/rejected counts with issues.
+
+This command sends no Telegram alerts, writes no Supabase records, does not run the trading pipeline, and places no orders.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

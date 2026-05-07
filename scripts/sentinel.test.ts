@@ -8,6 +8,7 @@ describe('sentinel operator console', () => {
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain('pnpm sentinel status');
     expect(result.output).toContain('pnpm sentinel atrad-login');
+    expect(result.output).toContain('pnpm sentinel atrad-observe-once');
     expect(result.output).toContain('telegram-test');
     expect(result.output).toContain('supabase-test');
   });
