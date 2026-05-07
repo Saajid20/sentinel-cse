@@ -67,6 +67,7 @@ export function formatManualATradLoginAndObserveInstructions(
     `Opening: ${config.baseUrl}`,
     '',
     'Log in manually, complete 2FA if needed, navigate to Market Watch/home page, then return to this terminal and press Enter.',
+    'If needed, manually select "Full Watch - Equity" in the Market Watch area before pressing Enter.',
     'No credentials are read by this script, and no form fields are automated.',
     `Storage state will be saved to: ${config.storageStatePath}`
   ];

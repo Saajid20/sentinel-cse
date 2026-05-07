@@ -4,6 +4,7 @@ import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import { MarketDataSanitizer } from '../packages/core/src/index.js';
 import { ATRAD_PERSISTENT_PROFILE_PATH, ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
 import {
+  buildMarketWatchRowFromCells,
   collectPageDiagnostics,
   createManualATradObserveOnceConfig,
   DEFAULT_ATRAD_MARKET_WATCH_URL,
@@ -16,6 +17,7 @@ import {
 
 const fakeMarketWatchRow = {
   Security: 'SAMP.N0000',
+  'Company Name': 'Sample Holdings PLC',
   'Bid Qty': '1,000',
   'Bid Price': '54.50',
   'Ask Price': '55.00',
@@ -30,6 +32,8 @@ const fakeMarketWatchRow = {
   Volume: '12,500',
   Turnover: '687,500',
   Trades: '42',
+  'Price Close': '54.00',
+  'Buy Sentiment': '62%',
   Time: '10:35:00'
 };
 
@@ -90,19 +94,94 @@ describe('manual ATrad observe-once helpers', () => {
       lastPrice: '55.00',
       bestBid: '54.50',
       bestAsk: '55.00',
-      bidDepth: '1,000',
+      bidDepth: '1000',
       askDepth: '800',
-      volume: '12,500',
-      totalTurnover: '687,500',
+      volume: '12500',
+      totalTurnover: '687500',
       timestamp: 1_000,
       source: 'atrad-market-watch'
     });
     expect(rawSnapshot.metadata).toMatchObject({
+      companyName: 'Sample Holdings PLC',
       high: '56.00',
       low: '53.00',
       vwa: '54.20',
+      turnover: '687500',
       trades: '42',
+      priceClose: '54.00',
+      buySentiment: '62%',
       rawRow: fakeMarketWatchRow
+    });
+  });
+
+  it('handles comma-separated values and symbols in Full Watch numeric fields', () => {
+    const rawSnapshot = marketWatchRowToRawSnapshot(
+      {
+        ...fakeMarketWatchRow,
+        'Bid Qty': '1,250 ▲',
+        'Bid Price': '54.50 ▲',
+        'Ask Price': '55.00 ▼',
+        Last: '55.25 ▲',
+        Volume: '12,500',
+        Turnover: '687,500'
+      },
+      1_000
+    );
+
+    expect(rawSnapshot).toMatchObject({
+      bidDepth: '1250',
+      bestBid: '54.50',
+      bestAsk: '55.00',
+      lastPrice: '55.25',
+      volume: '12500',
+      totalTurnover: '687500'
+    });
+  });
+
+  it('builds a Full Watch row from headers and cells with an action-icon column', () => {
+    const row = buildMarketWatchRowFromCells(
+      [
+        '',
+        'Security',
+        'Company Name',
+        'Bid Qty',
+        'Bid Price',
+        'Ask Price',
+        'Ask Qty',
+        'Last',
+        'Volume',
+        'Turnover',
+        'Buy Sentiment',
+        'Time'
+      ],
+      [
+        '>',
+        'SAMP.N0000',
+        'Sample Holdings PLC',
+        '1,000',
+        '54.50',
+        '55.00',
+        '800',
+        '55.00',
+        '12,500',
+        '687,500',
+        '62%',
+        '10:35:00'
+      ]
+    );
+
+    expect(row).toMatchObject({
+      Security: 'SAMP.N0000',
+      'Company Name': 'Sample Holdings PLC',
+      'Bid Qty': '1,000',
+      'Bid Price': '54.50',
+      'Ask Price': '55.00',
+      'Ask Qty': '800',
+      Last: '55.00',
+      Volume: '12,500',
+      Turnover: '687,500',
+      'Buy Sentiment': '62%',
+      Time: '10:35:00'
     });
   });
 
@@ -278,7 +357,7 @@ describe('manual ATrad observe-once helpers', () => {
 
     expect(source).not.toMatch(/process\.env/);
     expect(source).not.toMatch(/username|password|otp/i);
-    expect(source).not.toMatch(/buy|sell|submit|confirm|quantity input|price input|market order|limit order/i);
+    expect(source).not.toMatch(/\bbuy\b(?!\s+sentiment)|sell|submit|confirm|quantity input|price input|market order|limit order/i);
     expect(source).not.toMatch(/click\(|fill\(|type\(/);
   });
 });

@@ -20,6 +20,7 @@ export const ATRAD_MARKET_WATCH_SOURCE = 'atrad-market-watch';
 
 const MARKET_WATCH_HEADERS = [
   'Security',
+  'Company Name',
   'Bid Qty',
   'Bid Price',
   'Ask Price',
@@ -34,6 +35,8 @@ const MARKET_WATCH_HEADERS = [
   'Volume',
   'Turnover',
   'Trades',
+  'Price Close',
+  'Buy Sentiment',
   'Time'
 ];
 
@@ -47,6 +50,20 @@ const DIAGNOSTIC_KEYWORDS = [
   'Turnover',
   'Last',
   'Trades'
+];
+
+const PREFERRED_MARKET_WATCH_KEYWORDS = [
+  'Market Watch',
+  'Full Watch',
+  'Equity',
+  'Security',
+  'Bid Qty',
+  'Bid Price',
+  'Ask Price',
+  'Ask Qty',
+  'Last',
+  'Volume',
+  'Turnover'
 ];
 
 const DIAGNOSTIC_VISIBLE_TEXT_LIMIT = 30;
@@ -147,27 +164,49 @@ export function marketWatchRowToRawSnapshot(
 ): RawMarketSnapshot {
   return {
     ticker: field(row, 'Security'),
-    lastPrice: field(row, 'Last'),
-    bestBid: field(row, 'Bid Price'),
-    bestAsk: field(row, 'Ask Price'),
-    bidDepth: field(row, 'Bid Qty'),
-    askDepth: field(row, 'Ask Qty'),
-    volume: field(row, 'Volume'),
-    totalTurnover: field(row, 'Turnover'),
+    lastPrice: numericField(row, 'Last'),
+    bestBid: numericField(row, 'Bid Price'),
+    bestAsk: numericField(row, 'Ask Price'),
+    bidDepth: numericField(row, 'Bid Qty'),
+    askDepth: numericField(row, 'Ask Qty'),
+    volume: numericField(row, 'Volume'),
+    totalTurnover: numericField(row, 'Turnover'),
     timestamp,
     source: ATRAD_MARKET_WATCH_SOURCE,
     metadata: {
-      high: field(row, 'High'),
-      low: field(row, 'Low'),
-      vwa: field(row, 'VWA'),
-      trades: field(row, 'Trades'),
+      companyName: field(row, 'Company Name'),
+      high: numericField(row, 'High') ?? field(row, 'High'),
+      low: numericField(row, 'Low') ?? field(row, 'Low'),
+      vwa: numericField(row, 'VWA') ?? field(row, 'VWA'),
+      turnover: numericField(row, 'Turnover') ?? field(row, 'Turnover'),
+      trades: numericField(row, 'Trades') ?? field(row, 'Trades'),
+      priceClose: numericField(row, 'Price Close') ?? field(row, 'Price Close'),
+      buySentiment: field(row, 'Buy Sentiment'),
       time: field(row, 'Time'),
-      lastQty: field(row, 'Last Qty'),
-      change: field(row, 'Change'),
-      percentChange: field(row, '% Change'),
+      lastQty: numericField(row, 'Last Qty') ?? field(row, 'Last Qty'),
+      change: numericField(row, 'Change') ?? field(row, 'Change'),
+      percentChange: numericField(row, '% Change') ?? field(row, '% Change'),
       rawRow: { ...row }
     }
   };
+}
+
+export function buildMarketWatchRowFromCells(headers: string[], cells: string[]): MarketWatchRow {
+  const mapped: MarketWatchRow = {};
+
+  headers.forEach((header, index) => {
+    const normalizedHeader = normalizeMarketWatchText(header);
+    if (!MARKET_WATCH_HEADERS.includes(normalizedHeader)) {
+      return;
+    }
+
+    const value = normalizeMarketWatchText(cells[index] ?? '');
+    if (value.length > 0) {
+      mapped[normalizedHeader] = value;
+    }
+  });
+
+  return mapped;
 }
 
 export function sanitizeMarketWatchRows(
@@ -361,6 +400,31 @@ function field(row: MarketWatchRow, name: string): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+function numericField(row: MarketWatchRow, name: string): string | undefined {
+  const value = cleanNumericCellValue(row[name]);
+  return value && value.length > 0 ? value : undefined;
+}
+
+function normalizeMarketWatchText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function cleanNumericCellValue(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  const normalized = value
+    .replace(/,/g, '')
+    .replace(/[▲▼↑↓↗↘➜•●■◆△▽⬆⬇]/g, '')
+    .replace(/[^\d+.\-]/g, '')
+    .trim();
+
+  if (!/[0-9]/.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized.replace(/^\+/, '');
+}
+
 function emptyResult(ok: boolean, message: string): ManualATradObserveOnceResult {
   return {
     ok,
@@ -494,6 +558,7 @@ function redactSensitiveText(value: string): string {
 
 const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
   const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};
+  const preferredKeywords = ${JSON.stringify(PREFERRED_MARKET_WATCH_KEYWORDS)};
 
   function normalize(value) {
     return String(value || '').replace(/\\s+/g, ' ').trim();
@@ -505,33 +570,79 @@ const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
   }
 
+  function scoreTable(table) {
+    const rows = Array.from(table.querySelectorAll('tr')).filter(isVisible);
+    if (rows.length < 2) {
+      return null;
+    }
+
+    let bestHeaderIndex = -1;
+    let bestHeaders = [];
+    let bestHeaderScore = 0;
+
+    for (let index = 0; index < Math.min(rows.length, 5); index += 1) {
+      const candidateHeaders = Array.from(rows[index].querySelectorAll('th,td')).map((cell) =>
+        normalize(cell.textContent)
+      );
+      const headerScore = candidateHeaders.filter((header) => allowedHeaders.includes(header)).length;
+      if (headerScore > bestHeaderScore) {
+        bestHeaderIndex = index;
+        bestHeaders = candidateHeaders;
+        bestHeaderScore = headerScore;
+      }
+    }
+
+    if (
+      bestHeaderIndex < 0 ||
+      !bestHeaders.includes('Security') ||
+      !bestHeaders.includes('Bid Qty') ||
+      !bestHeaders.includes('Bid Price') ||
+      !bestHeaders.includes('Ask Price') ||
+      !bestHeaders.includes('Ask Qty') ||
+      !bestHeaders.includes('Last')
+    ) {
+      return null;
+    }
+
+    const container = table.closest('section,article,div') || table.parentElement || table;
+    const containerText = normalize(container ? container.textContent : table.textContent);
+    const keywordScore = preferredKeywords.filter((keyword) =>
+      containerText.toLowerCase().includes(keyword.toLowerCase())
+    ).length;
+
+    return {
+      rows,
+      headerIndex: bestHeaderIndex,
+      headers: bestHeaders,
+      score: bestHeaderScore * 10 + keywordScore
+    };
+  }
+
   const tables = Array.from(document.querySelectorAll('table')).filter(isVisible);
-  for (const table of tables) {
-    const tableRows = Array.from(table.querySelectorAll('tr')).filter(isVisible);
-    if (tableRows.length < 2) {
-      continue;
-    }
+  const scoredTables = tables
+    .map((table) => scoreTable(table))
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score);
 
-    const headerCells = Array.from(tableRows[0].querySelectorAll('th,td'));
-    const headers = headerCells.map((cell) => normalize(cell.textContent));
-    const allowedHeaderCount = headers.filter((header) => allowedHeaders.includes(header)).length;
-    if (!headers.includes('Security') || allowedHeaderCount < 3) {
-      continue;
-    }
-
-    return tableRows
-      .slice(1)
+  if (scoredTables.length > 0) {
+    const best = scoredTables[0];
+    return best.rows
+      .slice(best.headerIndex + 1)
       .map((row) => {
-        const cells = Array.from(row.querySelectorAll('td'));
+        const cells = Array.from(row.querySelectorAll('td,th')).map((cell) => normalize(cell.textContent));
         const mapped = {};
-        headers.forEach((header, index) => {
+        best.headers.forEach((header, index) => {
           if (allowedHeaders.includes(header)) {
-            mapped[header] = normalize(cells[index] ? cells[index].textContent : '');
+            mapped[header] = normalize(cells[index] || '');
           }
         });
         return mapped;
       })
-      .filter((row) => Object.values(row).some((value) => String(value).length > 0));
+      .filter((row) =>
+        ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
+          Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
+        )
+      );
   }
 
   return [];
