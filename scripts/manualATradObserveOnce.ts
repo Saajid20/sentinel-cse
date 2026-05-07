@@ -53,7 +53,7 @@ export interface ManualATradContextLike {
 
 export interface ManualATradPageLike {
   goto(url: string, options: { waitUntil: 'domcontentloaded'; timeout: number }): Promise<void>;
-  evaluate<T>(callback: () => T): Promise<T>;
+  evaluate<T>(pageFunction: string | (() => T)): Promise<T>;
 }
 
 export interface ManualATradObserveOnceRuntime {
@@ -195,57 +195,7 @@ export async function runManualATradObserveOnce(
 export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): Promise<MarketWatchRow[]> {
   assertATradReadOnlySafety('read visible Market Watch table rows');
 
-  return page.evaluate(() => {
-    const allowedHeaders = [
-      'Security',
-      'Bid Qty',
-      'Bid Price',
-      'Ask Price',
-      'Ask Qty',
-      'Last',
-      'Last Qty',
-      'Change',
-      '% Change',
-      'High',
-      'Low',
-      'VWA',
-      'Volume',
-      'Turnover',
-      'Trades',
-      'Time'
-    ];
-
-    const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
-    const visible = (element: Element) => {
-      const style = window.getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-    };
-
-    const tables = Array.from(document.querySelectorAll('table')).filter(visible);
-    for (const table of tables) {
-      const tableRows = Array.from(table.querySelectorAll('tr')).filter(visible);
-      if (tableRows.length < 2) continue;
-
-      const headerCells = Array.from(tableRows[0].querySelectorAll('th,td'));
-      const headers = headerCells.map((cell) => normalize(cell.textContent ?? ''));
-      const allowedHeaderCount = headers.filter((header) => allowedHeaders.includes(header)).length;
-      if (!headers.includes('Security') || allowedHeaderCount < 3) continue;
-
-      return tableRows.slice(1).map((row) => {
-        const cells = Array.from(row.querySelectorAll('td'));
-        const mapped: Record<string, string> = {};
-        headers.forEach((header, index) => {
-          if (allowedHeaders.includes(header)) {
-            mapped[header] = normalize(cells[index]?.textContent ?? '');
-          }
-        });
-        return mapped;
-      }).filter((row) => Object.values(row).some((value) => value.length > 0));
-    }
-
-    return [];
-  });
+  return page.evaluate<MarketWatchRow[]>(BROWSER_SAFE_MARKET_WATCH_EVALUATION);
 }
 
 export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): string[] {
@@ -312,6 +262,51 @@ function defaultRuntime(): ManualATradObserveOnceRuntime {
     log: (message) => console.log(message)
   };
 }
+
+const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
+  const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};
+
+  function normalize(value) {
+    return String(value || '').replace(/\\s+/g, ' ').trim();
+  }
+
+  function isVisible(element) {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }
+
+  const tables = Array.from(document.querySelectorAll('table')).filter(isVisible);
+  for (const table of tables) {
+    const tableRows = Array.from(table.querySelectorAll('tr')).filter(isVisible);
+    if (tableRows.length < 2) {
+      continue;
+    }
+
+    const headerCells = Array.from(tableRows[0].querySelectorAll('th,td'));
+    const headers = headerCells.map((cell) => normalize(cell.textContent));
+    const allowedHeaderCount = headers.filter((header) => allowedHeaders.includes(header)).length;
+    if (!headers.includes('Security') || allowedHeaderCount < 3) {
+      continue;
+    }
+
+    return tableRows
+      .slice(1)
+      .map((row) => {
+        const cells = Array.from(row.querySelectorAll('td'));
+        const mapped = {};
+        headers.forEach((header, index) => {
+          if (allowedHeaders.includes(header)) {
+            mapped[header] = normalize(cells[index] ? cells[index].textContent : '');
+          }
+        });
+        return mapped;
+      })
+      .filter((row) => Object.values(row).some((value) => String(value).length > 0));
+  }
+
+  return [];
+})()`;
 
 async function main(): Promise<void> {
   const result = await runManualATradObserveOnce(createManualATradObserveOnceConfig(process.argv.slice(2)));

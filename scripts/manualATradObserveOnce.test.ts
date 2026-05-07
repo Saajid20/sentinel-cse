@@ -94,16 +94,20 @@ describe('manual ATrad observe-once helpers', () => {
   });
 
   it('extracts rows through an injected fake page without a real browser', async () => {
+    let evaluateInput: string | (() => unknown) | undefined;
     const rows = await extractVisibleMarketWatchRows({
       async goto() {
         throw new Error('goto should not be called by extractor');
       },
-      async evaluate() {
+      async evaluate(pageFunction) {
+        evaluateInput = pageFunction;
         return [fakeMarketWatchRow];
       }
     });
 
     expect(rows).toEqual([fakeMarketWatchRow]);
+    expect(typeof evaluateInput).toBe('string');
+    expect(String(evaluateInput)).not.toContain('__name');
   });
 
   it('runs observe-once with an injected fake browser runtime', async () => {
