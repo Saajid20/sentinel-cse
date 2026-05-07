@@ -32,12 +32,27 @@ const MARKET_WATCH_HEADERS = [
   'Time'
 ];
 
+const DIAGNOSTIC_KEYWORDS = [
+  'Market',
+  'Watch',
+  'Security',
+  'Bid',
+  'Ask',
+  'Volume',
+  'Turnover',
+  'Last',
+  'Trades'
+];
+
+const DIAGNOSTIC_VISIBLE_TEXT_LIMIT = 30;
+
 export type MarketWatchRow = Record<string, string>;
 
 export interface ManualATradObserveOnceConfig {
   baseUrl: string;
   storageStatePath: string;
   headless: boolean;
+  diagnose: boolean;
   observationTimeoutMs: number;
   readonlyMode: true;
 }
@@ -51,9 +66,15 @@ export interface ManualATradContextLike {
   newPage(): Promise<ManualATradPageLike>;
 }
 
-export interface ManualATradPageLike {
-  goto(url: string, options: { waitUntil: 'domcontentloaded'; timeout: number }): Promise<void>;
+export interface ManualATradFrameLike {
+  url(): string;
+  title(): Promise<string>;
   evaluate<T>(pageFunction: string | (() => T)): Promise<T>;
+}
+
+export interface ManualATradPageLike extends ManualATradFrameLike {
+  goto(url: string, options: { waitUntil: 'domcontentloaded'; timeout: number }): Promise<void>;
+  frames(): ManualATradFrameLike[];
 }
 
 export interface ManualATradObserveOnceRuntime {
@@ -61,6 +82,26 @@ export interface ManualATradObserveOnceRuntime {
   launchBrowser(config: ManualATradObserveOnceConfig): Promise<ManualATradBrowserLike>;
   now(): number;
   log(message: string): void;
+}
+
+export interface ManualATradFrameDiagnostics {
+  scope: string;
+  url: string;
+  title: string;
+  tableCount: number;
+  rowCount: number;
+  visibleTextCount: number;
+  firstVisibleTextSnippets: string[];
+  keywordMatches: string[];
+}
+
+export interface ManualATradPageDiagnostics {
+  pageUrl: string;
+  pageTitle: string;
+  frameCount: number;
+  iframeCount: number;
+  page: ManualATradFrameDiagnostics;
+  frames: ManualATradFrameDiagnostics[];
 }
 
 export interface SanitizedObservedMarketWatchRow {
@@ -76,6 +117,7 @@ export interface ManualATradObserveOnceResult {
   rawSnapshots: RawMarketSnapshot[];
   accepted: SanitizedObservedMarketWatchRow[];
   rejected: SanitizedObservedMarketWatchRow[];
+  diagnostics?: ManualATradPageDiagnostics;
 }
 
 export function createManualATradObserveOnceConfig(args: string[] = []): ManualATradObserveOnceConfig {
@@ -83,6 +125,7 @@ export function createManualATradObserveOnceConfig(args: string[] = []): ManualA
     baseUrl: parseBaseUrl(args),
     storageStatePath: ATRAD_STORAGE_STATE_PATH,
     headless: args.includes('--headless'),
+    diagnose: args.includes('--diagnose'),
     observationTimeoutMs: parseTimeoutMs(args),
     readonlyMode: true
   };
@@ -173,6 +216,25 @@ export async function runManualATradObserveOnce(
       timeout: config.observationTimeoutMs
     });
 
+    if (config.diagnose) {
+      const diagnostics = await collectPageDiagnostics(page);
+      const result: ManualATradObserveOnceResult = {
+        ok: true,
+        message: 'ATrad observe-once read-only diagnostics completed.',
+        rawRows: [],
+        rawSnapshots: [],
+        accepted: [],
+        rejected: [],
+        diagnostics
+      };
+
+      for (const line of formatObserveOnceSummary(result)) {
+        runtime.log(line);
+      }
+
+      return result;
+    }
+
     const rawRows = await extractVisibleMarketWatchRows(page);
     const sanitized = sanitizeMarketWatchRows(rawRows, runtime.now());
     const result: ManualATradObserveOnceResult = {
@@ -199,6 +261,10 @@ export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): 
 }
 
 export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): string[] {
+  if (result.diagnostics) {
+    return formatDiagnosticsSummary(result.diagnostics);
+  }
+
   return [
     'Sentinel-CSE ATrad observe-once read-only summary',
     `Raw rows extracted: ${result.rawRows.length}`,
@@ -210,6 +276,31 @@ export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): 
       ...row.issues.map((issue) => `- ${issue.code}: ${issue.message}`)
     ])
   ];
+}
+
+export async function collectPageDiagnostics(
+  page: ManualATradPageLike
+): Promise<ManualATradPageDiagnostics> {
+  assertATradReadOnlySafety('inspect read-only page diagnostics');
+
+  const pageFrames = page.frames();
+  const pageUrl = redactDiagnosticUrl(page.url());
+  const pageTitle = redactSensitiveText(await safeTitle(page));
+  const pageDiagnostics = await collectFrameDiagnostics(page, 'main-page');
+  const frameDiagnostics: ManualATradFrameDiagnostics[] = [];
+
+  for (let index = 1; index < pageFrames.length; index += 1) {
+    frameDiagnostics.push(await collectFrameDiagnostics(pageFrames[index], `frame-${index}`));
+  }
+
+  return {
+    pageUrl,
+    pageTitle,
+    frameCount: pageFrames.length,
+    iframeCount: await page.evaluate<number>(BROWSER_SAFE_IFRAME_COUNT_EVALUATION),
+    page: pageDiagnostics,
+    frames: frameDiagnostics
+  };
 }
 
 function parseBaseUrl(args: string[]): string {
@@ -263,6 +354,93 @@ function defaultRuntime(): ManualATradObserveOnceRuntime {
   };
 }
 
+async function collectFrameDiagnostics(
+  frame: ManualATradFrameLike,
+  scope: string
+): Promise<ManualATradFrameDiagnostics> {
+  assertATradReadOnlySafety('inspect read-only frame diagnostics');
+
+  const raw = await frame.evaluate<{
+    tableCount: number;
+    rowCount: number;
+    visibleTextCount: number;
+    firstVisibleTextSnippets: string[];
+    keywordMatches: string[];
+  }>(BROWSER_SAFE_DIAGNOSTICS_EVALUATION);
+
+  return {
+    scope,
+    url: redactDiagnosticUrl(frame.url()),
+    title: redactSensitiveText(await safeTitle(frame)),
+    tableCount: raw.tableCount,
+    rowCount: raw.rowCount,
+    visibleTextCount: raw.visibleTextCount,
+    firstVisibleTextSnippets: raw.firstVisibleTextSnippets.map(redactSensitiveText),
+    keywordMatches: raw.keywordMatches.map(redactSensitiveText)
+  };
+}
+
+function formatDiagnosticsSummary(diagnostics: ManualATradPageDiagnostics): string[] {
+  const lines = [
+    'Sentinel-CSE ATrad observe-once read-only diagnostics',
+    `Current page URL: ${diagnostics.pageUrl}`,
+    `Page title: ${diagnostics.pageTitle || 'n/a'}`,
+    `Frames/iframes detected: ${diagnostics.frameCount}`,
+    `iframe elements on page: ${diagnostics.iframeCount}`
+  ];
+
+  lines.push(...formatFrameDiagnosticsBlock(diagnostics.page));
+
+  for (const frame of diagnostics.frames) {
+    lines.push(...formatFrameDiagnosticsBlock(frame));
+  }
+
+  return lines;
+}
+
+function formatFrameDiagnosticsBlock(frame: ManualATradFrameDiagnostics): string[] {
+  return [
+    `${frame.scope}:`,
+    `  URL: ${frame.url}`,
+    `  Title: ${frame.title || 'n/a'}`,
+    `  table elements: ${frame.tableCount}`,
+    `  tr elements: ${frame.rowCount}`,
+    `  visible text snippets: ${frame.visibleTextCount}`,
+    `  first ${DIAGNOSTIC_VISIBLE_TEXT_LIMIT} short visible text snippets: ${
+      frame.firstVisibleTextSnippets.length > 0
+        ? frame.firstVisibleTextSnippets.join(' | ')
+        : 'none'
+    }`,
+    `  keyword matches: ${frame.keywordMatches.length > 0 ? frame.keywordMatches.join(' | ') : 'none'}`
+  ];
+}
+
+async function safeTitle(frame: ManualATradFrameLike): Promise<string> {
+  try {
+    return await frame.title();
+  } catch {
+    return '';
+  }
+}
+
+function redactDiagnosticUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return redactSensitiveText(value);
+  }
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]')
+    .replace(/\b(session|token|auth|sid)=([^&\s]+)/gi, '$1=[redacted]')
+    .replace(/\b[a-f0-9]{16,}\b/gi, '[redacted-token]')
+    .replace(/\b\d{6,}\b/g, '[redacted-number]')
+    .trim();
+}
+
 const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
   const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};
 
@@ -306,6 +484,61 @@ const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
   }
 
   return [];
+})()`;
+
+const BROWSER_SAFE_IFRAME_COUNT_EVALUATION = `(() => document.querySelectorAll('iframe').length)()`;
+
+const BROWSER_SAFE_DIAGNOSTICS_EVALUATION = `(() => {
+  const keywords = ${JSON.stringify(DIAGNOSTIC_KEYWORDS)};
+  const maxShortSnippets = ${DIAGNOSTIC_VISIBLE_TEXT_LIMIT};
+
+  function normalize(value) {
+    return String(value || '').replace(/\\s+/g, ' ').trim();
+  }
+
+  function isVisible(element) {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }
+
+  function collectSnippets() {
+    const snippets = [];
+    const seen = new Set();
+    const root = document.body || document.documentElement;
+    const elements = Array.from(root.querySelectorAll('*'));
+
+    for (const element of elements) {
+      if (!isVisible(element)) {
+        continue;
+      }
+
+      const text = normalize(element.textContent);
+      if (!text || text.length > 120) {
+        continue;
+      }
+
+      if (!seen.has(text)) {
+        seen.add(text);
+        snippets.push(text);
+      }
+    }
+
+    return snippets;
+  }
+
+  const visibleSnippets = collectSnippets();
+  const keywordMatches = visibleSnippets.filter((snippet) =>
+    keywords.some((keyword) => snippet.toLowerCase().includes(keyword.toLowerCase()))
+  );
+
+  return {
+    tableCount: document.querySelectorAll('table').length,
+    rowCount: document.querySelectorAll('tr').length,
+    visibleTextCount: visibleSnippets.length,
+    firstVisibleTextSnippets: visibleSnippets.slice(0, maxShortSnippets),
+    keywordMatches
+  };
 })()`;
 
 async function main(): Promise<void> {

@@ -4,6 +4,7 @@ import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import { MarketDataSanitizer } from '../packages/core/src/index.js';
 import { ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
 import {
+  collectPageDiagnostics,
   createManualATradObserveOnceConfig,
   DEFAULT_ATRAD_MARKET_WATCH_URL,
   extractVisibleMarketWatchRows,
@@ -33,6 +34,14 @@ const fakeMarketWatchRow = {
 };
 
 describe('manual ATrad observe-once helpers', () => {
+  it('parses the diagnose flag from CLI args', () => {
+    const config = createManualATradObserveOnceConfig(['--base-url', 'https://example.com/watch', '--diagnose']);
+
+    expect(config.baseUrl).toBe('https://example.com/watch');
+    expect(config.diagnose).toBe(true);
+    expect(config.readonlyMode).toBe(true);
+  });
+
   it('returns a helpful result when storage state is missing', async () => {
     const calls: string[] = [];
     const runtime = fakeRuntime({
@@ -133,6 +142,87 @@ describe('manual ATrad observe-once helpers', () => {
     );
   });
 
+  it('runs read-only diagnostics across the page and child frames', async () => {
+    const calls: string[] = [];
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls,
+      pageUrl: 'https://atrad.example.com/watch?session=secret123#frag',
+      pageTitle: 'ATrad Market Watch 123456789',
+      pageDiagnostics: {
+        tableCount: 2,
+        rowCount: 12,
+        visibleTextCount: 6,
+        firstVisibleTextSnippets: ['Market Watch', 'Security', 'Bid Price', 'Volume 123456'],
+        keywordMatches: ['Market Watch', 'Security', 'Bid Price']
+      },
+      frames: [
+        {
+          url: 'https://atrad.example.com/frame?token=abcdef1234567890',
+          title: 'Child Frame 999999',
+          diagnostics: {
+            tableCount: 1,
+            rowCount: 4,
+            visibleTextCount: 2,
+            firstVisibleTextSnippets: ['Trades', 'Turnover 777777'],
+            keywordMatches: ['Trades', 'Turnover 777777']
+          }
+        }
+      ]
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--diagnose']),
+      runtime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('diagnostics');
+    expect(result.rawRows).toEqual([]);
+    expect(result.accepted).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.diagnostics).toMatchObject({
+      pageUrl: 'https://atrad.example.com/watch',
+      pageTitle: 'ATrad Market Watch [redacted-number]',
+      frameCount: 2,
+      iframeCount: 1
+    });
+    expect(result.diagnostics?.page.firstVisibleTextSnippets).toContain('Volume [redacted-number]');
+    expect(result.diagnostics?.frames[0]).toMatchObject({
+      scope: 'frame-1',
+      url: 'https://atrad.example.com/frame',
+      title: 'Child Frame [redacted-number]'
+    });
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        'frame-evaluate:main:string',
+        'frame-evaluate:frame-1:string',
+        'page-evaluate:iframe-count'
+      ])
+    );
+  });
+
+  it('collects diagnostics through injected read-only page inspection helpers', async () => {
+    const diagnostics = await collectPageDiagnostics(
+      createFakePage({
+        calls: [],
+        pageUrl: 'https://atrad.example.com/watch?auth=secret',
+        pageTitle: 'Overview 123456',
+        pageDiagnostics: {
+          tableCount: 0,
+          rowCount: 0,
+          visibleTextCount: 1,
+          firstVisibleTextSnippets: ['Last 123456'],
+          keywordMatches: ['Last 123456']
+        }
+      })
+    );
+
+    expect(diagnostics.pageUrl).toBe('https://atrad.example.com/watch');
+    expect(diagnostics.pageTitle).toBe('Overview [redacted-number]');
+    expect(diagnostics.page.firstVisibleTextSnippets).toEqual(['Last [redacted-number]']);
+  });
+
   it('does not read credentials, environment variables, or include unsafe action strings', () => {
     const source = readFileSync('scripts/manualATradObserveOnce.ts', 'utf8');
 
@@ -145,10 +235,18 @@ describe('manual ATrad observe-once helpers', () => {
 
 function fakeRuntime({
   storageStateExists,
-  calls
+  calls,
+  pageUrl,
+  pageTitle,
+  pageDiagnostics,
+  frames
 }: {
   storageStateExists: boolean;
   calls: string[];
+  pageUrl?: string;
+  pageTitle?: string;
+  pageDiagnostics?: FrameDiagnosticsPayload;
+  frames?: FakeFrameConfig[];
 }): ManualATradObserveOnceRuntime {
   return {
     async storageStateExists() {
@@ -162,14 +260,13 @@ function fakeRuntime({
           return {
             async newPage() {
               calls.push('new-page');
-              return {
-                async goto(url: string) {
-                  calls.push(`goto:${url}`);
-                },
-                async evaluate() {
-                  return [fakeMarketWatchRow];
-                }
-              };
+              return createFakePage({
+                calls,
+                pageUrl,
+                pageTitle,
+                pageDiagnostics,
+                frames
+              });
             }
           };
         },
@@ -180,5 +277,127 @@ function fakeRuntime({
     },
     now: () => 1_000,
     log: (message) => calls.push(`log:${message}`)
+  };
+}
+
+interface FrameDiagnosticsPayload {
+  tableCount: number;
+  rowCount: number;
+  visibleTextCount: number;
+  firstVisibleTextSnippets: string[];
+  keywordMatches: string[];
+}
+
+interface FakeFrameConfig {
+  url: string;
+  title: string;
+  diagnostics: FrameDiagnosticsPayload;
+}
+
+function createFakePage({
+  calls,
+  pageUrl,
+  pageTitle,
+  pageDiagnostics,
+  frames
+}: {
+  calls: string[];
+  pageUrl?: string;
+  pageTitle?: string;
+  pageDiagnostics?: FrameDiagnosticsPayload;
+  frames?: FakeFrameConfig[];
+}) {
+  const childFrames = (frames ?? []).map((frame, index) =>
+    createFakeFrame({
+      calls,
+      label: `frame-${index + 1}`,
+      url: frame.url,
+      title: frame.title,
+      diagnostics: frame.diagnostics
+    })
+  );
+
+  const mainFrame = createFakeFrame({
+    calls,
+    label: 'main',
+    url: pageUrl ?? DEFAULT_ATRAD_MARKET_WATCH_URL,
+    title: pageTitle ?? 'ATrad Market Watch',
+    diagnostics:
+      pageDiagnostics ?? {
+        tableCount: 1,
+        rowCount: 2,
+        visibleTextCount: 3,
+        firstVisibleTextSnippets: ['Market Watch', 'Security', 'Volume'],
+        keywordMatches: ['Market Watch', 'Security', 'Volume']
+      },
+    overrides: {
+      async goto(url: string) {
+        calls.push(`goto:${url}`);
+      },
+      frames() {
+        return [mainFrame, ...childFrames];
+      },
+      async evaluate(pageFunction: string | (() => unknown)) {
+        if (typeof pageFunction === 'string' && pageFunction.includes("querySelectorAll('iframe').length")) {
+          calls.push('page-evaluate:iframe-count');
+          return childFrames.length;
+        }
+
+        calls.push(`frame-evaluate:main:${typeof pageFunction}`);
+        if (typeof pageFunction === 'string') {
+          if (pageFunction.includes('const allowedHeaders =')) {
+            return [fakeMarketWatchRow];
+          }
+
+          return (
+            pageDiagnostics ?? {
+              tableCount: 1,
+              rowCount: 2,
+              visibleTextCount: 3,
+              firstVisibleTextSnippets: ['Market Watch', 'Security', 'Volume'],
+              keywordMatches: ['Market Watch', 'Security', 'Volume']
+            }
+          );
+        }
+
+        return [fakeMarketWatchRow];
+      }
+    }
+  });
+
+  return mainFrame;
+}
+
+function createFakeFrame({
+  calls,
+  label,
+  url,
+  title,
+  diagnostics,
+  overrides
+}: {
+  calls: string[];
+  label: string;
+  url: string;
+  title: string;
+  diagnostics: FrameDiagnosticsPayload;
+  overrides?: Record<string, unknown>;
+}) {
+  return {
+    url() {
+      return url;
+    },
+    async title() {
+      return title;
+    },
+    async evaluate(pageFunction: string | (() => unknown)) {
+      calls.push(`frame-evaluate:${label}:${typeof pageFunction}`);
+      if (typeof pageFunction === 'string') {
+        return diagnostics;
+      }
+
+      return [fakeMarketWatchRow];
+    },
+    ...overrides
   };
 }
