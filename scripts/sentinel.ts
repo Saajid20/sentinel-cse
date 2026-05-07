@@ -46,10 +46,13 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
         output: await formatExperimentSummary()
       };
     case 'atrad-login': {
-      const storageStatePath = await runManualATradLogin(createManualATradLoginConfig(args.slice(1)));
+      const config = createManualATradLoginConfig(args.slice(1));
+      const sessionPath = await runManualATradLogin(config);
       return {
         exitCode: 0,
-        output: `ATrad manual login storage state saved to ${storageStatePath}`
+        output: config.persistentProfile
+          ? `ATrad persistent profile ready at ${sessionPath}. Storage state also saved to ${config.storageStatePath}`
+          : `ATrad manual login storage state saved to ${sessionPath}`
       };
     }
     case 'atrad-observe-once': {
@@ -164,8 +167,8 @@ export function formatHelp(): string {
     '  status         Show local capability and safety status.',
     '  basket         Run the mock basket replay evaluator.',
     '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
-    '  atrad-login    Open a local manual ATrad login browser and save ignored storage state.',
-    '  atrad-observe-once  Read Market Watch rows once using saved local ATrad storage state.',
+    '  atrad-login    Open a local manual ATrad login browser and save ignored session state. Supports --persistent-profile.',
+    '  atrad-observe-once  Read Market Watch rows once using saved local storage state or --persistent-profile.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'

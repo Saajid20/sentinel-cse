@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  ATRAD_PERSISTENT_PROFILE_PATH,
   ATRAD_STORAGE_STATE_PATH,
   createManualATradLoginConfig,
   DEFAULT_ATRAD_BASE_URL,
   formatManualATradLoginInstructions,
+  isSafePersistentProfilePath,
   isSafeStorageStatePath,
   ManualATradLoginRuntime,
   runManualATradLogin
@@ -17,6 +19,8 @@ describe('manual ATrad login script helpers', () => {
     expect(config).toEqual({
       baseUrl: new URL(DEFAULT_ATRAD_BASE_URL).toString(),
       storageStatePath: ATRAD_STORAGE_STATE_PATH,
+      persistentProfilePath: ATRAD_PERSISTENT_PROFILE_PATH,
+      persistentProfile: false,
       headless: false,
       readonlyMode: true
     });
@@ -28,14 +32,27 @@ describe('manual ATrad login script helpers', () => {
     expect(config.baseUrl).toBe('https://example.invalid/login');
   });
 
+  it('parses the persistent profile flag', () => {
+    const config = createManualATradLoginConfig(['--persistent-profile']);
+
+    expect(config.persistentProfile).toBe(true);
+    expect(config.persistentProfilePath).toBe(ATRAD_PERSISTENT_PROFILE_PATH);
+  });
+
   it('keeps the storage state path constrained to the ignored local auth path', () => {
     const gitignore = readFileSync('.gitignore', 'utf8');
 
     expect(ATRAD_STORAGE_STATE_PATH).toBe('playwright/.auth/atrad-storage-state.json');
+    expect(ATRAD_PERSISTENT_PROFILE_PATH).toBe('playwright/.profiles/atrad');
     expect(isSafeStorageStatePath(ATRAD_STORAGE_STATE_PATH)).toBe(true);
+    expect(isSafePersistentProfilePath(ATRAD_PERSISTENT_PROFILE_PATH)).toBe(true);
     expect(isSafeStorageStatePath('storageState.json')).toBe(false);
+    expect(isSafePersistentProfilePath('playwright/.profiles/other')).toBe(false);
     expect(gitignore).toContain('playwright/.auth/');
     expect(gitignore).toContain('playwright/.auth/*');
+    expect(gitignore).toContain('playwright/.profiles/');
+    expect(gitignore).toContain('playwright/.profiles/*');
+    expect(gitignore).toContain('**/.profiles/');
     expect(gitignore).toContain('**/storageState.json');
     expect(gitignore).toContain('*.auth.json');
   });
@@ -52,29 +69,29 @@ describe('manual ATrad login script helpers', () => {
   it('can run with injected browser primitives without launching a real browser', async () => {
     const calls: string[] = [];
     const runtime: ManualATradLoginRuntime = {
-      async launchBrowser() {
-        calls.push('launch');
+      async launchSession() {
+        calls.push('launch-ephemeral');
         return {
-          async newContext() {
-            calls.push('new-context');
-            return {
-              async newPage() {
-                calls.push('new-page');
-                return {
-                  async goto(url: string) {
-                    calls.push(`goto:${url}`);
-                  }
-                };
-              },
-              async storageState(options: { path: string }) {
-                calls.push(`storage:${options.path}`);
-              }
-            };
+          session: {
+            pages() {
+              return [];
+            },
+            async newPage() {
+              calls.push('new-page');
+              return {
+                async goto(url: string) {
+                  calls.push(`goto:${url}`);
+                }
+              };
+            },
+            async storageState(options: { path: string }) {
+              calls.push(`storage:${options.path}`);
+            }
           },
           async close() {
             calls.push('close');
           }
-        } as any;
+        };
       },
       async waitForUser() {
         calls.push('wait');
@@ -89,8 +106,58 @@ describe('manual ATrad login script helpers', () => {
     expect(path).toBe(ATRAD_STORAGE_STATE_PATH);
     expect(calls).toEqual(
       expect.arrayContaining([
-        'launch',
-        'new-context',
+        'launch-ephemeral',
+        'new-page',
+        `goto:${new URL(DEFAULT_ATRAD_BASE_URL).toString()}`,
+        'wait',
+        `storage:${ATRAD_STORAGE_STATE_PATH}`,
+        'close'
+      ])
+    );
+  });
+
+  it('uses the persistent profile runtime path when the flag is present', async () => {
+    const calls: string[] = [];
+    const runtime: ManualATradLoginRuntime = {
+      async launchSession(config) {
+        calls.push(config.persistentProfile ? 'launch-persistent' : 'launch-ephemeral');
+        return {
+          session: {
+            pages() {
+              return [];
+            },
+            async newPage() {
+              calls.push('new-page');
+              return {
+                async goto(url: string) {
+                  calls.push(`goto:${url}`);
+                }
+              };
+            },
+            async storageState(options: { path: string }) {
+              calls.push(`storage:${options.path}`);
+            }
+          },
+          async close() {
+            calls.push('close');
+          }
+        };
+      },
+      async waitForUser() {
+        calls.push('wait');
+      },
+      log(message: string) {
+        calls.push(`log:${message}`);
+      }
+    };
+
+    const config = createManualATradLoginConfig(['--persistent-profile']);
+    const path = await runManualATradLogin(config, runtime);
+
+    expect(path).toBe(ATRAD_PERSISTENT_PROFILE_PATH);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        'launch-persistent',
         'new-page',
         `goto:${new URL(DEFAULT_ATRAD_BASE_URL).toString()}`,
         'wait',

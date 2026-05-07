@@ -101,6 +101,8 @@ ATrad browser session capture is local-only. The `pnpm atrad:login` script opens
 
 The storage state file is written to `playwright/.auth/atrad-storage-state.json`, which is ignored by Git. This step does not scrape market data, does not add ATrad selectors, does not automate credential entry, and does not enable order placement or auto-trading.
 
+ATrad may require more than Playwright storage state alone to preserve a live logged-in session. For that case, `pnpm atrad:login -- --base-url <url> --persistent-profile` and `pnpm atrad:observe-once -- --base-url <url> --persistent-profile` can reuse the local browser profile stored at `playwright/.profiles/atrad`, which is also ignored by Git. No credentials are stored in code, and this still does not enable order placement or auto-trading.
+
 ## ATrad Observe-Once Read-Only Prototype
 
 The `pnpm atrad:observe-once` script is a local read-only prototype that reuses the saved Playwright storage state and extracts visible Market Watch table rows only. It converts those rows into raw market snapshots, passes them through the market data sanitizer, and prints accepted/rejected counts with issues.

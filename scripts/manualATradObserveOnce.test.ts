@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import { MarketDataSanitizer } from '../packages/core/src/index.js';
-import { ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
+import { ATRAD_PERSISTENT_PROFILE_PATH, ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
 import {
   collectPageDiagnostics,
   createManualATradObserveOnceConfig,
@@ -42,6 +42,13 @@ describe('manual ATrad observe-once helpers', () => {
     expect(config.readonlyMode).toBe(true);
   });
 
+  it('parses the persistent profile flag from CLI args', () => {
+    const config = createManualATradObserveOnceConfig(['--persistent-profile']);
+
+    expect(config.persistentProfile).toBe(true);
+    expect(config.persistentProfilePath).toBe(ATRAD_PERSISTENT_PROFILE_PATH);
+  });
+
   it('returns a helpful result when storage state is missing', async () => {
     const calls: string[] = [];
     const runtime = fakeRuntime({
@@ -54,6 +61,25 @@ describe('manual ATrad observe-once helpers', () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain('Run pnpm atrad:login first');
     expect(calls).not.toContain('launch');
+  });
+
+  it('returns a helpful message when a persistent profile is redirected to login', async () => {
+    const calls: string[] = [];
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls,
+      pageUrl: 'https://online.fge.lk/atsweb/login'
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--persistent-profile']),
+      runtime
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('Persistent ATrad session not authenticated');
+    expect(result.message).toContain('--persistent-profile first');
+    expect(calls).toContain('launch-persistent');
   });
 
   it('maps a Market Watch row to a RawMarketSnapshot', () => {
@@ -133,13 +159,37 @@ describe('manual ATrad observe-once helpers', () => {
     expect(result.accepted).toHaveLength(1);
     expect(calls).toEqual(
       expect.arrayContaining([
-        'launch',
+        'launch-storage',
         `context:${ATRAD_STORAGE_STATE_PATH}`,
         'new-page',
         `goto:${new URL(DEFAULT_ATRAD_MARKET_WATCH_URL).toString()}`,
         'close'
       ])
     );
+  });
+
+  it('uses the persistent profile runtime when the flag is present', async () => {
+    const calls: string[] = [];
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls,
+      pageUrl: 'https://atrad.example.com/watch'
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--persistent-profile']),
+      runtime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        'launch-persistent',
+        `goto:${new URL(DEFAULT_ATRAD_MARKET_WATCH_URL).toString()}`,
+        'close'
+      ])
+    );
+    expect(calls).not.toContain(`context:${ATRAD_STORAGE_STATE_PATH}`);
   });
 
   it('runs read-only diagnostics across the page and child frames', async () => {
@@ -252,23 +302,39 @@ function fakeRuntime({
     async storageStateExists() {
       return storageStateExists;
     },
-    async launchBrowser() {
-      calls.push('launch');
+    async launchSession(config) {
+      calls.push(config.persistentProfile ? 'launch-persistent' : 'launch-storage');
+      if (config.persistentProfile) {
+        return {
+          session: createFakeSession({
+            calls,
+            pageUrl,
+            pageTitle,
+            pageDiagnostics,
+            frames
+          }),
+          async close() {
+            calls.push('close');
+          }
+        };
+      }
+
       return {
-        async newContext(options: { storageState: string }) {
-          calls.push(`context:${options.storageState}`);
-          return {
-            async newPage() {
-              calls.push('new-page');
-              return createFakePage({
-                calls,
-                pageUrl,
-                pageTitle,
-                pageDiagnostics,
-                frames
-              });
-            }
-          };
+        session: {
+          pages() {
+            return [];
+          },
+          async newPage() {
+            calls.push('new-page');
+            calls.push(`context:${config.storageStatePath}`);
+            return createFakePage({
+              calls,
+              pageUrl,
+              pageTitle,
+              pageDiagnostics,
+              frames
+            });
+          }
         },
         async close() {
           calls.push('close');
@@ -366,6 +432,36 @@ function createFakePage({
   });
 
   return mainFrame;
+}
+
+function createFakeSession({
+  calls,
+  pageUrl,
+  pageTitle,
+  pageDiagnostics,
+  frames
+}: {
+  calls: string[];
+  pageUrl?: string;
+  pageTitle?: string;
+  pageDiagnostics?: FrameDiagnosticsPayload;
+  frames?: FakeFrameConfig[];
+}) {
+  return {
+    pages() {
+      return [];
+    },
+    async newPage() {
+      calls.push('new-page');
+      return createFakePage({
+        calls,
+        pageUrl,
+        pageTitle,
+        pageDiagnostics,
+        frames
+      });
+    }
+  };
 }
 
 function createFakeFrame({

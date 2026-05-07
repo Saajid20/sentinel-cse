@@ -74,6 +74,9 @@ web_modules/
 playwright/.auth
 playwright/.auth/
 playwright/.auth/*
+playwright/.profiles/
+playwright/.profiles/*
+**/.profiles/
 storageState.json
 **/storageState.json
 *.auth.json

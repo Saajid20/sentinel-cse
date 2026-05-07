@@ -8,7 +8,12 @@ import type {
   MarketSnapshot,
   RawMarketSnapshot
 } from '../packages/core/src/index.js';
-import { ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
+import {
+  ATRAD_PERSISTENT_PROFILE_PATH,
+  ATRAD_STORAGE_STATE_PATH,
+  isSafePersistentProfilePath,
+  isSafeStorageStatePath
+} from './manualATradLogin.js';
 
 export const DEFAULT_ATRAD_MARKET_WATCH_URL = 'https://example.invalid/atrad-market-watch';
 export const ATRAD_MARKET_WATCH_SOURCE = 'atrad-market-watch';
@@ -51,18 +56,16 @@ export type MarketWatchRow = Record<string, string>;
 export interface ManualATradObserveOnceConfig {
   baseUrl: string;
   storageStatePath: string;
+  persistentProfilePath: string;
+  persistentProfile: boolean;
   headless: boolean;
   diagnose: boolean;
   observationTimeoutMs: number;
   readonlyMode: true;
 }
 
-export interface ManualATradBrowserLike {
-  newContext(options: { storageState: string }): Promise<ManualATradContextLike>;
-  close(): Promise<void>;
-}
-
-export interface ManualATradContextLike {
+export interface ManualATradObserveOnceSessionLike {
+  pages(): ManualATradPageLike[];
   newPage(): Promise<ManualATradPageLike>;
 }
 
@@ -77,9 +80,14 @@ export interface ManualATradPageLike extends ManualATradFrameLike {
   frames(): ManualATradFrameLike[];
 }
 
+export interface ManualATradObserveOnceSessionResource {
+  session: ManualATradObserveOnceSessionLike;
+  close(): Promise<void>;
+}
+
 export interface ManualATradObserveOnceRuntime {
   storageStateExists(path: string): Promise<boolean>;
-  launchBrowser(config: ManualATradObserveOnceConfig): Promise<ManualATradBrowserLike>;
+  launchSession(config: ManualATradObserveOnceConfig): Promise<ManualATradObserveOnceSessionResource>;
   now(): number;
   log(message: string): void;
 }
@@ -124,6 +132,8 @@ export function createManualATradObserveOnceConfig(args: string[] = []): ManualA
   return {
     baseUrl: parseBaseUrl(args),
     storageStatePath: ATRAD_STORAGE_STATE_PATH,
+    persistentProfilePath: ATRAD_PERSISTENT_PROFILE_PATH,
+    persistentProfile: args.includes('--persistent-profile'),
     headless: args.includes('--headless'),
     diagnose: args.includes('--diagnose'),
     observationTimeoutMs: parseTimeoutMs(args),
@@ -199,22 +209,38 @@ export async function runManualATradObserveOnce(
     throw new Error('Manual ATrad observe-once requires readonlyMode: true.');
   }
 
+  if (!isSafeStorageStatePath(config.storageStatePath)) {
+    throw new Error(`Unsafe storage state path: ${config.storageStatePath}`);
+  }
+
+  if (!isSafePersistentProfilePath(config.persistentProfilePath)) {
+    throw new Error(`Unsafe persistent profile path: ${config.persistentProfilePath}`);
+  }
+
   assertATradReadOnlySafety('read Market Watch table data');
 
-  if (!(await runtime.storageStateExists(config.storageStatePath))) {
+  if (!config.persistentProfile && !(await runtime.storageStateExists(config.storageStatePath))) {
     const message = `ATrad storage state is missing or expired. Run pnpm atrad:login first. Expected: ${config.storageStatePath}`;
     runtime.log(message);
     return emptyResult(false, message);
   }
 
-  const browser = await runtime.launchBrowser(config);
+  const resource = await runtime.launchSession(config);
   try {
-    const context = await browser.newContext({ storageState: config.storageStatePath });
-    const page = await context.newPage();
+    const page = resource.session.pages()[0] ?? (await resource.session.newPage());
     await page.goto(config.baseUrl, {
       waitUntil: 'domcontentloaded',
       timeout: config.observationTimeoutMs
     });
+
+    const currentUrl = page.url();
+    if (isLoginPageUrl(currentUrl)) {
+      const message = config.persistentProfile
+        ? `Persistent ATrad session not authenticated. Run pnpm atrad:login -- --base-url ${config.baseUrl} --persistent-profile first.`
+        : `ATrad storage-state session not authenticated. Run pnpm atrad:login -- --base-url ${config.baseUrl} first.`;
+      runtime.log(message);
+      return emptyResult(false, message);
+    }
 
     if (config.diagnose) {
       const diagnostics = await collectPageDiagnostics(page);
@@ -250,7 +276,7 @@ export async function runManualATradObserveOnce(
 
     return result;
   } finally {
-    await browser.close();
+    await resource.close();
   }
 }
 
@@ -322,6 +348,14 @@ function parseTimeoutMs(args: string[]): number {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : 30_000;
 }
 
+function isLoginPageUrl(url: string): boolean {
+  try {
+    return new URL(url).pathname.toLowerCase().includes('/login');
+  } catch {
+    return url.toLowerCase().includes('/login');
+  }
+}
+
 function field(row: MarketWatchRow, name: string): string | undefined {
   const value = row[name]?.trim();
   return value && value.length > 0 ? value : undefined;
@@ -348,7 +382,24 @@ function defaultRuntime(): ManualATradObserveOnceRuntime {
         return false;
       }
     },
-    launchBrowser: async (config) => chromium.launch({ headless: config.headless }),
+    launchSession: async (config) => {
+      if (config.persistentProfile) {
+        const context = await chromium.launchPersistentContext(config.persistentProfilePath, {
+          headless: config.headless
+        });
+        return {
+          session: context,
+          close: async () => context.close()
+        };
+      }
+
+      const browser = await chromium.launch({ headless: config.headless });
+      const context = await browser.newContext({ storageState: config.storageStatePath });
+      return {
+        session: context,
+        close: async () => browser.close()
+      };
+    },
     now: () => Date.now(),
     log: (message) => console.log(message)
   };
