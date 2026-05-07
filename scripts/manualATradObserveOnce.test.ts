@@ -12,6 +12,7 @@ import {
   formatObserveOnceSummary,
   ManualATradObserveOnceRuntime,
   marketWatchRowToRawSnapshot,
+  parseDojoWatchGridRow,
   sanitizeMarketWatchRows,
   runManualATradObserveOnce
 } from './manualATradObserveOnce.js';
@@ -192,6 +193,43 @@ describe('manual ATrad observe-once helpers', () => {
     });
   });
 
+  it('parses a Dojo ticker-like row conservatively', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
+      ['ASCO.N0000']
+    );
+
+    expect(row).toEqual({
+      Security: 'ASCO.N0000'
+    });
+  });
+
+  it('parses a rich Dojo row with ticker, bid/ask, last, and volume', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
+      ['ASCO.N0000', 'Associated Motorways PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+    );
+    const rawSnapshot = marketWatchRowToRawSnapshot(row, 1_000);
+
+    expect(row).toMatchObject({
+      Security: 'ASCO.N0000',
+      'Company Name': 'Associated Motorways PLC',
+      'Bid Qty': '1,000',
+      'Bid Price': '54.50',
+      'Ask Price': '55.00',
+      Last: '55.00',
+      Volume: '12,500'
+    });
+    expect(rawSnapshot).toMatchObject({
+      ticker: 'ASCO.N0000',
+      bidDepth: '1000',
+      bestBid: '54.50',
+      bestAsk: '55.00',
+      lastPrice: '55.00',
+      volume: '12500'
+    });
+  });
+
   it('sanitizes numeric strings with commas from Market Watch rows', () => {
     const sanitizer = new MarketDataSanitizer();
 
@@ -226,13 +264,15 @@ describe('manual ATrad observe-once helpers', () => {
           chosenCandidateIndex: 0,
           candidates: [
             {
+              kind: 'table',
               score: 80,
               headerRowIndex: 0,
               headerCells: Object.keys(fakeMarketWatchRow),
               containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
               rows: [Object.values(fakeMarketWatchRow)]
             }
-          ]
+          ],
+          dojoCandidates: []
         };
       }
     });
@@ -358,6 +398,7 @@ describe('manual ATrad observe-once helpers', () => {
         chosenCandidateIndex: 0,
         candidates: [
           {
+            kind: 'table',
             score: 87,
             headerRowIndex: 0,
             headerCells: [
@@ -405,6 +446,72 @@ describe('manual ATrad observe-once helpers', () => {
     expect(lines).toContain('Chosen header row cells:');
     expect(lines).toContain('First 10 visible data row cell arrays:');
     expect(lines).toContain('row looked like header/summary');
+  });
+
+  it('reports detected Dojo watchgrids and ticker-only row rejections in debug output', async () => {
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls: [],
+      extractionCandidates: {
+        chosenCandidateIndex: 0,
+        candidates: [
+          {
+            kind: 'dojo-grid',
+            score: 95,
+            headerRowIndex: 0,
+            headerCells: [
+              'Security',
+              'Company Name',
+              'Bid Qty',
+              'Bid Price',
+              'Ask Price',
+              'Ask Qty',
+              'Last',
+              'Volume'
+            ],
+            containerTextMatches: ['Security', 'Bid Price', 'Ask Price', 'Last', 'Volume'],
+            rows: [
+              ['ASCO.N0000'],
+              ['PKME.N0000', 'Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+            ]
+          }
+        ],
+        dojoCandidates: [
+          {
+            kind: 'dojo-grid',
+            score: 95,
+            headerRowIndex: 0,
+            headerCells: [
+              'Security',
+              'Company Name',
+              'Bid Qty',
+              'Bid Price',
+              'Ask Price',
+              'Ask Qty',
+              'Last',
+              'Volume'
+            ],
+            containerTextMatches: ['Security', 'Bid Price', 'Ask Price', 'Last', 'Volume'],
+            rows: [
+              ['ASCO.N0000'],
+              ['PKME.N0000', 'Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+            ]
+          }
+        ]
+      }
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--debug-rows']),
+      runtime
+    );
+    const lines = formatObserveOnceSummary(result).join('\n');
+
+    expect(result.extractionDebug?.dojoDebug?.gridCount).toBe(1);
+    expect(result.extractionDebug?.dojoDebug?.parsedRows[0]).toEqual({ Security: 'ASCO.N0000' });
+    expect(result.extractionDebug?.dojoDebug?.rowAnalyses[0]?.reasons).toContain('ticker only');
+    expect(lines).toContain('Detected Dojo watchgrid count: 1');
+    expect(lines).toContain('Dojo parsed row 1: {"Security":"ASCO.N0000"}');
   });
 
   it('runs broad debug fallback and header text search when candidate count is zero', async () => {
@@ -641,13 +748,15 @@ function createFakePage({
                 chosenCandidateIndex: 0,
                 candidates: [
                   {
+                    kind: 'table',
                     score: 80,
                     headerRowIndex: 0,
                     headerCells: Object.keys(fakeMarketWatchRow),
                     containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
                     rows: [Object.values(fakeMarketWatchRow)]
                   }
-                ]
+                ],
+                dojoCandidates: []
               }
             );
           }
@@ -707,6 +816,15 @@ function createFakeSession({
 interface ExtractionCandidatesPayload {
   chosenCandidateIndex: number;
   candidates: Array<{
+    kind: 'table' | 'dojo-grid';
+    score: number;
+    headerRowIndex: number;
+    headerCells: string[];
+    containerTextMatches: string[];
+    rows: string[][];
+  }>;
+  dojoCandidates?: Array<{
+    kind: 'dojo-grid';
     score: number;
     headerRowIndex: number;
     headerCells: string[];

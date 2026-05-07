@@ -67,6 +67,7 @@ const PREFERRED_MARKET_WATCH_KEYWORDS = [
 ];
 
 const DIAGNOSTIC_VISIBLE_TEXT_LIMIT = 30;
+const TICKER_PATTERN = /\b[A-Z0-9]{2,12}\.N\d{4}\b/;
 
 export type MarketWatchRow = Record<string, string>;
 
@@ -146,6 +147,7 @@ export interface MarketWatchDebugRowResult {
 }
 
 export interface MarketWatchTableCandidateDebug {
+  kind: 'table' | 'dojo-grid';
   score: number;
   headerRowIndex: number;
   headerCells: string[];
@@ -157,6 +159,12 @@ export interface MarketWatchTableCandidateDebug {
 export interface MarketWatchExtractionDebug {
   candidateCount: number;
   chosenCandidate?: MarketWatchTableCandidateDebug;
+  dojoDebug?: {
+    gridCount: number;
+    sampleRows: string[][];
+    parsedRows: MarketWatchRow[];
+    rowAnalyses: MarketWatchDebugRowResult[];
+  };
   broadScan?: {
     visibleTableCount: number;
     visibleTrCount: number;
@@ -270,6 +278,41 @@ export function buildMarketWatchRowFromCells(headers: string[], cells: string[])
   return mapped;
 }
 
+export function parseDojoWatchGridRow(headers: string[], cells: string[]): MarketWatchRow {
+  let mapped = buildMarketWatchRowFromCells(headers, cells);
+  const normalizedHeaders = headers.map((header) => normalizeMarketWatchText(header));
+  const securityHeaderIndex = normalizedHeaders.findIndex((header) => header === 'Security');
+  const tickerIndex = cells.findIndex((cell) => TICKER_PATTERN.test(cell));
+
+  if (securityHeaderIndex >= 0 && tickerIndex >= 0 && tickerIndex !== securityHeaderIndex) {
+    const offsetMapped: MarketWatchRow = {};
+    normalizedHeaders.forEach((header, index) => {
+      if (!MARKET_WATCH_HEADERS.includes(header)) {
+        return;
+      }
+
+      const value = normalizeMarketWatchText(cells[index + (tickerIndex - securityHeaderIndex)] ?? '');
+      if (value.length > 0) {
+        offsetMapped[header] = value;
+      }
+    });
+
+    if (Object.keys(offsetMapped).length > Object.keys(mapped).length) {
+      mapped = offsetMapped;
+    }
+  }
+
+  if (!mapped.Security) {
+    const tickerText = cells.find((cell) => TICKER_PATTERN.test(cell)) ?? '';
+    const tickerMatch = tickerText.match(TICKER_PATTERN);
+    if (tickerMatch) {
+      mapped.Security = tickerMatch[0];
+    }
+  }
+
+  return mapped;
+}
+
 export function sanitizeMarketWatchRows(
   rows: MarketWatchRow[],
   timestamp: number,
@@ -302,6 +345,7 @@ export function sanitizeMarketWatchRows(
 }
 
 export function analyzeMarketWatchRows(
+  kind: 'table' | 'dojo-grid',
   headers: string[],
   rows: string[][],
   timestamp: number,
@@ -309,7 +353,7 @@ export function analyzeMarketWatchRows(
 ): MarketWatchDebugRowResult[] {
   return rows.slice(0, 10).map((cells) => {
     const reasons: string[] = [];
-    const parsedRow = buildMarketWatchRowFromCells(headers, cells);
+    const parsedRow = parseMarketWatchCandidateRow(kind, headers, cells);
 
     if (cells.length < Math.max(headers.length - 1, 4)) {
       reasons.push('not enough cells');
@@ -319,12 +363,20 @@ export function analyzeMarketWatchRows(
       reasons.push('missing ticker');
     }
 
+    if (field(parsedRow, 'Security') && !numericField(parsedRow, 'Last') && !numericField(parsedRow, 'Bid Price') && !numericField(parsedRow, 'Ask Price')) {
+      reasons.push('ticker only');
+    }
+
     if (!numericField(parsedRow, 'Last')) {
       reasons.push('missing last price');
     }
 
     if (!numericField(parsedRow, 'Bid Price') || !numericField(parsedRow, 'Ask Price')) {
       reasons.push('missing bid/ask');
+    }
+
+    if (field(parsedRow, 'Security') && !numericField(parsedRow, 'Volume') && !numericField(parsedRow, 'Turnover') && !numericField(parsedRow, 'Last')) {
+      reasons.push('unable to map numeric columns');
     }
 
     const rowText = cells.join(' ').toLowerCase();
@@ -355,6 +407,16 @@ export function analyzeMarketWatchRows(
       sanitizerIssueCodes: sanitizerIssueCodes.length > 0 ? sanitizerIssueCodes : undefined
     };
   });
+}
+
+function parseMarketWatchCandidateRow(
+  kind: 'table' | 'dojo-grid',
+  headers: string[],
+  cells: string[]
+): MarketWatchRow {
+  return kind === 'dojo-grid'
+    ? parseDojoWatchGridRow(headers, cells)
+    : buildMarketWatchRowFromCells(headers, cells);
 }
 
 export async function runManualATradObserveOnce(
@@ -454,7 +516,7 @@ export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): 
   }
 
   return chosen.rows
-    .map((cells) => buildMarketWatchRowFromCells(chosen.headerCells, cells))
+    .map((cells) => parseMarketWatchCandidateRow(chosen.kind, chosen.headerCells, cells))
     .filter((row) =>
       ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
         Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
@@ -492,6 +554,7 @@ export async function debugMarketWatchRows(
 
   const extraction = await extractMarketWatchTableCandidates(page);
   const chosen = extraction.candidates[extraction.chosenCandidateIndex];
+  const dojoCandidates = extraction.dojoCandidates ?? [];
 
   return {
     ok: true,
@@ -504,12 +567,28 @@ export async function debugMarketWatchRows(
       candidateCount: extraction.candidates.length,
       chosenCandidate: chosen
         ? {
+            kind: chosen.kind,
             score: chosen.score,
             headerRowIndex: chosen.headerRowIndex,
             headerCells: chosen.headerCells,
             sampleRows: chosen.rows.slice(0, 10),
             containerTextMatches: chosen.containerTextMatches,
-            rowAnalyses: analyzeMarketWatchRows(chosen.headerCells, chosen.rows, timestamp)
+            rowAnalyses: analyzeMarketWatchRows(chosen.kind, chosen.headerCells, chosen.rows, timestamp)
+          }
+        : undefined,
+      dojoDebug: dojoCandidates.length > 0
+        ? {
+            gridCount: dojoCandidates.length,
+            sampleRows: dojoCandidates[0]?.rows.slice(0, 10) ?? [],
+            parsedRows: (dojoCandidates[0]?.rows ?? []).slice(0, 10).map((cells) =>
+              parseMarketWatchCandidateRow('dojo-grid', dojoCandidates[0]?.headerCells ?? [], cells)
+            ),
+            rowAnalyses: analyzeMarketWatchRows(
+              'dojo-grid',
+              dojoCandidates[0]?.headerCells ?? [],
+              dojoCandidates[0]?.rows ?? [],
+              timestamp
+            )
           }
         : undefined,
       broadScan: extraction.broadScan,
@@ -589,6 +668,18 @@ function formatExtractionDebugSummary(debug: MarketWatchExtractionDebug): string
     'Sentinel-CSE ATrad observe-once read-only row debug',
     `Candidate Market Watch tables/sections found: ${debug.candidateCount}`
   ];
+
+  if (debug.dojoDebug) {
+    lines.push(`Detected Dojo watchgrid count: ${debug.dojoDebug.gridCount}`);
+    lines.push('First 10 Dojo row text chunks:');
+    debug.dojoDebug.sampleRows.forEach((row, index) => {
+      lines.push(`Dojo row ${index + 1}: ${JSON.stringify(row)}`);
+    });
+    lines.push('First 10 Dojo parsed row objects:');
+    debug.dojoDebug.parsedRows.forEach((row, index) => {
+      lines.push(`Dojo parsed row ${index + 1}: ${JSON.stringify(row)}`);
+    });
+  }
 
   if (!debug.chosenCandidate) {
     lines.push('Chosen table/section score: none');
@@ -750,6 +841,15 @@ async function extractMarketWatchTableCandidates(
 ): Promise<{
   chosenCandidateIndex: number;
   candidates: Array<{
+    kind: 'table' | 'dojo-grid';
+    score: number;
+    headerRowIndex: number;
+    headerCells: string[];
+    rows: string[][];
+    containerTextMatches: string[];
+  }>;
+  dojoCandidates: Array<{
+    kind: 'dojo-grid';
     score: number;
     headerRowIndex: number;
     headerCells: string[];
@@ -910,17 +1010,93 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     const keywordMatches = preferredKeywords.filter((keyword) =>
       contextText.toLowerCase().includes(keyword.toLowerCase())
     );
+    const bodyRows = visibleTables.flatMap((table) => {
+      const rows = collectRows(table);
+      const startIndex = table === bestHeader.table ? bestHeader.rowIndex + 1 : 0;
+      return rows.slice(startIndex).map((row) => collectRowCells(row));
+    });
+    if (bodyRows.length === 0) {
+      return null;
+    }
 
     return {
+      kind: 'table',
       score: bestHeaderScore * 10 + keywordMatches.length,
       headerRowIndex: bestHeader.rowIndex,
       headerCells: headers,
       containerTextMatches: keywordMatches,
-      rows: visibleTables.flatMap((table) => {
-        const rows = collectRows(table);
-        const startIndex = table === bestHeader.table ? bestHeader.rowIndex + 1 : 0;
-        return rows.slice(startIndex).map((row) => collectRowCells(row));
-      })
+      rows: bodyRows
+    };
+  }
+
+  function collectContainerHeaders(container) {
+    const visibleTables = Array.from(container.querySelectorAll('table')).filter(isVisible);
+    const headers = [];
+    visibleTables.forEach((table) => {
+      collectRows(table)
+        .slice(0, 3)
+        .forEach((row) => {
+          collectRowCells(row).forEach((cell) => {
+            if (allowedHeaders.includes(cell) && !headers.includes(cell)) {
+              headers.push(cell);
+            }
+          });
+        });
+    });
+    return headers;
+  }
+
+  function collectDojoRowChunks(row) {
+    const directVisibleChildren = Array.from(row.children).filter(isVisible);
+    const sourceElements =
+      directVisibleChildren.length > 0
+        ? directVisibleChildren
+        : Array.from(row.querySelectorAll('div,span,td,th')).filter(isVisible);
+    const chunks = [];
+    sourceElements.forEach((element) => {
+      const text = normalize(element.textContent);
+      if (text && !chunks.includes(text)) {
+        chunks.push(text);
+      }
+    });
+    return chunks;
+  }
+
+  function scoreDojoGrid(grid, index) {
+    const className = String(grid.className || '');
+    if (!/dojoxGrid/i.test(className)) {
+      return null;
+    }
+
+    const container = grid.closest('section,article,main,[role="region"],div') || grid.parentElement || grid;
+    const contextText = normalize(container ? container.textContent : grid.textContent);
+    const keywordMatches = preferredKeywords.filter((keyword) =>
+      contextText.toLowerCase().includes(keyword.toLowerCase())
+    );
+    if (
+      !contextText.toLowerCase().includes('security') ||
+      !contextText.toLowerCase().includes('last') ||
+      !contextText.toLowerCase().includes('volume')
+    ) {
+      return null;
+    }
+
+    const headerCells = collectContainerHeaders(container);
+    const rowElements = Array.from(grid.querySelectorAll('[class*="dojoxGridRow"]')).filter(isVisible);
+    const rows = rowElements
+      .map((row) => collectDojoRowChunks(row))
+      .filter((row) => row.length > 0 && row.some((cell) => !allowedHeaders.includes(cell)));
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return {
+      kind: 'dojo-grid',
+      score: keywordMatches.length * 20 + (/watchgrid/i.test(className) ? 20 : 0),
+      headerRowIndex: 0,
+      headerCells,
+      containerTextMatches: keywordMatches,
+      rows
     };
   }
 
@@ -1005,16 +1181,22 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     .map((table, index) => scoreTableGroup([table], index))
     .filter(Boolean)
     .sort((left, right) => right.score - left.score);
-  const scoredTables = [...containerCandidates, ...tableCandidates].sort(
+  const dojoCandidates = Array.from(document.querySelectorAll('div,section,article'))
+    .filter(isVisible)
+    .map((element, index) => scoreDojoGrid(element, index))
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score);
+  const scoredTables = [...containerCandidates, ...tableCandidates, ...dojoCandidates].sort(
     (left, right) => right.score - left.score
   );
-  const gridElements = Array.from(document.querySelectorAll('[role="grid"],[role="table"],[role="row"]'))
+  const gridElements = Array.from(document.querySelectorAll('[role="grid"],[role="table"],[role="row"],[class*="dojoxGrid"]'))
     .filter(isVisible)
     .filter((element) => element.tagName !== 'TABLE');
 
   return {
     chosenCandidateIndex: scoredTables.length > 0 ? 0 : -1,
     candidates: scoredTables,
+    dojoCandidates,
     broadScan: {
       visibleTableCount: tables.length,
       visibleTrCount: Array.from(document.querySelectorAll('tr')).filter(isVisible).length,

@@ -215,13 +215,15 @@ function createFakePage({
           chosenCandidateIndex: 0,
           candidates: [
             {
+              kind: 'table',
               score: 80,
               headerRowIndex: 0,
               headerCells: Object.keys(fakeMarketWatchRow),
               containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
               rows: [Object.values(fakeMarketWatchRow)]
             }
-          ]
+          ],
+          dojoCandidates: []
         };
       }
 
