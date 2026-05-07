@@ -407,6 +407,69 @@ describe('manual ATrad observe-once helpers', () => {
     expect(lines).toContain('row looked like header/summary');
   });
 
+  it('runs broad debug fallback and header text search when candidate count is zero', async () => {
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls: [],
+      extractionCandidates: {
+        chosenCandidateIndex: -1,
+        candidates: [],
+        broadScan: {
+          visibleTableCount: 3,
+          visibleTrCount: 9,
+          visibleRoleGridCount: 1,
+          visibleRoleTableCount: 0,
+          visibleRoleRowCount: 4,
+          tableSummaries: [
+            {
+              index: 0,
+              nearbyTextSnippet: 'Market Watch - Full Watch - Equity',
+              rowCount: 3,
+              firstRows: [
+                ['Security', 'Bid Qty', 'Bid Price'],
+                ['SAMP.N0000', '1,000', '54.50']
+              ],
+              keywordMatches: ['Security', 'Bid', 'Volume']
+            }
+          ],
+          gridSummaries: [
+            {
+              index: 0,
+              typeHint: 'div.grid.market-watch',
+              nearbyTextSnippet: 'Security Bid Qty Ask Qty Last Volume',
+              childTextChunks: ['Security', 'Bid Qty', 'Last'],
+              keywordMatches: ['Security', 'Bid', 'Last', 'Volume']
+            }
+          ]
+        },
+        headerMatches: [
+          {
+            text: 'Security',
+            tagName: 'span',
+            role: '',
+            className: 'market-header',
+            ancestorTextSnippet: 'Market Watch Security Bid Qty Last',
+            ancestorTagChain: 'span>div>section'
+          }
+        ]
+      }
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--debug-rows']),
+      runtime
+    );
+    const lines = formatObserveOnceSummary(result).join('\n');
+
+    expect(result.ok).toBe(true);
+    expect(result.extractionDebug?.candidateCount).toBe(0);
+    expect(lines).toContain('Broad visible table/grid scan');
+    expect(lines).toContain('Visible table count: 3');
+    expect(lines).toContain('Row 1: ["Security","Bid Qty","Bid Price"]');
+    expect(lines).toContain('Header text search fallback');
+    expect(lines).toContain('Header 1: Security [span]');
+  });
+
   it('collects diagnostics through injected read-only page inspection helpers', async () => {
     const diagnostics = await collectPageDiagnostics(
       createFakePage({
@@ -649,6 +712,35 @@ interface ExtractionCandidatesPayload {
     headerCells: string[];
     containerTextMatches: string[];
     rows: string[][];
+  }>;
+  broadScan?: {
+    visibleTableCount: number;
+    visibleTrCount: number;
+    visibleRoleGridCount: number;
+    visibleRoleTableCount: number;
+    visibleRoleRowCount: number;
+    tableSummaries: Array<{
+      index: number;
+      nearbyTextSnippet: string;
+      rowCount: number;
+      firstRows: string[][];
+      keywordMatches: string[];
+    }>;
+    gridSummaries: Array<{
+      index: number;
+      typeHint: string;
+      nearbyTextSnippet: string;
+      childTextChunks: string[];
+      keywordMatches: string[];
+    }>;
+  };
+  headerMatches?: Array<{
+    text: string;
+    tagName: string;
+    role: string;
+    className: string;
+    ancestorTextSnippet: string;
+    ancestorTagChain: string;
   }>;
 }
 

@@ -12,6 +12,7 @@ import {
 } from './manualATradLogin.js';
 import {
   collectPageDiagnostics,
+  debugMarketWatchRows,
   extractVisibleMarketWatchRows,
   formatObserveOnceSummary,
   sanitizeMarketWatchRows,
@@ -25,6 +26,7 @@ export interface ManualATradLoginAndObserveConfig {
   baseUrl: string;
   storageStatePath: string;
   diagnose: boolean;
+  debugRows: boolean;
   headless: false;
   readonlyMode: true;
 }
@@ -54,6 +56,7 @@ export function createManualATradLoginAndObserveConfig(
     baseUrl: parseBaseUrl(args),
     storageStatePath: ATRAD_STORAGE_STATE_PATH,
     diagnose: args.includes('--diagnose'),
+    debugRows: args.includes('--debug-rows'),
     headless: false,
     readonlyMode: true
   };
@@ -107,7 +110,9 @@ export async function runManualATradLoginAndObserve(
     const observationPage = getActivePage(resource.session, initialPage);
     const result = config.diagnose
       ? await runDiagnostics(observationPage)
-      : await runExtraction(observationPage, runtime.now());
+      : config.debugRows
+        ? await debugMarketWatchRows(observationPage, runtime.now())
+        : await runExtraction(observationPage, runtime.now());
 
     for (const line of formatObserveOnceSummary(result)) {
       runtime.log(line);

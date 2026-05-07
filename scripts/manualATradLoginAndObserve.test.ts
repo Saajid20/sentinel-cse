@@ -28,13 +28,14 @@ const fakeMarketWatchRow = {
 };
 
 describe('manual ATrad login-and-observe script helpers', () => {
-  it('uses the login URL by default and parses diagnose flag', () => {
-    const config = createManualATradLoginAndObserveConfig(['--diagnose']);
+  it('uses the login URL by default and parses diagnose/debug flags', () => {
+    const config = createManualATradLoginAndObserveConfig(['--diagnose', '--debug-rows']);
 
     expect(config).toEqual({
       baseUrl: new URL(DEFAULT_ATRAD_BASE_URL).toString(),
       storageStatePath: ATRAD_STORAGE_STATE_PATH,
       diagnose: true,
+      debugRows: true,
       headless: false,
       readonlyMode: true
     });
@@ -90,6 +91,25 @@ describe('manual ATrad login-and-observe script helpers', () => {
     expect(calls).not.toContain('evaluate:initial:string');
   });
 
+  it('reuses observe helpers for same-session row debug after manual confirmation', async () => {
+    const calls: string[] = [];
+    const runtime = createFakeRuntime({
+      calls,
+      activePageMode: 'debug'
+    });
+
+    const result = await runManualATradLoginAndObserve(
+      createManualATradLoginAndObserveConfig(['--debug-rows']),
+      runtime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('row debug');
+    expect(result.extractionDebug?.candidateCount).toBe(1);
+    expect(calls).toContain('evaluate:active:string');
+    expect(calls).not.toContain('evaluate:initial:string');
+  });
+
   it('does not read credentials, environment variables, or include order action strings', () => {
     const source = readFileSync('scripts/manualATradLoginAndObserve.ts', 'utf8');
 
@@ -105,7 +125,7 @@ function createFakeRuntime({
   activePageMode
 }: {
   calls: string[];
-  activePageMode: 'observe' | 'diagnose';
+  activePageMode: 'observe' | 'diagnose' | 'debug';
 }): ManualATradLoginAndObserveRuntime {
   let phase: 'before-wait' | 'after-wait' = 'before-wait';
 
@@ -165,7 +185,7 @@ function createFakePage({
   label: string;
   url: string;
   title: string;
-  mode: 'observe' | 'diagnose';
+  mode: 'observe' | 'diagnose' | 'debug';
 }) {
   return {
     url() {
@@ -190,8 +210,19 @@ function createFakePage({
         return 0;
       }
 
-      if (mode === 'observe' && pageFunction.includes('const allowedHeaders =')) {
-        return [fakeMarketWatchRow];
+      if ((mode === 'observe' || mode === 'debug') && pageFunction.includes('const allowedHeaders =')) {
+        return {
+          chosenCandidateIndex: 0,
+          candidates: [
+            {
+              score: 80,
+              headerRowIndex: 0,
+              headerCells: Object.keys(fakeMarketWatchRow),
+              containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
+              rows: [Object.values(fakeMarketWatchRow)]
+            }
+          ]
+        };
       }
 
       return {

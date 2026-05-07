@@ -157,6 +157,41 @@ export interface MarketWatchTableCandidateDebug {
 export interface MarketWatchExtractionDebug {
   candidateCount: number;
   chosenCandidate?: MarketWatchTableCandidateDebug;
+  broadScan?: {
+    visibleTableCount: number;
+    visibleTrCount: number;
+    visibleRoleGridCount: number;
+    visibleRoleTableCount: number;
+    visibleRoleRowCount: number;
+    tableSummaries: BroadVisibleTableSummary[];
+    gridSummaries: BroadVisibleGridSummary[];
+  };
+  headerMatches?: HeaderSearchMatch[];
+}
+
+export interface BroadVisibleTableSummary {
+  index: number;
+  nearbyTextSnippet: string;
+  rowCount: number;
+  firstRows: string[][];
+  keywordMatches: string[];
+}
+
+export interface BroadVisibleGridSummary {
+  index: number;
+  typeHint: string;
+  nearbyTextSnippet: string;
+  childTextChunks: string[];
+  keywordMatches: string[];
+}
+
+export interface HeaderSearchMatch {
+  text: string;
+  tagName: string;
+  role: string;
+  className: string;
+  ancestorTextSnippet: string;
+  ancestorTagChain: string;
 }
 
 export interface ManualATradObserveOnceResult {
@@ -476,7 +511,9 @@ export async function debugMarketWatchRows(
             containerTextMatches: chosen.containerTextMatches,
             rowAnalyses: analyzeMarketWatchRows(chosen.headerCells, chosen.rows, timestamp)
           }
-        : undefined
+        : undefined,
+      broadScan: extraction.broadScan,
+      headerMatches: extraction.headerMatches
     }
   };
 }
@@ -555,6 +592,42 @@ function formatExtractionDebugSummary(debug: MarketWatchExtractionDebug): string
 
   if (!debug.chosenCandidate) {
     lines.push('Chosen table/section score: none');
+    if (debug.broadScan) {
+      lines.push('Broad visible table/grid scan');
+      lines.push(`Visible table count: ${debug.broadScan.visibleTableCount}`);
+      lines.push(`Visible tr count: ${debug.broadScan.visibleTrCount}`);
+      lines.push(`Visible role=grid count: ${debug.broadScan.visibleRoleGridCount}`);
+      lines.push(`Visible role=table count: ${debug.broadScan.visibleRoleTableCount}`);
+      lines.push(`Visible role=row count: ${debug.broadScan.visibleRoleRowCount}`);
+      debug.broadScan.tableSummaries.forEach((table) => {
+        lines.push(
+          `Table ${table.index}: rows=${table.rowCount}, keywords=${
+            table.keywordMatches.join(' | ') || 'none'
+          }, nearby=${table.nearbyTextSnippet || 'n/a'}`
+        );
+        table.firstRows.forEach((row, rowIndex) => {
+          lines.push(`  Row ${rowIndex + 1}: ${JSON.stringify(row)}`);
+        });
+      });
+      debug.broadScan.gridSummaries.forEach((grid) => {
+        lines.push(
+          `Grid ${grid.index}: ${grid.typeHint}, keywords=${
+            grid.keywordMatches.join(' | ') || 'none'
+          }, nearby=${grid.nearbyTextSnippet || 'n/a'}`
+        );
+        lines.push(`  Child text: ${JSON.stringify(grid.childTextChunks)}`);
+      });
+    }
+    if (debug.headerMatches && debug.headerMatches.length > 0) {
+      lines.push('Header text search fallback');
+      debug.headerMatches.forEach((match, index) => {
+        lines.push(
+          `Header ${index + 1}: ${match.text} [${match.tagName}] role=${match.role || 'n/a'} class=${match.className || 'n/a'}`
+        );
+        lines.push(`  Ancestor text: ${match.ancestorTextSnippet || 'n/a'}`);
+        lines.push(`  Ancestor chain: ${match.ancestorTagChain || 'n/a'}`);
+      });
+    }
     return lines;
   }
 
@@ -683,6 +756,8 @@ async function extractMarketWatchTableCandidates(
     rows: string[][];
     containerTextMatches: string[];
   }>;
+  broadScan: MarketWatchExtractionDebug['broadScan'];
+  headerMatches: HeaderSearchMatch[];
 }> {
   return page.evaluate(BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION);
 }
@@ -751,6 +826,7 @@ function redactSensitiveText(value: string): string {
 const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
   const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};
   const preferredKeywords = ${JSON.stringify(PREFERRED_MARKET_WATCH_KEYWORDS)};
+  const headerSearchTerms = ['Security', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'];
 
   function normalize(value) {
     return String(value || '').replace(/\\s+/g, ' ').trim();
@@ -762,74 +838,193 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
   }
 
-  function scoreTable(table) {
-    const rows = Array.from(table.querySelectorAll('tr')).filter(isVisible);
-    if (rows.length < 2) {
+  function snippet(value, maxLength) {
+    const normalized = normalize(value);
+    return normalized.length > maxLength ? normalized.slice(0, maxLength) : normalized;
+  }
+
+  function collectRows(table) {
+    return Array.from(table.querySelectorAll('tr')).filter(isVisible);
+  }
+
+  function collectRowCells(row) {
+    const directCells = Array.from(row.children).filter((child) =>
+      child.tagName === 'TD' || child.tagName === 'TH'
+    );
+    const cells = directCells.length > 0 ? directCells : Array.from(row.querySelectorAll('td,th'));
+    return cells.map((cell) => normalize(cell.textContent));
+  }
+
+  function tableContextText(table) {
+    const container =
+      table.closest('section,article,main,[role="region"],div') || table.parentElement || table;
+    const siblingText = Array.from((container ? container.children : []) || [])
+      .filter((element) => element !== table)
+      .slice(0, 5)
+      .map((element) => normalize(element.textContent))
+      .join(' ');
+    return normalize((container ? container.textContent : table.textContent) + ' ' + siblingText);
+  }
+
+  function scoreTableGroup(tables, index) {
+    const visibleTables = tables.filter(isVisible);
+    const headerCandidates = visibleTables.flatMap((table) =>
+      collectRows(table).slice(0, 5).map((row, rowIndex) => ({
+        table,
+        rowIndex,
+        cells: collectRowCells(row)
+      }))
+    );
+
+    if (headerCandidates.length === 0) {
       return null;
     }
 
-    let bestHeaderIndex = -1;
-    let bestHeaders = [];
+    let bestHeader = null;
     let bestHeaderScore = 0;
-
-    for (let index = 0; index < Math.min(rows.length, 5); index += 1) {
-      const candidateHeaders = Array.from(rows[index].querySelectorAll('th,td')).map((cell) =>
-        normalize(cell.textContent)
-      );
-      const headerScore = candidateHeaders.filter((header) => allowedHeaders.includes(header)).length;
+    for (const candidate of headerCandidates) {
+      const headerScore = candidate.cells.filter((header) => allowedHeaders.includes(header)).length;
       if (headerScore > bestHeaderScore) {
-        bestHeaderIndex = index;
-        bestHeaders = candidateHeaders;
+        bestHeader = candidate;
         bestHeaderScore = headerScore;
       }
     }
 
-    if (
-      bestHeaderIndex < 0 ||
-      !bestHeaders.includes('Security') ||
-      !bestHeaders.includes('Bid Qty') ||
-      !bestHeaders.includes('Bid Price') ||
-      !bestHeaders.includes('Ask Price') ||
-      !bestHeaders.includes('Ask Qty') ||
-      !bestHeaders.includes('Last')
-    ) {
+    if (!bestHeader) {
       return null;
     }
 
-    const container = table.closest('section,article,div') || table.parentElement || table;
-    const containerText = normalize(container ? container.textContent : table.textContent);
-    const keywordScore = preferredKeywords.filter((keyword) =>
-      containerText.toLowerCase().includes(keyword.toLowerCase())
-    ).length;
+    const headers = bestHeader.cells;
+    const hasEssentialHeaders =
+      headers.includes('Security') &&
+      headers.includes('Bid Qty') &&
+      headers.includes('Bid Price') &&
+      headers.includes('Ask Price') &&
+      headers.includes('Ask Qty') &&
+      headers.includes('Last');
+    if (!hasEssentialHeaders) {
+      return null;
+    }
+
+    const contextText = visibleTables.map((table) => tableContextText(table)).join(' ');
+    const keywordMatches = preferredKeywords.filter((keyword) =>
+      contextText.toLowerCase().includes(keyword.toLowerCase())
+    );
 
     return {
-      rows,
-      headerIndex: bestHeaderIndex,
-      headers: bestHeaders,
-      score: bestHeaderScore * 10 + keywordScore,
-      containerTextMatches: preferredKeywords.filter((keyword) =>
-        containerText.toLowerCase().includes(keyword.toLowerCase())
+      score: bestHeaderScore * 10 + keywordMatches.length,
+      headerRowIndex: bestHeader.rowIndex,
+      headerCells: headers,
+      containerTextMatches: keywordMatches,
+      rows: visibleTables.flatMap((table) => {
+        const rows = collectRows(table);
+        const startIndex = table === bestHeader.table ? bestHeader.rowIndex + 1 : 0;
+        return rows.slice(startIndex).map((row) => collectRowCells(row));
+      })
+    };
+  }
+
+  function summarizeTable(table, index) {
+    const rows = collectRows(table);
+    const contextText = tableContextText(table);
+    return {
+      index,
+      nearbyTextSnippet: snippet(contextText, 160),
+      rowCount: rows.length,
+      firstRows: rows.slice(0, 3).map((row) => collectRowCells(row)),
+      keywordMatches: ['Security', 'Bid', 'Ask', 'Last', 'Volume'].filter((keyword) =>
+        contextText.toLowerCase().includes(keyword.toLowerCase())
       )
     };
   }
 
+  function summarizeGrid(element, index) {
+    const text = normalize(element.textContent);
+    return {
+      index,
+      typeHint: [
+        element.tagName.toLowerCase(),
+        element.getAttribute('role') || '',
+        snippet(element.className || '', 40)
+      ]
+        .filter(Boolean)
+        .join('.'),
+      nearbyTextSnippet: snippet(text, 160),
+      childTextChunks: Array.from(element.children)
+        .filter(isVisible)
+        .slice(0, 5)
+        .map((child) => snippet(child.textContent, 80))
+        .filter(Boolean),
+      keywordMatches: ['Security', 'Bid', 'Ask', 'Last', 'Volume'].filter((keyword) =>
+        text.toLowerCase().includes(keyword.toLowerCase())
+      )
+    };
+  }
+
+  function collectHeaderMatches() {
+    const elements = Array.from(document.querySelectorAll('*')).filter(isVisible);
+    const matches = [];
+    for (const element of elements) {
+      const text = normalize(element.textContent);
+      if (!text) continue;
+      const matchedTerm = headerSearchTerms.find((term) => text === term || text.includes(term));
+      if (!matchedTerm) continue;
+
+      const chain = [];
+      let current = element;
+      for (let index = 0; index < 5 && current; index += 1) {
+        chain.push(current.tagName.toLowerCase());
+        current = current.parentElement;
+      }
+
+      const ancestor = element.parentElement || element;
+      matches.push({
+        text: matchedTerm,
+        tagName: element.tagName.toLowerCase(),
+        role: element.getAttribute('role') || '',
+        className: snippet(element.className || '', 40),
+        ancestorTextSnippet: snippet(ancestor.textContent, 160),
+        ancestorTagChain: chain.join('>')
+      });
+      if (matches.length >= 20) break;
+    }
+    return matches;
+  }
+
   const tables = Array.from(document.querySelectorAll('table')).filter(isVisible);
-  const scoredTables = tables
-    .map((table) => scoreTable(table))
+  const containerCandidates = Array.from(
+    document.querySelectorAll('section,article,main,[role="region"],div')
+  )
+    .filter(isVisible)
+    .map((container) => Array.from(container.querySelectorAll(':scope table')).filter(isVisible))
+    .filter((group) => group.length > 1)
+    .map((group, index) => scoreTableGroup(group, index))
     .filter(Boolean)
     .sort((left, right) => right.score - left.score);
+  const tableCandidates = tables
+    .map((table, index) => scoreTableGroup([table], index))
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score);
+  const scoredTables = [...containerCandidates, ...tableCandidates].sort(
+    (left, right) => right.score - left.score
+  );
+  const gridElements = Array.from(document.querySelectorAll('[role="grid"],[role="table"],[role="row"]'))
+    .filter(isVisible)
+    .filter((element) => element.tagName !== 'TABLE');
 
   return {
     chosenCandidateIndex: scoredTables.length > 0 ? 0 : -1,
-    candidates: scoredTables.map((candidate) => ({
-      score: candidate.score,
-      headerRowIndex: candidate.headerIndex,
-      headerCells: candidate.headers,
-      containerTextMatches: candidate.containerTextMatches,
-      rows: candidate.rows.slice(candidate.headerIndex + 1).map((row) =>
-        Array.from(row.querySelectorAll('td,th')).map((cell) => normalize(cell.textContent))
-      )
-    }))
+    candidates: scoredTables,
+    broadScan: {
+      visibleTableCount: tables.length,
+      visibleTrCount: Array.from(document.querySelectorAll('tr')).filter(isVisible).length,
+      visibleRoleGridCount: Array.from(document.querySelectorAll('[role="grid"]')).filter(isVisible).length,
+      visibleRoleTableCount: Array.from(document.querySelectorAll('[role="table"]')).filter(isVisible).length,
+      visibleRoleRowCount: Array.from(document.querySelectorAll('[role="row"]')).filter(isVisible).length,
+      tableSummaries: tables.slice(0, 20).map((table, index) => summarizeTable(table, index)),
+      gridSummaries: gridElements.slice(0, 20).map((element, index) => summarizeGrid(element, index))
+    },
+    headerMatches: collectHeaderMatches()
   };
 })()`;
 
