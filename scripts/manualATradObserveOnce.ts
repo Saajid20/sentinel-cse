@@ -77,6 +77,7 @@ export interface ManualATradObserveOnceConfig {
   persistentProfile: boolean;
   headless: boolean;
   diagnose: boolean;
+  debugRows: boolean;
   observationTimeoutMs: number;
   readonlyMode: true;
 }
@@ -135,6 +136,29 @@ export interface SanitizedObservedMarketWatchRow {
   issues: MarketDataSanitizationIssue[];
 }
 
+export interface MarketWatchDebugRowResult {
+  cells: string[];
+  cellCount: number;
+  accepted: boolean;
+  reasons: string[];
+  parsedRow?: MarketWatchRow;
+  sanitizerIssueCodes?: string[];
+}
+
+export interface MarketWatchTableCandidateDebug {
+  score: number;
+  headerRowIndex: number;
+  headerCells: string[];
+  sampleRows: string[][];
+  containerTextMatches: string[];
+  rowAnalyses: MarketWatchDebugRowResult[];
+}
+
+export interface MarketWatchExtractionDebug {
+  candidateCount: number;
+  chosenCandidate?: MarketWatchTableCandidateDebug;
+}
+
 export interface ManualATradObserveOnceResult {
   ok: boolean;
   message: string;
@@ -143,6 +167,7 @@ export interface ManualATradObserveOnceResult {
   accepted: SanitizedObservedMarketWatchRow[];
   rejected: SanitizedObservedMarketWatchRow[];
   diagnostics?: ManualATradPageDiagnostics;
+  extractionDebug?: MarketWatchExtractionDebug;
 }
 
 export function createManualATradObserveOnceConfig(args: string[] = []): ManualATradObserveOnceConfig {
@@ -153,6 +178,7 @@ export function createManualATradObserveOnceConfig(args: string[] = []): ManualA
     persistentProfile: args.includes('--persistent-profile'),
     headless: args.includes('--headless'),
     diagnose: args.includes('--diagnose'),
+    debugRows: args.includes('--debug-rows'),
     observationTimeoutMs: parseTimeoutMs(args),
     readonlyMode: true
   };
@@ -240,6 +266,62 @@ export function sanitizeMarketWatchRows(
   };
 }
 
+export function analyzeMarketWatchRows(
+  headers: string[],
+  rows: string[][],
+  timestamp: number,
+  sanitizer: MarketDataSanitizer = new MarketDataSanitizer({ source: ATRAD_MARKET_WATCH_SOURCE })
+): MarketWatchDebugRowResult[] {
+  return rows.slice(0, 10).map((cells) => {
+    const reasons: string[] = [];
+    const parsedRow = buildMarketWatchRowFromCells(headers, cells);
+
+    if (cells.length < Math.max(headers.length - 1, 4)) {
+      reasons.push('not enough cells');
+    }
+
+    if (!field(parsedRow, 'Security')) {
+      reasons.push('missing ticker');
+    }
+
+    if (!numericField(parsedRow, 'Last')) {
+      reasons.push('missing last price');
+    }
+
+    if (!numericField(parsedRow, 'Bid Price') || !numericField(parsedRow, 'Ask Price')) {
+      reasons.push('missing bid/ask');
+    }
+
+    const rowText = cells.join(' ').toLowerCase();
+    const looksLikeHeaderOrSummary =
+      cells.every((cell) => normalizeMarketWatchText(cell).length === 0) ||
+      rowText.includes('security') ||
+      rowText.includes('total') ||
+      rowText.includes('summary');
+    if (looksLikeHeaderOrSummary) {
+      reasons.push('row looked like header/summary');
+    }
+
+    const sanitizerIssueCodes: string[] = [];
+    if (reasons.length === 0) {
+      const result = sanitizer.sanitize(marketWatchRowToRawSnapshot(parsedRow, timestamp));
+      if (!result.accepted) {
+        sanitizerIssueCodes.push(...result.issues.map((issue) => issue.code));
+        reasons.push(`sanitizer rejected: ${sanitizerIssueCodes.join(', ')}`);
+      }
+    }
+
+    return {
+      cells,
+      cellCount: cells.length,
+      accepted: reasons.length === 0,
+      reasons,
+      parsedRow: Object.keys(parsedRow).length > 0 ? parsedRow : undefined,
+      sanitizerIssueCodes: sanitizerIssueCodes.length > 0 ? sanitizerIssueCodes : undefined
+    };
+  });
+}
+
 export async function runManualATradObserveOnce(
   config: ManualATradObserveOnceConfig = createManualATradObserveOnceConfig(),
   runtime: ManualATradObserveOnceRuntime = defaultRuntime()
@@ -300,6 +382,14 @@ export async function runManualATradObserveOnce(
       return result;
     }
 
+    if (config.debugRows) {
+      const result = await debugMarketWatchRows(page, runtime.now());
+      for (const line of formatObserveOnceSummary(result)) {
+        runtime.log(line);
+      }
+      return result;
+    }
+
     const rawRows = await extractVisibleMarketWatchRows(page);
     const sanitized = sanitizeMarketWatchRows(rawRows, runtime.now());
     const result: ManualATradObserveOnceResult = {
@@ -322,12 +412,28 @@ export async function runManualATradObserveOnce(
 export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): Promise<MarketWatchRow[]> {
   assertATradReadOnlySafety('read visible Market Watch table rows');
 
-  return page.evaluate<MarketWatchRow[]>(BROWSER_SAFE_MARKET_WATCH_EVALUATION);
+  const extraction = await extractMarketWatchTableCandidates(page);
+  const chosen = extraction.candidates[extraction.chosenCandidateIndex];
+  if (!chosen) {
+    return [];
+  }
+
+  return chosen.rows
+    .map((cells) => buildMarketWatchRowFromCells(chosen.headerCells, cells))
+    .filter((row) =>
+      ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
+        Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
+      )
+    );
 }
 
 export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): string[] {
   if (result.diagnostics) {
     return formatDiagnosticsSummary(result.diagnostics);
+  }
+
+  if (result.extractionDebug) {
+    return formatExtractionDebugSummary(result.extractionDebug);
   }
 
   return [
@@ -341,6 +447,38 @@ export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): 
       ...row.issues.map((issue) => `- ${issue.code}: ${issue.message}`)
     ])
   ];
+}
+
+export async function debugMarketWatchRows(
+  page: ManualATradPageLike,
+  timestamp: number
+): Promise<ManualATradObserveOnceResult> {
+  assertATradReadOnlySafety('inspect read-only market watch row extraction debug');
+
+  const extraction = await extractMarketWatchTableCandidates(page);
+  const chosen = extraction.candidates[extraction.chosenCandidateIndex];
+
+  return {
+    ok: true,
+    message: 'ATrad observe-once read-only row debug completed.',
+    rawRows: [],
+    rawSnapshots: [],
+    accepted: [],
+    rejected: [],
+    extractionDebug: {
+      candidateCount: extraction.candidates.length,
+      chosenCandidate: chosen
+        ? {
+            score: chosen.score,
+            headerRowIndex: chosen.headerRowIndex,
+            headerCells: chosen.headerCells,
+            sampleRows: chosen.rows.slice(0, 10),
+            containerTextMatches: chosen.containerTextMatches,
+            rowAnalyses: analyzeMarketWatchRows(chosen.headerCells, chosen.rows, timestamp)
+          }
+        : undefined
+    }
+  };
 }
 
 export async function collectPageDiagnostics(
@@ -407,6 +545,45 @@ function numericField(row: MarketWatchRow, name: string): string | undefined {
 
 function normalizeMarketWatchText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function formatExtractionDebugSummary(debug: MarketWatchExtractionDebug): string[] {
+  const lines = [
+    'Sentinel-CSE ATrad observe-once read-only row debug',
+    `Candidate Market Watch tables/sections found: ${debug.candidateCount}`
+  ];
+
+  if (!debug.chosenCandidate) {
+    lines.push('Chosen table/section score: none');
+    return lines;
+  }
+
+  lines.push(`Chosen table/section score: ${debug.chosenCandidate.score}`);
+  lines.push(
+    `Chosen header row cells: ${JSON.stringify(debug.chosenCandidate.headerCells)}`
+  );
+  lines.push(
+    `Chosen table keyword matches: ${
+      debug.chosenCandidate.containerTextMatches.join(' | ') || 'none'
+    }`
+  );
+  lines.push('First 10 visible data row cell arrays:');
+  debug.chosenCandidate.sampleRows.forEach((row, index) => {
+    lines.push(`Row ${index + 1}: ${JSON.stringify(row)}`);
+  });
+  debug.chosenCandidate.rowAnalyses.forEach((row, index) => {
+    lines.push(
+      `Row ${index + 1} (${row.cellCount} cells): ${row.accepted ? 'accepted' : 'rejected'}`
+    );
+    if (!row.accepted) {
+      lines.push(`  Reasons: ${row.reasons.join(' | ')}`);
+    }
+    if (row.sanitizerIssueCodes && row.sanitizerIssueCodes.length > 0) {
+      lines.push(`  Sanitizer issue codes: ${row.sanitizerIssueCodes.join(', ')}`);
+    }
+  });
+
+  return lines;
 }
 
 function cleanNumericCellValue(value: string | undefined): string | undefined {
@@ -495,6 +672,21 @@ async function collectFrameDiagnostics(
   };
 }
 
+async function extractMarketWatchTableCandidates(
+  page: ManualATradPageLike
+): Promise<{
+  chosenCandidateIndex: number;
+  candidates: Array<{
+    score: number;
+    headerRowIndex: number;
+    headerCells: string[];
+    rows: string[][];
+    containerTextMatches: string[];
+  }>;
+}> {
+  return page.evaluate(BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION);
+}
+
 function formatDiagnosticsSummary(diagnostics: ManualATradPageDiagnostics): string[] {
   const lines = [
     'Sentinel-CSE ATrad observe-once read-only diagnostics',
@@ -556,7 +748,7 @@ function redactSensitiveText(value: string): string {
     .trim();
 }
 
-const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
+const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
   const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};
   const preferredKeywords = ${JSON.stringify(PREFERRED_MARKET_WATCH_KEYWORDS)};
 
@@ -614,7 +806,10 @@ const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
       rows,
       headerIndex: bestHeaderIndex,
       headers: bestHeaders,
-      score: bestHeaderScore * 10 + keywordScore
+      score: bestHeaderScore * 10 + keywordScore,
+      containerTextMatches: preferredKeywords.filter((keyword) =>
+        containerText.toLowerCase().includes(keyword.toLowerCase())
+      )
     };
   }
 
@@ -624,28 +819,18 @@ const BROWSER_SAFE_MARKET_WATCH_EVALUATION = `(() => {
     .filter(Boolean)
     .sort((left, right) => right.score - left.score);
 
-  if (scoredTables.length > 0) {
-    const best = scoredTables[0];
-    return best.rows
-      .slice(best.headerIndex + 1)
-      .map((row) => {
-        const cells = Array.from(row.querySelectorAll('td,th')).map((cell) => normalize(cell.textContent));
-        const mapped = {};
-        best.headers.forEach((header, index) => {
-          if (allowedHeaders.includes(header)) {
-            mapped[header] = normalize(cells[index] || '');
-          }
-        });
-        return mapped;
-      })
-      .filter((row) =>
-        ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
-          Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
-        )
-      );
-  }
-
-  return [];
+  return {
+    chosenCandidateIndex: scoredTables.length > 0 ? 0 : -1,
+    candidates: scoredTables.map((candidate) => ({
+      score: candidate.score,
+      headerRowIndex: candidate.headerIndex,
+      headerCells: candidate.headers,
+      containerTextMatches: candidate.containerTextMatches,
+      rows: candidate.rows.slice(candidate.headerIndex + 1).map((row) =>
+        Array.from(row.querySelectorAll('td,th')).map((cell) => normalize(cell.textContent))
+      )
+    }))
+  };
 })()`;
 
 const BROWSER_SAFE_IFRAME_COUNT_EVALUATION = `(() => document.querySelectorAll('iframe').length)()`;

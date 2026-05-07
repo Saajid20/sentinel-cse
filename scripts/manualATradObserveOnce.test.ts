@@ -9,6 +9,7 @@ import {
   createManualATradObserveOnceConfig,
   DEFAULT_ATRAD_MARKET_WATCH_URL,
   extractVisibleMarketWatchRows,
+  formatObserveOnceSummary,
   ManualATradObserveOnceRuntime,
   marketWatchRowToRawSnapshot,
   sanitizeMarketWatchRows,
@@ -51,6 +52,12 @@ describe('manual ATrad observe-once helpers', () => {
 
     expect(config.persistentProfile).toBe(true);
     expect(config.persistentProfilePath).toBe(ATRAD_PERSISTENT_PROFILE_PATH);
+  });
+
+  it('parses the debug rows flag from CLI args', () => {
+    const config = createManualATradObserveOnceConfig(['--debug-rows']);
+
+    expect(config.debugRows).toBe(true);
   });
 
   it('returns a helpful result when storage state is missing', async () => {
@@ -215,7 +222,18 @@ describe('manual ATrad observe-once helpers', () => {
       },
       async evaluate(pageFunction) {
         evaluateInput = pageFunction;
-        return [fakeMarketWatchRow];
+        return {
+          chosenCandidateIndex: 0,
+          candidates: [
+            {
+              score: 80,
+              headerRowIndex: 0,
+              headerCells: Object.keys(fakeMarketWatchRow),
+              containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
+              rows: [Object.values(fakeMarketWatchRow)]
+            }
+          ]
+        };
       }
     });
 
@@ -331,6 +349,64 @@ describe('manual ATrad observe-once helpers', () => {
     );
   });
 
+  it('runs read-only row debug with candidate counts, headers, sample rows, and rejection reasons', async () => {
+    const calls: string[] = [];
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls,
+      extractionCandidates: {
+        chosenCandidateIndex: 0,
+        candidates: [
+          {
+            score: 87,
+            headerRowIndex: 0,
+            headerCells: [
+              'Security',
+              'Bid Qty',
+              'Bid Price',
+              'Ask Price',
+              'Ask Qty',
+              'Last',
+              'Volume',
+              'Turnover'
+            ],
+            containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
+            rows: [
+              ['SAMP.N0000', '1,000', '54.50', '55.00', '800', '55.00', '12,500', '687,500'],
+              ['', '', '', '', '', '', '', ''],
+              ['TOTAL', '', '', '', '', '', '', '']
+            ]
+          }
+        ]
+      }
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--debug-rows']),
+      runtime
+    );
+    const lines = formatObserveOnceSummary(result).join('\n');
+
+    expect(result.ok).toBe(true);
+    expect(result.extractionDebug?.candidateCount).toBe(1);
+    expect(result.extractionDebug?.chosenCandidate?.headerCells).toEqual([
+      'Security',
+      'Bid Qty',
+      'Bid Price',
+      'Ask Price',
+      'Ask Qty',
+      'Last',
+      'Volume',
+      'Turnover'
+    ]);
+    expect(result.extractionDebug?.chosenCandidate?.rowAnalyses[0]?.accepted).toBe(true);
+    expect(result.extractionDebug?.chosenCandidate?.rowAnalyses[1]?.reasons).toContain('missing ticker');
+    expect(lines).toContain('Candidate Market Watch tables/sections found: 1');
+    expect(lines).toContain('Chosen header row cells:');
+    expect(lines).toContain('First 10 visible data row cell arrays:');
+    expect(lines).toContain('row looked like header/summary');
+  });
+
   it('collects diagnostics through injected read-only page inspection helpers', async () => {
     const diagnostics = await collectPageDiagnostics(
       createFakePage({
@@ -368,7 +444,8 @@ function fakeRuntime({
   pageUrl,
   pageTitle,
   pageDiagnostics,
-  frames
+  frames,
+  extractionCandidates
 }: {
   storageStateExists: boolean;
   calls: string[];
@@ -376,6 +453,7 @@ function fakeRuntime({
   pageTitle?: string;
   pageDiagnostics?: FrameDiagnosticsPayload;
   frames?: FakeFrameConfig[];
+  extractionCandidates?: ExtractionCandidatesPayload;
 }): ManualATradObserveOnceRuntime {
   return {
     async storageStateExists() {
@@ -390,7 +468,8 @@ function fakeRuntime({
             pageUrl,
             pageTitle,
             pageDiagnostics,
-            frames
+            frames,
+            extractionCandidates
           }),
           async close() {
             calls.push('close');
@@ -411,7 +490,8 @@ function fakeRuntime({
               pageUrl,
               pageTitle,
               pageDiagnostics,
-              frames
+              frames,
+              extractionCandidates
             });
           }
         },
@@ -444,13 +524,15 @@ function createFakePage({
   pageUrl,
   pageTitle,
   pageDiagnostics,
-  frames
+  frames,
+  extractionCandidates
 }: {
   calls: string[];
   pageUrl?: string;
   pageTitle?: string;
   pageDiagnostics?: FrameDiagnosticsPayload;
   frames?: FakeFrameConfig[];
+  extractionCandidates?: ExtractionCandidatesPayload;
 }) {
   const childFrames = (frames ?? []).map((frame, index) =>
     createFakeFrame({
@@ -491,7 +573,20 @@ function createFakePage({
         calls.push(`frame-evaluate:main:${typeof pageFunction}`);
         if (typeof pageFunction === 'string') {
           if (pageFunction.includes('const allowedHeaders =')) {
-            return [fakeMarketWatchRow];
+            return (
+              extractionCandidates ?? {
+                chosenCandidateIndex: 0,
+                candidates: [
+                  {
+                    score: 80,
+                    headerRowIndex: 0,
+                    headerCells: Object.keys(fakeMarketWatchRow),
+                    containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
+                    rows: [Object.values(fakeMarketWatchRow)]
+                  }
+                ]
+              }
+            );
           }
 
           return (
@@ -518,13 +613,15 @@ function createFakeSession({
   pageUrl,
   pageTitle,
   pageDiagnostics,
-  frames
+  frames,
+  extractionCandidates
 }: {
   calls: string[];
   pageUrl?: string;
   pageTitle?: string;
   pageDiagnostics?: FrameDiagnosticsPayload;
   frames?: FakeFrameConfig[];
+  extractionCandidates?: ExtractionCandidatesPayload;
 }) {
   return {
     pages() {
@@ -537,10 +634,22 @@ function createFakeSession({
         pageUrl,
         pageTitle,
         pageDiagnostics,
-        frames
+        frames,
+        extractionCandidates
       });
     }
   };
+}
+
+interface ExtractionCandidatesPayload {
+  chosenCandidateIndex: number;
+  candidates: Array<{
+    score: number;
+    headerRowIndex: number;
+    headerCells: string[];
+    containerTextMatches: string[];
+    rows: string[][];
+  }>;
 }
 
 function createFakeFrame({
