@@ -230,6 +230,59 @@ describe('manual ATrad observe-once helpers', () => {
     });
   });
 
+  it('maps a merged multi-view Dojo row into a RawMarketSnapshot', () => {
+    const row = parseDojoWatchGridRow(
+      [
+        'Security',
+        'Company Name',
+        'Bid Qty',
+        'Bid Price',
+        'Ask Price',
+        'Ask Qty',
+        'Last',
+        'Last Qty',
+        'Volume',
+        'Turnover'
+      ],
+      [
+        'CDB.N0000',
+        'Ceylon Development Bank PLC',
+        '2,500',
+        '54.50',
+        '55.00',
+        '1,800',
+        '55.00',
+        '500',
+        '12,500',
+        '687,500'
+      ]
+    );
+    const rawSnapshot = marketWatchRowToRawSnapshot(row, 1_000);
+
+    expect(row).toMatchObject({
+      Security: 'CDB.N0000',
+      'Company Name': 'Ceylon Development Bank PLC',
+      'Bid Qty': '2,500',
+      'Bid Price': '54.50',
+      'Ask Price': '55.00',
+      'Ask Qty': '1,800',
+      Last: '55.00',
+      'Last Qty': '500',
+      Volume: '12,500',
+      Turnover: '687,500'
+    });
+    expect(rawSnapshot).toMatchObject({
+      ticker: 'CDB.N0000',
+      bidDepth: '2500',
+      bestBid: '54.50',
+      bestAsk: '55.00',
+      askDepth: '1800',
+      lastPrice: '55.00',
+      volume: '12500',
+      totalTurnover: '687500'
+    });
+  });
+
   it('sanitizes numeric strings with commas from Market Watch rows', () => {
     const sanitizer = new MarketDataSanitizer();
 
@@ -280,6 +333,110 @@ describe('manual ATrad observe-once helpers', () => {
     expect(rows).toEqual([fakeMarketWatchRow]);
     expect(typeof evaluateInput).toBe('string');
     expect(String(evaluateInput)).not.toContain('__name');
+  });
+
+  it('dedupes duplicate Dojo ticker rows and keeps the richer merged row', async () => {
+    const rows = await extractVisibleMarketWatchRows({
+      async goto() {
+        throw new Error('goto should not be called by extractor');
+      },
+      async evaluate() {
+        return {
+          chosenCandidateIndex: 0,
+          candidates: [
+            {
+              kind: 'dojo-grid',
+              score: 110,
+              headerRowIndex: 0,
+              headerCells: [
+                'Security',
+                'Company Name',
+                'Bid Qty',
+                'Bid Price',
+                'Ask Price',
+                'Ask Qty',
+                'Last',
+                'Volume'
+              ],
+              containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
+              rows: [
+                ['CDB.N0000'],
+                [
+                  'CDB.N0000',
+                  'Ceylon Development Bank PLC',
+                  '2,500',
+                  '54.50',
+                  '55.00',
+                  '1,800',
+                  '55.00',
+                  '12,500'
+                ]
+              ]
+            }
+          ],
+          dojoCandidates: [
+            {
+              kind: 'dojo-grid',
+              score: 110,
+              headerRowIndex: 0,
+              headerCells: [
+                'Security',
+                'Company Name',
+                'Bid Qty',
+                'Bid Price',
+                'Ask Price',
+                'Ask Qty',
+                'Last',
+                'Volume'
+              ],
+              containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
+              rows: [
+                ['CDB.N0000'],
+                [
+                  'CDB.N0000',
+                  'Ceylon Development Bank PLC',
+                  '2,500',
+                  '54.50',
+                  '55.00',
+                  '1,800',
+                  '55.00',
+                  '12,500'
+                ]
+              ],
+              viewCount: 2,
+              viewSummaries: [
+                {
+                  viewIndex: 0,
+                  rowCount: 2,
+                  firstRows: [['CDB.N0000'], ['ATL.R0000']]
+                },
+                {
+                  viewIndex: 1,
+                  rowCount: 2,
+                  firstRows: [
+                    ['Ceylon Development Bank PLC', '2,500', '54.50', '55.00', '1,800', '55.00', '12,500'],
+                    ['ACL Cables PLC', '900', '72.00', '72.50', '100', '72.25', '4,200']
+                  ]
+                }
+              ]
+            }
+          ]
+        };
+      }
+    });
+
+    expect(rows).toEqual([
+      {
+        Security: 'CDB.N0000',
+        'Company Name': 'Ceylon Development Bank PLC',
+        'Bid Qty': '2,500',
+        'Bid Price': '54.50',
+        'Ask Price': '55.00',
+        'Ask Qty': '1,800',
+        Last: '55.00',
+        Volume: '12,500'
+      }
+    ]);
   });
 
   it('runs observe-once with an injected fake browser runtime', async () => {
@@ -495,6 +652,22 @@ describe('manual ATrad observe-once helpers', () => {
             rows: [
               ['ASCO.N0000'],
               ['PKME.N0000', 'Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+            ],
+            viewCount: 2,
+            viewSummaries: [
+              {
+                viewIndex: 0,
+                rowCount: 2,
+                firstRows: [['ASCO.N0000'], ['PKME.N0000']]
+              },
+              {
+                viewIndex: 1,
+                rowCount: 2,
+                firstRows: [
+                  ['Associated Motorways PLC'],
+                  ['Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+                ]
+              }
             ]
           }
         ]
@@ -508,9 +681,13 @@ describe('manual ATrad observe-once helpers', () => {
     const lines = formatObserveOnceSummary(result).join('\n');
 
     expect(result.extractionDebug?.dojoDebug?.gridCount).toBe(1);
+    expect(result.extractionDebug?.dojoDebug?.viewCount).toBe(2);
     expect(result.extractionDebug?.dojoDebug?.parsedRows[0]).toEqual({ Security: 'ASCO.N0000' });
     expect(result.extractionDebug?.dojoDebug?.rowAnalyses[0]?.reasons).toContain('ticker only');
     expect(lines).toContain('Detected Dojo watchgrid count: 1');
+    expect(lines).toContain('Dojo grid view count: 2');
+    expect(lines).toContain('Dojo view 0: rows=2');
+    expect(lines).toContain('Dojo row 2: ["PKME.N0000","Plastics & Metal Products PLC","1,000","54.50","55.00","800","55.00","12,500"]');
     expect(lines).toContain('Dojo parsed row 1: {"Security":"ASCO.N0000"}');
   });
 
@@ -830,6 +1007,12 @@ interface ExtractionCandidatesPayload {
     headerCells: string[];
     containerTextMatches: string[];
     rows: string[][];
+    viewCount?: number;
+    viewSummaries?: Array<{
+      viewIndex: number;
+      rowCount: number;
+      firstRows: string[][];
+    }>;
   }>;
   broadScan?: {
     visibleTableCount: number;

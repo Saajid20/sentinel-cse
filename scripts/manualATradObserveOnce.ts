@@ -156,11 +156,19 @@ export interface MarketWatchTableCandidateDebug {
   rowAnalyses: MarketWatchDebugRowResult[];
 }
 
+export interface DojoGridViewSummary {
+  viewIndex: number;
+  rowCount: number;
+  firstRows: string[][];
+}
+
 export interface MarketWatchExtractionDebug {
   candidateCount: number;
   chosenCandidate?: MarketWatchTableCandidateDebug;
   dojoDebug?: {
     gridCount: number;
+    viewCount: number;
+    viewSummaries: DojoGridViewSummary[];
     sampleRows: string[][];
     parsedRows: MarketWatchRow[];
     rowAnalyses: MarketWatchDebugRowResult[];
@@ -311,6 +319,32 @@ export function parseDojoWatchGridRow(headers: string[], cells: string[]): Marke
   }
 
   return mapped;
+}
+
+function scoreMarketWatchRow(row: MarketWatchRow): number {
+  return MARKET_WATCH_HEADERS.reduce((score, header) => {
+    if (!field(row, header)) {
+      return score;
+    }
+
+    return score + (numericField(row, header) ? 2 : 1);
+  }, 0);
+}
+
+function dedupeDojoMarketWatchRows(rows: MarketWatchRow[]): MarketWatchRow[] {
+  const deduped = new Map<string, MarketWatchRow>();
+
+  for (const row of rows) {
+    const ticker = field(row, 'Security');
+    const key = ticker ?? JSON.stringify(row);
+    const existing = deduped.get(key);
+
+    if (!existing || scoreMarketWatchRow(row) > scoreMarketWatchRow(existing)) {
+      deduped.set(key, row);
+    }
+  }
+
+  return Array.from(deduped.values());
 }
 
 export function sanitizeMarketWatchRows(
@@ -515,13 +549,17 @@ export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): 
     return [];
   }
 
-  return chosen.rows
+  const parsedRows = chosen.rows
     .map((cells) => parseMarketWatchCandidateRow(chosen.kind, chosen.headerCells, cells))
     .filter((row) =>
       ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
         Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
       )
     );
+
+  return chosen.kind === 'dojo-grid'
+    ? dedupeDojoMarketWatchRows(parsedRows)
+    : parsedRows;
 }
 
 export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): string[] {
@@ -579,6 +617,8 @@ export async function debugMarketWatchRows(
       dojoDebug: dojoCandidates.length > 0
         ? {
             gridCount: dojoCandidates.length,
+            viewCount: dojoCandidates[0]?.viewCount ?? 0,
+            viewSummaries: dojoCandidates[0]?.viewSummaries ?? [],
             sampleRows: dojoCandidates[0]?.rows.slice(0, 10) ?? [],
             parsedRows: (dojoCandidates[0]?.rows ?? []).slice(0, 10).map((cells) =>
               parseMarketWatchCandidateRow('dojo-grid', dojoCandidates[0]?.headerCells ?? [], cells)
@@ -671,6 +711,14 @@ function formatExtractionDebugSummary(debug: MarketWatchExtractionDebug): string
 
   if (debug.dojoDebug) {
     lines.push(`Detected Dojo watchgrid count: ${debug.dojoDebug.gridCount}`);
+    lines.push(`Dojo grid view count: ${debug.dojoDebug.viewCount}`);
+    lines.push('First 5 Dojo view summaries:');
+    debug.dojoDebug.viewSummaries.slice(0, 5).forEach((view) => {
+      lines.push(`Dojo view ${view.viewIndex}: rows=${view.rowCount}`);
+      view.firstRows.forEach((row, rowIndex) => {
+        lines.push(`  View row ${rowIndex + 1}: ${JSON.stringify(row)}`);
+      });
+    });
     lines.push('First 10 Dojo row text chunks:');
     debug.dojoDebug.sampleRows.forEach((row, index) => {
       lines.push(`Dojo row ${index + 1}: ${JSON.stringify(row)}`);
@@ -855,6 +903,8 @@ async function extractMarketWatchTableCandidates(
     headerCells: string[];
     rows: string[][];
     containerTextMatches: string[];
+    viewCount: number;
+    viewSummaries: DojoGridViewSummary[];
   }>;
   broadScan: MarketWatchExtractionDebug['broadScan'];
   headerMatches: HeaderSearchMatch[];
@@ -1046,14 +1096,9 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     return headers;
   }
 
-  function collectDojoRowChunks(row) {
-    const directVisibleChildren = Array.from(row.children).filter(isVisible);
-    const sourceElements =
-      directVisibleChildren.length > 0
-        ? directVisibleChildren
-        : Array.from(row.querySelectorAll('div,span,td,th')).filter(isVisible);
+  function collectTextChunks(elements) {
     const chunks = [];
-    sourceElements.forEach((element) => {
+    elements.forEach((element) => {
       const text = normalize(element.textContent);
       if (text && !chunks.includes(text)) {
         chunks.push(text);
@@ -1062,7 +1107,95 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     return chunks;
   }
 
-  function scoreDojoGrid(grid, index) {
+  function collectDojoCellChunks(row) {
+    const visibleCells = Array.from(
+      row.querySelectorAll('.dojoxGridCell, td, th, span, div')
+    ).filter((element) => isVisible(element));
+    const preferredCells = visibleCells.filter((element) =>
+      element.classList.contains('dojoxGridCell') ||
+      element.tagName === 'TD' ||
+      element.tagName === 'TH'
+    );
+    const cells = preferredCells.length > 0 ? preferredCells : visibleCells;
+    return collectTextChunks(cells);
+  }
+
+  function collectDojoRowsFromView(view) {
+    const rowElements = Array.from(
+      view.querySelectorAll('.dojoxGridContent [class*="dojoxGridRow"], .dojoxGridRowTable [class*="dojoxGridRow"], [class*="dojoxGridRow"]')
+    ).filter((row) => isVisible(row));
+    const logicalRows = [];
+
+    rowElements.forEach((row) => {
+      const cells = collectDojoCellChunks(row);
+      const rowText = normalize(row.textContent).toLowerCase();
+      if (
+        cells.length === 0 ||
+        cells.every((cell) => allowedHeaders.includes(cell)) ||
+        rowText.includes('security') && rowText.includes('bid') && rowText.includes('ask')
+      ) {
+        return;
+      }
+
+      logicalRows.push(cells);
+    });
+
+    return logicalRows;
+  }
+
+  function mergeDojoViewRows(viewRows) {
+    const rowCount = viewRows.reduce((max, rows) => Math.max(max, rows.length), 0);
+    const mergedRows = [];
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      const merged = [];
+      viewRows.forEach((rows) => {
+        const row = rows[rowIndex] || [];
+        row.forEach((cell) => {
+          if (cell) {
+            merged.push(cell);
+          }
+        });
+      });
+
+      if (merged.length > 0) {
+        mergedRows.push(merged);
+      }
+    }
+
+    return mergedRows;
+  }
+
+  function dedupeMergedDojoRows(rows) {
+    const deduped = [];
+    const bestByTicker = new Map();
+
+    function rowScore(row) {
+      return row.reduce((score, cell) => {
+        if (!cell) return score;
+        return score + (/\\d/.test(cell) ? 2 : 1);
+      }, 0);
+    }
+
+    rows.forEach((row) => {
+      const tickerCell = row.find((cell) => /\\b[A-Z0-9]{2,12}\\.N\\d{4}\\b/.test(cell));
+      const key = tickerCell || JSON.stringify(row);
+      const existingIndex = bestByTicker.get(key);
+      if (existingIndex === undefined) {
+        bestByTicker.set(key, deduped.length);
+        deduped.push(row);
+        return;
+      }
+
+      if (rowScore(row) > rowScore(deduped[existingIndex])) {
+        deduped[existingIndex] = row;
+      }
+    });
+
+    return deduped;
+  }
+
+  function scoreDojoGrid(grid) {
     const className = String(grid.className || '');
     if (!/dojoxGrid/i.test(className)) {
       return null;
@@ -1082,13 +1215,20 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     }
 
     const headerCells = collectContainerHeaders(container);
-    const rowElements = Array.from(grid.querySelectorAll('[class*="dojoxGridRow"]')).filter(isVisible);
-    const rows = rowElements
-      .map((row) => collectDojoRowChunks(row))
-      .filter((row) => row.length > 0 && row.some((cell) => !allowedHeaders.includes(cell)));
+    const views = Array.from(grid.querySelectorAll('.dojoxGridView')).filter(isVisible);
+    const viewRows = (views.length > 0 ? views : [grid]).map((view) => collectDojoRowsFromView(view));
+    const rows = dedupeMergedDojoRows(mergeDojoViewRows(viewRows)).filter(
+      (row) => row.length > 0 && row.some((cell) => !allowedHeaders.includes(cell))
+    );
     if (rows.length === 0) {
       return null;
     }
+
+    const viewSummaries = viewRows.map((rows, viewIndex) => ({
+      viewIndex,
+      rowCount: rows.length,
+      firstRows: rows.slice(0, 3)
+    }));
 
     return {
       kind: 'dojo-grid',
@@ -1096,7 +1236,9 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
       headerRowIndex: 0,
       headerCells,
       containerTextMatches: keywordMatches,
-      rows
+      rows,
+      viewCount: views.length > 0 ? views.length : 1,
+      viewSummaries
     };
   }
 
@@ -1183,7 +1325,7 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
     .sort((left, right) => right.score - left.score);
   const dojoCandidates = Array.from(document.querySelectorAll('div,section,article'))
     .filter(isVisible)
-    .map((element, index) => scoreDojoGrid(element, index))
+    .map((element) => scoreDojoGrid(element))
     .filter(Boolean)
     .sort((left, right) => right.score - left.score);
   const scoredTables = [...containerCandidates, ...tableCandidates, ...dojoCandidates].sort(
