@@ -46,6 +46,28 @@ const fakeMarketWatchRow = {
   Time: '10:35:00'
 };
 
+const placeholderMarketWatchRow = {
+  Security: 'IDLE.N0000',
+  'Company Name': 'Inactive PLC',
+  'Bid Qty': '-',
+  'Bid Price': '-',
+  'Ask Price': '-',
+  'Ask Qty': '-',
+  Last: '-',
+  'Last Qty': '-',
+  Change: '-',
+  '% Change': '-',
+  High: '0.00',
+  Low: '0.00',
+  VWA: '0.00',
+  Volume: '0',
+  Turnover: '-',
+  Trades: '-',
+  'Price Close': '0.00',
+  'Buy Sentiment': '-',
+  Time: '--:--:--'
+};
+
 describe('manual ATrad observe-once helpers', () => {
   it('parses the diagnose flag from CLI args', () => {
     const config = createManualATradObserveOnceConfig(['--base-url', 'https://example.com/watch', '--diagnose']);
@@ -979,6 +1001,51 @@ describe('manual ATrad observe-once helpers', () => {
     });
 
     expect(assessment.issues.map((issue) => issue.code)).toContain('VWA_OUTSIDE_PRICE_RANGE');
+  });
+
+  it('marks placeholder rows as inactive and non-tradeable', () => {
+    const sanitized = sanitizeMarketWatchRows([placeholderMarketWatchRow], 1_000);
+    const assessment = sanitized.qualityAssessments[0];
+
+    expect(assessment?.status).toBe('REJECTED');
+    expect(assessment?.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining([
+        'PLACEHOLDER_ROW',
+        'INACTIVE_MARKET_ROW',
+        'ZERO_VOLUME_PLACEHOLDER',
+        'MISSING_LIVE_BID_ASK',
+        'PLACEHOLDER_TIME',
+        'NON_TRADEABLE_ROW'
+      ])
+    );
+  });
+
+  it('does not allow placeholder rows to become usable', () => {
+    const sanitized = sanitizeMarketWatchRows([placeholderMarketWatchRow], 1_000);
+    const partition = partitionATradSnapshotsByConfidence(
+      sanitized.rowResults,
+      sanitized.qualityAssessments
+    );
+
+    expect(partition.usableSnapshots).toHaveLength(0);
+    expect(partition.rejectedSnapshots).toHaveLength(1);
+  });
+
+  it('keeps valid rows usable while rejecting placeholder time plus placeholder prices', () => {
+    const validSanitized = sanitizeMarketWatchRows([fakeMarketWatchRow], 1_000);
+    const validPartition = partitionATradSnapshotsByConfidence(
+      validSanitized.rowResults,
+      validSanitized.qualityAssessments
+    );
+    const placeholderAssessment = assessATradParsedSnapshotQuality(
+      placeholderMarketWatchRow,
+      marketWatchRowToRawSnapshot(placeholderMarketWatchRow, 1_000),
+      { accepted: false, issues: [{ code: 'INVALID_BID_ASK' }] }
+    );
+
+    expect(validPartition.usableSnapshots).toHaveLength(1);
+    expect(placeholderAssessment.issues.map((issue) => issue.code)).toContain('PLACEHOLDER_TIME');
+    expect(placeholderAssessment.status).toBe('REJECTED');
   });
 
   it('preserves ASPH-like sanitizer rejection while marking the row rejected', () => {

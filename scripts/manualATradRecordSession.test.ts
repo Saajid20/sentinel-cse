@@ -60,6 +60,27 @@ const rejectedRow = {
   Turnover: '50,500'
 };
 
+const placeholderRow = {
+  Security: 'IDLE.N0000',
+  'Company Name': 'Inactive PLC',
+  'Bid Qty': '-',
+  'Bid Price': '-',
+  'Ask Price': '-',
+  'Ask Qty': '-',
+  Last: '-',
+  'Last Qty': '-',
+  Change: '-',
+  High: '0.00',
+  Low: '0.00',
+  VWA: '0.00',
+  Volume: '0',
+  Turnover: '-',
+  Trades: '-',
+  'Price Close': '0.00',
+  'Buy Sentiment': '-',
+  Time: '--:--:--'
+};
+
 describe('manual ATrad record-session helpers', () => {
   it('parses recorder CLI flags', () => {
     const config = createManualATradRecordSessionConfig(
@@ -131,9 +152,9 @@ describe('manual ATrad record-session helpers', () => {
     expect(runtime.calls).toContain('wait');
     expect(runtime.calls.filter((call) => call === 'sleep:15000')).toHaveLength(2);
     expect(runtime.calls).toContain('log:ATrad Market Watch ready: rawRows=3, headers=yes');
-    expect(runtime.calls).toContain('log:Tick 1: usable=1, quarantined=1, rejected=1');
-    expect(runtime.calls).toContain('log:Tick 2: usable=1, quarantined=1, rejected=1');
-    expect(runtime.calls).toContain('log:Tick 3: usable=1, quarantined=1, rejected=1');
+    expect(runtime.calls).toContain('log:Tick 1: usable=1, quarantined=1, rejected=1, placeholders=0');
+    expect(runtime.calls).toContain('log:Tick 2: usable=1, quarantined=1, rejected=1, placeholders=0');
+    expect(runtime.calls).toContain('log:Tick 3: usable=1, quarantined=1, rejected=1, placeholders=0');
   });
 
   it('includes quarantined rows only in the optional quarantine section', async () => {
@@ -155,6 +176,28 @@ describe('manual ATrad record-session helpers', () => {
         issueCodes: ['TRAILING_FIELDS_SHIFTED']
       }
     ]);
+  });
+
+  it('tracks placeholder rows and does not record them as usable snapshots', async () => {
+    const runtime = createFakeRuntime({ includePlaceholderRow: true });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1'], runtime.now()),
+      runtime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.session.totals.ticksAttempted).toBe(1);
+    expect(result.session.totals.rawRowsExtracted).toBe(4);
+    expect(result.session.totals.usableSnapshots).toBe(1);
+    expect(result.session.snapshots.map((snapshot) => snapshot.ticker)).toEqual(['HIGH.N0000']);
+    expect(result.session.diagnostics[0]).toMatchObject({
+      placeholderRows: 1,
+      inactiveRows: 1,
+      zeroVolumeRows: 1
+    });
+    expect(runtime.calls).toContain(
+      'log:Tick 1: usable=1, quarantined=1, rejected=2, placeholders=1'
+    );
   });
 
   it('allows medium confidence rows when explicitly configured', async () => {
@@ -271,6 +314,7 @@ describe('manual ATrad record-session helpers', () => {
 
 function createFakeRuntime(options: {
   readinessSequence?: Array<'ready' | 'not-ready'>;
+  includePlaceholderRow?: boolean;
 } = {}): ManualATradRecordSessionRuntime & {
   calls: string[];
   writes: Array<{ path: string; contents: string }>;
@@ -289,11 +333,25 @@ function createFakeRuntime(options: {
       return {
         session: {
           pages() {
-            return [createFakePage(calls, readinessSequence, () => extractionAttempt, () => { extractionAttempt += 1; })];
+            return [
+              createFakePage(
+                calls,
+                readinessSequence,
+                () => extractionAttempt,
+                () => { extractionAttempt += 1; },
+                options.includePlaceholderRow === true
+              )
+            ];
           },
           async newPage() {
             calls.push('new-page');
-            return createFakePage(calls, readinessSequence, () => extractionAttempt, () => { extractionAttempt += 1; });
+            return createFakePage(
+              calls,
+              readinessSequence,
+              () => extractionAttempt,
+              () => { extractionAttempt += 1; },
+              options.includePlaceholderRow === true
+            );
           }
         },
         async close() {
@@ -329,7 +387,8 @@ function createFakePage(
   calls: string[],
   readinessSequence: Array<'ready' | 'not-ready'>,
   getExtractionAttempt: () => number,
-  incrementExtractionAttempt: () => void
+  incrementExtractionAttempt: () => void,
+  includePlaceholderRow: boolean
 ) {
   const headers = Object.keys(highConfidenceRow);
   const asRowCells = (row: Record<string, string>) => headers.map((header) => row[header] ?? '');
@@ -381,7 +440,8 @@ function createFakePage(
               rows: [
                 asRowCells(highConfidenceRow),
                 asRowCells(mediumConfidenceRow),
-                asRowCells(rejectedRow)
+                asRowCells(rejectedRow),
+                ...(includePlaceholderRow ? [asRowCells(placeholderRow)] : [])
               ]
             }
           ],

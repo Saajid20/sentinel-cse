@@ -154,6 +154,12 @@ export type ATradParsedRowQualityStatus =
   | 'REJECTED';
 
 export type ATradParsedRowQualityIssueCode =
+  | 'PLACEHOLDER_ROW'
+  | 'INACTIVE_MARKET_ROW'
+  | 'ZERO_VOLUME_PLACEHOLDER'
+  | 'MISSING_LIVE_BID_ASK'
+  | 'PLACEHOLDER_TIME'
+  | 'NON_TRADEABLE_ROW'
   | 'LAST_OUTSIDE_BID_ASK_RANGE'
   | 'LAST_LOOKS_LIKE_QUANTITY'
   | 'VOLUME_LOOKS_LIKE_PERCENT'
@@ -574,7 +580,84 @@ export function assessATradParsedSnapshotQuality(
   const bid = parseNumericValue(row['Bid Price']);
   const ask = parseNumericValue(row['Ask Price']);
   const last = parseNumericValue(row.Last);
+  const bidDepth = parseNumericValue(row['Bid Qty']);
+  const askDepth = parseNumericValue(row['Ask Qty']);
+  const volume = parseNumericValue(row.Volume);
   const vwa = parseNumericValue(row.VWA);
+  const priceClose = parseNumericValue(row['Price Close']);
+  const placeholderTime = isPlaceholderTimeValue(row.Time);
+  const missingLiveBidAsk = bid === undefined || ask === undefined || bidDepth === undefined || askDepth === undefined;
+  const missingLiveLast = last === undefined;
+  const zeroVolumePlaceholder = volume === 0;
+  const placeholderFieldCount = [
+    row['Bid Qty'],
+    row['Bid Price'],
+    row['Ask Price'],
+    row['Ask Qty'],
+    row.Last,
+    row.Turnover,
+    row.Trades,
+    row.Time
+  ].filter((value) => isPlaceholderCellValue(value)).length;
+  const noRealTradeData =
+    bid === undefined &&
+    ask === undefined &&
+    last === undefined &&
+    (volume === undefined || volume === 0) &&
+    (vwa === undefined || vwa === 0) &&
+    (priceClose === undefined || priceClose === 0);
+  const placeholderRow =
+    placeholderFieldCount >= 4 &&
+    (missingLiveBidAsk || missingLiveLast) &&
+    (zeroVolumePlaceholder || placeholderTime || noRealTradeData);
+
+  if (placeholderTime) {
+    issues.push(issue('PLACEHOLDER_TIME', 'Time is still a placeholder value.', 'Time'));
+  }
+
+  if (missingLiveBidAsk && (placeholderRow || noRealTradeData)) {
+    issues.push(
+      issue(
+        'MISSING_LIVE_BID_ASK',
+        'Bid/ask prices or depths are missing, so the row is not a live tradable quote.',
+        'Bid Price'
+      )
+    );
+  }
+
+  if (zeroVolumePlaceholder && (placeholderRow || noRealTradeData)) {
+    issues.push(
+      issue(
+        'ZERO_VOLUME_PLACEHOLDER',
+        'Volume is zero while the row still looks like a placeholder market row.',
+        'Volume'
+      )
+    );
+  }
+
+  if (placeholderRow) {
+    issues.push(
+      issue(
+        'PLACEHOLDER_ROW',
+        'The row still contains placeholder market values instead of live tradeable data.'
+      )
+    );
+  }
+
+  if (placeholderRow || noRealTradeData) {
+    issues.push(
+      issue(
+        'INACTIVE_MARKET_ROW',
+        'The row looks inactive or stale and should not be used for strategy decisions.'
+      )
+    );
+    issues.push(
+      issue(
+        'NON_TRADEABLE_ROW',
+        'The row does not contain enough live market data to be considered tradeable.'
+      )
+    );
+  }
 
   if (row.Volume && isPercentValue(row.Volume)) {
     issues.push(issue('VOLUME_LOOKS_LIKE_PERCENT', 'Volume looks like a percent field.', 'Volume'));
@@ -1186,6 +1269,12 @@ function determineQualityStatus(
   }
 
   const lowConfidenceCodes: ATradParsedRowQualityIssueCode[] = [
+    'PLACEHOLDER_ROW',
+    'INACTIVE_MARKET_ROW',
+    'ZERO_VOLUME_PLACEHOLDER',
+    'MISSING_LIVE_BID_ASK',
+    'PLACEHOLDER_TIME',
+    'NON_TRADEABLE_ROW',
     'LAST_OUTSIDE_BID_ASK_RANGE',
     'LAST_LOOKS_LIKE_QUANTITY',
     'VOLUME_LOOKS_LIKE_PERCENT',
@@ -1217,6 +1306,25 @@ function findMisplacedPercentField(row: MarketWatchRow): string | undefined {
 function findMisplacedTimeField(row: MarketWatchRow): string | undefined {
   const candidateFields = ['Turnover', 'Trades', 'Price Close', 'Buy Sentiment', 'VWA', 'Volume'];
   return candidateFields.find((fieldName) => isLikelyTimeValue(row[fieldName]));
+}
+
+function isPlaceholderCellValue(value: string | undefined): boolean {
+  if (typeof value !== 'string') {
+    return true;
+  }
+
+  const trimmed = value.trim();
+  return (
+    trimmed.length === 0 ||
+    trimmed === '-' ||
+    trimmed === '--' ||
+    trimmed === '—' ||
+    trimmed === 'N/A'
+  );
+}
+
+function isPlaceholderTimeValue(value: string | undefined): boolean {
+  return typeof value === 'string' && /^--:--(?::--)?$/.test(value.trim());
 }
 
 function parseNumericValue(value: string | undefined): number | undefined {

@@ -54,6 +54,9 @@ export interface ATradSessionTickDiagnostic {
   usableSnapshots: number;
   quarantinedSnapshots: number;
   rejectedSnapshots: number;
+  placeholderRows: number;
+  inactiveRows: number;
+  zeroVolumeRows: number;
 }
 
 export interface QuarantinedATradSnapshotDiagnostic {
@@ -118,6 +121,9 @@ interface ATradRecordingTickCapture {
   usableRows: SanitizedObservedMarketWatchRow[];
   quarantinedRows: SanitizedObservedMarketWatchRow[];
   rejectedRows: SanitizedObservedMarketWatchRow[];
+  placeholderRows: number;
+  inactiveRows: number;
+  zeroVolumeRows: number;
   usablePolicy: ATradRecordedSession['confidencePolicy'];
   qualityAssessments: ATradParsedRowQualityAssessment[];
 }
@@ -232,6 +238,17 @@ export async function captureATradRecordingTick(
     usableRows: partition.usableSnapshots,
     quarantinedRows: partition.quarantinedSnapshots,
     rejectedRows: partition.rejectedSnapshots,
+    placeholderRows: sanitized.qualityAssessments.filter((assessment) =>
+      assessment.issues.some((issue) => issue.code === 'PLACEHOLDER_ROW')
+    ).length,
+    inactiveRows: sanitized.qualityAssessments.filter((assessment) =>
+      assessment.issues.some((issue) =>
+        issue.code === 'INACTIVE_MARKET_ROW' || issue.code === 'NON_TRADEABLE_ROW'
+      )
+    ).length,
+    zeroVolumeRows: sanitized.qualityAssessments.filter((assessment) =>
+      assessment.issues.some((issue) => issue.code === 'ZERO_VOLUME_PLACEHOLDER')
+    ).length,
     usablePolicy: partition.usablePolicy,
     qualityAssessments: sanitized.qualityAssessments
   };
@@ -349,7 +366,10 @@ export async function runManualATradRecordSession(
         acceptedSnapshots: capture.acceptedCount,
         usableSnapshots: capture.usableRows.length,
         quarantinedSnapshots: capture.quarantinedRows.length,
-        rejectedSnapshots: capture.rejectedRows.length
+        rejectedSnapshots: capture.rejectedRows.length,
+        placeholderRows: capture.placeholderRows,
+        inactiveRows: capture.inactiveRows,
+        zeroVolumeRows: capture.zeroVolumeRows
       });
 
       if (config.includeQuarantined && session.quarantinedRows) {
@@ -367,7 +387,7 @@ export async function runManualATradRecordSession(
       }
 
       runtime.log(
-        `Tick ${tickNumber}: usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}`
+        `Tick ${tickNumber}: usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}, placeholders=${capture.placeholderRows}`
       );
 
       if (config.maxTicks !== undefined && tickNumber >= config.maxTicks) {
