@@ -286,6 +286,103 @@ export function buildMarketWatchRowFromCells(headers: string[], cells: string[])
   return mapped;
 }
 
+export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRow {
+  const normalizedCells = cells
+    .map((cell) => normalizeMarketWatchText(cell))
+    .filter((cell) => cell.length > 0);
+  const tickerIndex = normalizedCells.findIndex((cell) => TICKER_PATTERN.test(cell));
+
+  if (tickerIndex < 0) {
+    return {};
+  }
+
+  const working = normalizedCells.slice(tickerIndex);
+  if (working.length < 14) {
+    return {};
+  }
+
+  const mapped: MarketWatchRow = {};
+  const tickerMatch = working[0]?.match(TICKER_PATTERN);
+  if (tickerMatch) {
+    mapped.Security = tickerMatch[0];
+  }
+
+  let cursor = 1;
+  if (isLikelyCompanyName(working[cursor])) {
+    mapped['Company Name'] = working[cursor] as string;
+    cursor += 1;
+  }
+
+  const leadingHeaders = ['Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last'] as const;
+  for (const header of leadingHeaders) {
+    const value = working[cursor];
+    if (value) {
+      mapped[header] = value;
+      cursor += 1;
+    }
+  }
+
+  const trailing = working.slice(cursor);
+  let end = trailing.length - 1;
+
+  const tryPop = (predicate: (value: string, endIndex: number) => boolean): string | undefined => {
+    const value = trailing[end];
+    if (value && predicate(value, end)) {
+      end -= 1;
+      return value;
+    }
+
+    return undefined;
+  };
+
+  const time = tryPop((value) => isLikelyTimeValue(value));
+  if (time) {
+    mapped.Time = time;
+  }
+
+  const buySentiment = tryPop((value) => isPercentValue(value));
+  if (buySentiment) {
+    mapped['Buy Sentiment'] = buySentiment;
+  }
+
+  const priceClose = tryPop((value, endIndex) => endIndex >= 5 && isNumericLike(value));
+  if (priceClose) {
+    mapped['Price Close'] = priceClose;
+  }
+
+  const trades = tryPop(
+    (value, endIndex) => endIndex >= 6 && isIntegerLike(value) && !value.includes(',')
+  );
+  if (trades) {
+    mapped.Trades = trades;
+  }
+
+  const turnover = tryPop((value, endIndex) => endIndex >= 5 && isLikelyTurnoverValue(value));
+  if (turnover) {
+    mapped.Turnover = turnover;
+  }
+
+  const volume = tryPop((value, endIndex) => endIndex >= 4 && isIntegerLike(value));
+  if (volume) {
+    mapped.Volume = volume;
+  }
+
+  const vwa = tryPop((value, endIndex) => endIndex >= 4 && isNumericLike(value));
+  if (vwa) {
+    mapped.VWA = vwa;
+  }
+
+  const middleHeaders = ['Last Qty', 'Change', '% Change', 'High', 'Low'] as const;
+  trailing.slice(0, end + 1).forEach((value, index) => {
+    const header = middleHeaders[index];
+    if (header && value) {
+      mapped[header] = value;
+    }
+  });
+
+  return mapped;
+}
+
 export function parseDojoWatchGridRow(headers: string[], cells: string[]): MarketWatchRow {
   let mapped = buildMarketWatchRowFromCells(headers, cells);
   const normalizedHeaders = headers.map((header) => normalizeMarketWatchText(header));
@@ -307,6 +404,14 @@ export function parseDojoWatchGridRow(headers: string[], cells: string[]): Marke
 
     if (Object.keys(offsetMapped).length > Object.keys(mapped).length) {
       mapped = offsetMapped;
+    }
+  }
+
+  const normalizedFullWatch = normalizeATradFullWatchEquityRow(cells);
+  if (Object.keys(normalizedFullWatch).length > 0) {
+    const merged = { ...mapped, ...normalizedFullWatch };
+    if (scoreMarketWatchRow(merged) >= scoreMarketWatchRow(mapped)) {
+      mapped = merged;
     }
   }
 
@@ -388,8 +493,9 @@ export function analyzeMarketWatchRows(
   return rows.slice(0, 10).map((cells) => {
     const reasons: string[] = [];
     const parsedRow = parseMarketWatchCandidateRow(kind, headers, cells);
+    const minimumCellCount = kind === 'dojo-grid' ? 7 : Math.max(headers.length - 1, 4);
 
-    if (cells.length < Math.max(headers.length - 1, 4)) {
+    if (cells.length < minimumCellCount) {
       reasons.push('not enough cells');
     }
 
@@ -692,6 +798,35 @@ function isLoginPageUrl(url: string): boolean {
 function field(row: MarketWatchRow, name: string): string | undefined {
   const value = row[name]?.trim();
   return value && value.length > 0 ? value : undefined;
+}
+
+function isLikelyCompanyName(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return !TICKER_PATTERN.test(value) && !isPercentValue(value) && !isLikelyTimeValue(value) && !isNumericLike(value);
+}
+
+function isLikelyTimeValue(value: string | undefined): boolean {
+  return typeof value === 'string' && /^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value.trim());
+}
+
+function isPercentValue(value: string | undefined): boolean {
+  return typeof value === 'string' && /^[+-]?\d[\d,]*\.?\d*%$/.test(value.trim());
+}
+
+function isNumericLike(value: string | undefined): boolean {
+  return typeof cleanNumericCellValue(value) === 'string';
+}
+
+function isIntegerLike(value: string | undefined): boolean {
+  const normalized = cleanNumericCellValue(value);
+  return typeof normalized === 'string' && !normalized.includes('.');
+}
+
+function isLikelyTurnoverValue(value: string | undefined): boolean {
+  return typeof value === 'string' && isNumericLike(value) && value.includes('.');
 }
 
 function numericField(row: MarketWatchRow, name: string): string | undefined {

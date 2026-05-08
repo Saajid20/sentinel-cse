@@ -4,6 +4,7 @@ import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import { MarketDataSanitizer } from '../packages/core/src/index.js';
 import { ATRAD_PERSISTENT_PROFILE_PATH, ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
 import {
+  analyzeMarketWatchRows,
   buildMarketWatchRowFromCells,
   collectPageDiagnostics,
   createManualATradObserveOnceConfig,
@@ -12,6 +13,7 @@ import {
   formatObserveOnceSummary,
   ManualATradObserveOnceRuntime,
   marketWatchRowToRawSnapshot,
+  normalizeATradFullWatchEquityRow,
   parseDojoWatchGridRow,
   sanitizeMarketWatchRows,
   runManualATradObserveOnce
@@ -281,6 +283,185 @@ describe('manual ATrad observe-once helpers', () => {
       volume: '12500',
       totalTurnover: '687500'
     });
+  });
+
+  it('normalizes a real-shaped MGT Full Watch Equity row with trailing Time', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'MGT.N0000',
+      'HAYLEYS FABRIC PLC',
+      '11,100',
+      '31.70',
+      '31.90',
+      '6,343',
+      '31.80',
+      '97',
+      '0.40',
+      '1.27',
+      '32.00',
+      '31.86',
+      '4,821',
+      '153,588.60',
+      '22',
+      '31.40',
+      '34.15%',
+      '10:15:47.383159'
+    ]);
+    const rawSnapshot = marketWatchRowToRawSnapshot(row, 1_000);
+
+    expect(row).toMatchObject({
+      Security: 'MGT.N0000',
+      'Company Name': 'HAYLEYS FABRIC PLC',
+      'Bid Qty': '11,100',
+      'Bid Price': '31.70',
+      'Ask Price': '31.90',
+      'Ask Qty': '6,343',
+      Last: '31.80',
+      'Last Qty': '97',
+      Change: '0.40',
+      '% Change': '1.27',
+      High: '32.00',
+      VWA: '31.86',
+      Volume: '4,821',
+      Turnover: '153,588.60',
+      Trades: '22',
+      'Price Close': '31.40',
+      'Buy Sentiment': '34.15%',
+      Time: '10:15:47.383159'
+    });
+    expect(row.Low).toBeUndefined();
+    expect(rawSnapshot).toMatchObject({
+      ticker: 'MGT.N0000',
+      lastPrice: '31.80',
+      bestBid: '31.70',
+      bestAsk: '31.90',
+      bidDepth: '11100',
+      askDepth: '6343',
+      volume: '4821',
+      totalTurnover: '153588.60'
+    });
+    expect(rawSnapshot.metadata).toMatchObject({
+      companyName: 'HAYLEYS FABRIC PLC',
+      lastQty: '97',
+      change: '0.40',
+      percentChange: '1.27',
+      high: '32.00',
+      low: undefined,
+      vwa: '31.86',
+      trades: '22',
+      priceClose: '31.40',
+      buySentiment: '34.15%',
+      time: '10:15:47.383159'
+    });
+  });
+
+  it('normalizes a shifted ASIY row conservatively with Last=100', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'ASIY.N0000',
+      'ASIA SIYAKA COMMODITIES PLC',
+      '5,000',
+      '99.00',
+      '100.00',
+      '2,000',
+      '100',
+      '150',
+      '1.00',
+      '1.01',
+      '101.00',
+      '12,500',
+      '1,250,000.00',
+      '9',
+      '99.00',
+      '15.50%',
+      '10:15:48.000000'
+    ]);
+
+    expect(row).toMatchObject({
+      Security: 'ASIY.N0000',
+      Last: '100',
+      Volume: '12,500',
+      Turnover: '1,250,000.00',
+      Trades: '9',
+      'Price Close': '99.00',
+      'Buy Sentiment': '15.50%',
+      Time: '10:15:48.000000'
+    });
+    expect(row.VWA).toBeUndefined();
+    expect(row.Low).toBeUndefined();
+  });
+
+  it('does not map a shorter HNB row percent field as Volume', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'HNB.N0000',
+      'HATTON NATIONAL BANK PLC',
+      '5,000',
+      '290.00',
+      '291.00',
+      '1,000',
+      '290.50',
+      '200',
+      '1.72%',
+      '292.00',
+      '289.50',
+      '290.00',
+      '12.00%',
+      '10:15:49'
+    ]);
+
+    expect(row).toMatchObject({
+      Security: 'HNB.N0000',
+      Last: '290.50',
+      'Buy Sentiment': '12.00%',
+      Time: '10:15:49'
+    });
+    expect(row.Volume).toBeUndefined();
+    expect(row.Turnover).toBeUndefined();
+  });
+
+  it('maps REEF volume and turnover from a longer real-shaped row', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'REEF.N0000',
+      'CITRUS LEISURE PLC',
+      '50,000',
+      '4.70',
+      '4.80',
+      '12,500',
+      '4.80',
+      '2,500',
+      '0.10',
+      '2.13',
+      '4.90',
+      '4.75',
+      '3,998,716',
+      '19,145,319.50',
+      '615',
+      '4.70',
+      '51.00%',
+      '10:16:00'
+    ]);
+
+    expect(row).toMatchObject({
+      Security: 'REEF.N0000',
+      Volume: '3,998,716',
+      Turnover: '19,145,319.50',
+      Trades: '615',
+      'Price Close': '4.70',
+      'Buy Sentiment': '51.00%',
+      Time: '10:16:00'
+    });
+  });
+
+  it('rejects rows with insufficient required price fields', () => {
+    const analyses = analyzeMarketWatchRows(
+      'dojo-grid',
+      ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
+      [['FAIL.N0000', 'Failed Equity PLC', '1,000', '12,500']],
+      1_000
+    );
+
+    expect(analyses[0]?.accepted).toBe(false);
+    expect(analyses[0]?.reasons).toEqual(
+      expect.arrayContaining(['missing last price', 'missing bid/ask'])
+    );
   });
 
   it('sanitizes numeric strings with commas from Market Watch rows', () => {
@@ -629,7 +810,26 @@ describe('manual ATrad observe-once helpers', () => {
             containerTextMatches: ['Security', 'Bid Price', 'Ask Price', 'Last', 'Volume'],
             rows: [
               ['ASCO.N0000'],
-              ['PKME.N0000', 'Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+              [
+                'MGT.N0000',
+                'HAYLEYS FABRIC PLC',
+                '11,100',
+                '31.70',
+                '31.90',
+                '6,343',
+                '31.80',
+                '97',
+                '0.40',
+                '1.27',
+                '32.00',
+                '31.86',
+                '4,821',
+                '153,588.60',
+                '22',
+                '31.40',
+                '34.15%',
+                '10:15:47.383159'
+              ]
             ]
           }
         ],
@@ -651,21 +851,40 @@ describe('manual ATrad observe-once helpers', () => {
             containerTextMatches: ['Security', 'Bid Price', 'Ask Price', 'Last', 'Volume'],
             rows: [
               ['ASCO.N0000'],
-              ['PKME.N0000', 'Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+              [
+                'MGT.N0000',
+                'HAYLEYS FABRIC PLC',
+                '11,100',
+                '31.70',
+                '31.90',
+                '6,343',
+                '31.80',
+                '97',
+                '0.40',
+                '1.27',
+                '32.00',
+                '31.86',
+                '4,821',
+                '153,588.60',
+                '22',
+                '31.40',
+                '34.15%',
+                '10:15:47.383159'
+              ]
             ],
             viewCount: 2,
             viewSummaries: [
               {
                 viewIndex: 0,
                 rowCount: 2,
-                firstRows: [['ASCO.N0000'], ['PKME.N0000']]
+                firstRows: [['ASCO.N0000'], ['MGT.N0000']]
               },
               {
                 viewIndex: 1,
                 rowCount: 2,
                 firstRows: [
                   ['Associated Motorways PLC'],
-                  ['Plastics & Metal Products PLC', '1,000', '54.50', '55.00', '800', '55.00', '12,500']
+                  ['HAYLEYS FABRIC PLC', '11,100', '31.70', '31.90', '6,343', '31.80', '97', '0.40']
                 ]
               }
             ]
@@ -687,8 +906,9 @@ describe('manual ATrad observe-once helpers', () => {
     expect(lines).toContain('Detected Dojo watchgrid count: 1');
     expect(lines).toContain('Dojo grid view count: 2');
     expect(lines).toContain('Dojo view 0: rows=2');
-    expect(lines).toContain('Dojo row 2: ["PKME.N0000","Plastics & Metal Products PLC","1,000","54.50","55.00","800","55.00","12,500"]');
+    expect(lines).toContain('Dojo row 2: ["MGT.N0000","HAYLEYS FABRIC PLC","11,100","31.70","31.90","6,343","31.80","97","0.40","1.27","32.00","31.86","4,821","153,588.60","22","31.40","34.15%","10:15:47.383159"]');
     expect(lines).toContain('Dojo parsed row 1: {"Security":"ASCO.N0000"}');
+    expect(lines).toContain('"Time":"10:15:47.383159"');
   });
 
   it('runs broad debug fallback and header text search when candidate count is zero', async () => {
