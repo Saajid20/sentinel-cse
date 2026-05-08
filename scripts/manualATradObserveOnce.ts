@@ -457,24 +457,33 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
   }
   if (remainingPriceCandidates.length >= 3) {
     mapped.Low = remainingPriceCandidates[1] as string;
-      const vwaCandidate = remainingPriceCandidates[2] as string;
-      if (looksLikeVwaCandidate(vwaCandidate, bid, ask, parseNumericValue(mapped.Last))) {
-        mapped.VWA = mapped.VWA ?? vwaCandidate;
-      }
-    } else if (remainingPriceCandidates.length === 2) {
+    const vwaCandidate = remainingPriceCandidates[2] as string;
+    if (looksLikeVwaCandidate(vwaCandidate, bid, ask, parseNumericValue(mapped.Last))) {
+      mapped.VWA = mapped.VWA ?? vwaCandidate;
+    }
+  } else if (remainingPriceCandidates.length === 2) {
     const secondCandidate = remainingPriceCandidates[1] as string;
-    if (looksLikeVwaCandidate(secondCandidate, bid, ask, parseNumericValue(mapped.Last))) {
+    const minReference = Math.min(...[bid, ask, parseNumericValue(mapped.Last)].filter((entry): entry is number => entry !== undefined));
+    const maxReference = Math.max(...[bid, ask, parseNumericValue(mapped.Last)].filter((entry): entry is number => entry !== undefined));
+    if (
+      Number.isFinite(minReference) &&
+      Number.isFinite(maxReference) &&
+      parseNumericValue(secondCandidate) !== undefined &&
+      parseNumericValue(secondCandidate)! >= minReference &&
+      parseNumericValue(secondCandidate)! <= maxReference &&
+      looksLikeVwaCandidate(secondCandidate, bid, ask, parseNumericValue(mapped.Last))
+    ) {
       mapped.VWA = mapped.VWA ?? secondCandidate;
     } else {
       mapped.Low = secondCandidate;
     }
   }
 
-  return mapped;
+  return cleanupATradParsedRow(mapped);
 }
 
 export function parseDojoWatchGridRow(headers: string[], cells: string[]): MarketWatchRow {
-  let mapped = buildMarketWatchRowFromCells(headers, cells);
+  let mapped = cleanupATradParsedRow(buildMarketWatchRowFromCells(headers, cells));
   const normalizedHeaders = headers.map((header) => normalizeMarketWatchText(header));
   const securityHeaderIndex = normalizedHeaders.findIndex((header) => header === 'Security');
   const tickerIndex = cells.findIndex((cell) => Boolean(extractCseTicker(cell)));
@@ -493,13 +502,13 @@ export function parseDojoWatchGridRow(headers: string[], cells: string[]): Marke
     });
 
     if (Object.keys(offsetMapped).length > Object.keys(mapped).length) {
-      mapped = offsetMapped;
+      mapped = cleanupATradParsedRow(offsetMapped);
     }
   }
 
   const normalizedFullWatch = normalizeATradFullWatchEquityRow(cells);
   if (Object.keys(normalizedFullWatch).length > 0) {
-    const merged = { ...mapped, ...normalizedFullWatch };
+    const merged = cleanupATradParsedRow({ ...mapped, ...normalizedFullWatch });
     if (scoreMarketWatchRow(merged) >= scoreMarketWatchRow(mapped)) {
       mapped = merged;
     }
@@ -513,7 +522,7 @@ export function parseDojoWatchGridRow(headers: string[], cells: string[]): Marke
     }
   }
 
-  return mapped;
+  return cleanupATradParsedRow(mapped);
 }
 
 function scoreMarketWatchRow(row: MarketWatchRow): number {
@@ -1083,13 +1092,9 @@ function determineQualityStatus(
   }
 
   const lowConfidenceCodes: ATradParsedRowQualityIssueCode[] = [
+    'LAST_OUTSIDE_BID_ASK_RANGE',
     'LAST_LOOKS_LIKE_QUANTITY',
     'VOLUME_LOOKS_LIKE_PERCENT',
-    'TURNOVER_LOOKS_LIKE_TIME',
-    'TRADES_LOOKS_LIKE_PERCENT',
-    'VWA_OUTSIDE_PRICE_RANGE',
-    'TRAILING_FIELDS_SHIFTED',
-    'TIME_FIELD_SHIFTED',
     'LOW_MAPPING_CONFIDENCE'
   ];
 
@@ -1138,6 +1143,77 @@ function emptyQualitySummary(): ATradParsedRowQualitySummary {
     rejectedCount: 0,
     lowConfidenceRows: []
   };
+}
+
+function cleanupATradParsedRow(row: MarketWatchRow): MarketWatchRow {
+  const cleaned: MarketWatchRow = { ...row };
+  const bid = parseNumericValue(cleaned['Bid Price']);
+  const ask = parseNumericValue(cleaned['Ask Price']);
+  const last = parseNumericValue(cleaned.Last);
+
+  movePercentFieldToBuySentiment(cleaned, 'Trades');
+  movePercentFieldToBuySentiment(cleaned, 'Price Close');
+  movePercentFieldToBuySentiment(cleaned, 'Turnover');
+  movePercentFieldToBuySentiment(cleaned, 'Volume');
+  movePercentFieldToBuySentiment(cleaned, 'VWA');
+
+  moveTimeFieldToTime(cleaned, 'Turnover');
+  moveTimeFieldToTime(cleaned, 'Trades');
+  moveTimeFieldToTime(cleaned, 'Price Close');
+  moveTimeFieldToTime(cleaned, 'Buy Sentiment');
+  moveTimeFieldToTime(cleaned, 'VWA');
+  moveTimeFieldToTime(cleaned, 'Volume');
+
+  if (cleaned.Trades && (!isIntegerLike(cleaned.Trades) || isPercentValue(cleaned.Trades))) {
+    delete cleaned.Trades;
+  }
+
+  if (
+    cleaned['Price Close'] &&
+    (!isPriceLikeNearReference(cleaned['Price Close'], bid, ask, last) ||
+      isPercentValue(cleaned['Price Close']) ||
+      isLikelyTimeValue(cleaned['Price Close']))
+  ) {
+    delete cleaned['Price Close'];
+  }
+
+  if (
+    cleaned.VWA &&
+    !looksLikeVwaCandidate(cleaned.VWA, bid, ask, last)
+  ) {
+    delete cleaned.VWA;
+  }
+
+  if (cleaned['Buy Sentiment'] && !isPercentValue(cleaned['Buy Sentiment'])) {
+    delete cleaned['Buy Sentiment'];
+  }
+
+  if (cleaned.Time && !isLikelyTimeValue(cleaned.Time)) {
+    delete cleaned.Time;
+  }
+
+  const ticker = extractCseTicker(cleaned.Security);
+  if (ticker) {
+    cleaned.Security = ticker;
+  }
+
+  return cleaned;
+}
+
+function movePercentFieldToBuySentiment(row: MarketWatchRow, fieldName: string): void {
+  const value = row[fieldName];
+  if (value && isPercentValue(value) && !row['Buy Sentiment']) {
+    row['Buy Sentiment'] = value;
+    delete row[fieldName];
+  }
+}
+
+function moveTimeFieldToTime(row: MarketWatchRow, fieldName: string): void {
+  const value = row[fieldName];
+  if (value && isLikelyTimeValue(value) && !row.Time) {
+    row.Time = value;
+    delete row[fieldName];
+  }
 }
 
 function extractCseTicker(value: string | undefined): string | undefined {
@@ -1260,7 +1336,13 @@ function isLikelyLastQuantityValue(
   bid: number | undefined,
   ask: number | undefined
 ): boolean {
-  return isLikelyQuantityValue(value, bid, ask);
+  return (
+    !!value &&
+    isIntegerLike(value) &&
+    !isPercentValue(value) &&
+    !isLikelyTimeValue(value) &&
+    !isPriceLikeNearReference(value, bid, ask)
+  );
 }
 
 function isLikelyChangeValue(

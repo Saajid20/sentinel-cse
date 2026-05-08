@@ -525,6 +525,84 @@ describe('manual ATrad observe-once helpers', () => {
     expect(row.Turnover).toBeUndefined();
   });
 
+  it('maps an HNB-like full trailing section with Trades, Buy Sentiment, and Time correctly', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'HNB.N0000',
+      'HATTON NATIONAL BANK PLC',
+      '15,000',
+      '414.00',
+      '414.25',
+      '10,000',
+      '414.00',
+      '16',
+      '0.50',
+      '0.12',
+      '414.00',
+      '413.50',
+      '413.61',
+      '137,542',
+      '56,884,038.25',
+      '205',
+      '413.50',
+      '34.23%',
+      '12:26:15'
+    ]);
+    const assessment = assessATradParsedSnapshotQuality(
+      row,
+      marketWatchRowToRawSnapshot(row, 1_000),
+      { accepted: true, issues: [] }
+    );
+
+    expect(row).toMatchObject({
+      Security: 'HNB.N0000',
+      Last: '414.00',
+      'Last Qty': '16',
+      High: '414.00',
+      Low: '413.50',
+      VWA: '413.61',
+      Volume: '137,542',
+      Turnover: '56,884,038.25',
+      Trades: '205',
+      'Price Close': '413.50',
+      'Buy Sentiment': '34.23%',
+      Time: '12:26:15'
+    });
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain('TRADES_LOOKS_LIKE_PERCENT');
+  });
+
+  it('moves a trailing percent into Buy Sentiment instead of Trades for PLC-like rows', () => {
+    const row = {
+      Security: 'PLC.N0000',
+      'Bid Qty': '2,500',
+      'Bid Price': '100.00',
+      'Ask Price': '100.50',
+      'Ask Qty': '1,200',
+      Last: '100.25',
+      Volume: '25,000',
+      Turnover: '2,506,250.00',
+      Trades: '18.20%',
+      Time: '12:26:22'
+    };
+    const assessment = assessATradParsedSnapshotQuality(
+      parseDojoWatchGridRow(
+        ['Security', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume', 'Turnover', 'Trades', 'Time'],
+        Object.values(row)
+      ),
+      marketWatchRowToRawSnapshot(
+        parseDojoWatchGridRow(
+          ['Security', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume', 'Turnover', 'Trades', 'Time'],
+          Object.values(row)
+        ),
+        1_000
+      ),
+      { accepted: true, issues: [] }
+    );
+
+    expect(assessment.row['Buy Sentiment']).toBe('18.20%');
+    expect(assessment.row.Trades).toBeUndefined();
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain('TRADES_LOOKS_LIKE_PERCENT');
+  });
+
   it('maps REEF volume and turnover from a longer real-shaped row', () => {
     const row = normalizeATradFullWatchEquityRow([
       'REEF.N0000',
@@ -578,6 +656,90 @@ describe('manual ATrad observe-once helpers', () => {
       '31.40',
       '34.15%',
       '10:15:47.383159'
+    ]);
+
+    expect(row.VWA).toBeUndefined();
+  });
+
+  it('leaves JXG-like bad VWA candidates unset instead of flagging VWA outside price range', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'JXG.N0000',
+      'JXG PLC',
+      '5,000',
+      '8.90',
+      '9.00',
+      '3,000',
+      '8.95',
+      '120',
+      '0.05',
+      '0.56',
+      '9.10',
+      '8.85',
+      '240,000.00',
+      '345,000',
+      '3,087,750.00',
+      '42',
+      '8.90',
+      '22.00%',
+      '12:26:30'
+    ]);
+    const assessment = assessATradParsedSnapshotQuality(
+      row,
+      marketWatchRowToRawSnapshot(row, 1_000),
+      { accepted: true, issues: [] }
+    );
+
+    expect(row.VWA).toBeUndefined();
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain('VWA_OUTSIDE_PRICE_RANGE');
+  });
+
+  it('leaves SHOT-like bad VWA candidates unset instead of flagging VWA outside price range', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'SHOT.X0000',
+      'SHOT PLC',
+      '3,000',
+      '12.40',
+      '12.50',
+      '1,500',
+      '12.45',
+      '60',
+      '0.10',
+      '0.81',
+      '12.55',
+      '12.35',
+      '1,500,000.00',
+      '85,000',
+      '1,058,250.00',
+      '15',
+      '12.35',
+      '30.00%',
+      '12:26:35'
+    ]);
+
+    expect(row.VWA).toBeUndefined();
+  });
+
+  it('leaves KZOO-like bad VWA candidates unset instead of flagging VWA outside price range', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'KZOO.N0000',
+      'KAZOO PLC',
+      '2,000',
+      '15.10',
+      '15.20',
+      '2,500',
+      '15.15',
+      '45',
+      '0.05',
+      '0.33',
+      '15.30',
+      '15.05',
+      '8,750,000.00',
+      '125,000',
+      '1,893,750.00',
+      '27',
+      '15.05',
+      '16.00%',
+      '12:26:40'
     ]);
 
     expect(row.VWA).toBeUndefined();
@@ -658,6 +820,27 @@ describe('manual ATrad observe-once helpers', () => {
     expect(['HIGH_CONFIDENCE', 'MEDIUM_CONFIDENCE']).toContain(assessment.status);
     expect(assessment.issues.map((issue) => issue.code)).not.toContain('LOW_MAPPING_CONFIDENCE');
     expect(assessment.issues.map((issue) => issue.code)).not.toContain('VWA_OUTSIDE_PRICE_RANGE');
+  });
+
+  it('does not accept percent or time as Price Close', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Price Close', 'Buy Sentiment', 'Time', 'Volume'],
+      ['BADP.N0000', '1,000', '50.00', '50.20', '900', '50.10', '12:26:22', '18.20%', '12:26:23', '5,000']
+    );
+
+    expect(row['Price Close']).toBeUndefined();
+    expect(row.Time).toBe('12:26:23');
+    expect(row['Buy Sentiment']).toBe('18.20%');
+  });
+
+  it('does not accept percent as Trades', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Trades', 'Buy Sentiment', 'Volume'],
+      ['TRD.N0000', '1,000', '50.00', '50.20', '900', '50.10', '18.20%', '18.20%', '5,000']
+    );
+
+    expect(row.Trades).toBeUndefined();
+    expect(row['Buy Sentiment']).toBe('18.20%');
   });
 
   it('retains price-like VWA values near bid ask and last', () => {
