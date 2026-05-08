@@ -8,6 +8,7 @@ import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import type { MarketSnapshot } from '../packages/core/src/index.js';
 import { DEFAULT_ATRAD_BASE_URL } from './manualATradLogin.js';
 import {
+  collectPageDiagnostics,
   extractVisibleMarketWatchRows,
   partitionATradSnapshotsByConfidence,
   sanitizeMarketWatchRows,
@@ -21,6 +22,8 @@ const RECORDING_NAVIGATION_TIMEOUT_MS = 30_000;
 export const DEFAULT_ATRAD_RECORDING_INTERVAL_SECONDS = 15;
 export const DEFAULT_ATRAD_RECORDING_DURATION_SECONDS = 60;
 export const DEFAULT_ATRAD_RECORDING_OUTPUT_DIR = 'data/live-sessions';
+export const DEFAULT_ATRAD_RECORDING_READINESS_RETRIES = 3;
+export const DEFAULT_ATRAD_RECORDING_READINESS_WAIT_SECONDS = 3;
 export const ATRAD_RECORDING_SOURCE = 'atrad-full-watch-equity';
 export const ATRAD_RECORDING_MODE = 'read-only-local-recording';
 
@@ -31,6 +34,8 @@ export interface ManualATradRecordSessionConfig {
   outputPath: string;
   allowMediumConfidence: boolean;
   includeQuarantined: boolean;
+  readinessRetries: number;
+  readinessWaitSeconds: number;
   maxTicks?: number;
   headless: false;
   readonlyMode: true;
@@ -117,6 +122,12 @@ interface ATradRecordingTickCapture {
   qualityAssessments: ATradParsedRowQualityAssessment[];
 }
 
+export interface ATradRecordingReadinessCheck {
+  ready: boolean;
+  rawRowsExtracted: number;
+  marketWatchHeaderDetected: boolean;
+}
+
 export function createManualATradRecordSessionConfig(
   args: string[] = [],
   now: number = Date.now()
@@ -129,6 +140,16 @@ export function createManualATradRecordSessionConfig(
     outputPath: buildATradRecordSessionOutputPath(now, outputArg),
     allowMediumConfidence: args.includes('--allow-medium-confidence'),
     includeQuarantined: args.includes('--include-quarantined'),
+    readinessRetries: parseNonNegativeIntegerFlag(
+      args,
+      '--readiness-retries',
+      DEFAULT_ATRAD_RECORDING_READINESS_RETRIES
+    ),
+    readinessWaitSeconds: parseNonNegativeIntegerFlag(
+      args,
+      '--readiness-wait-seconds',
+      DEFAULT_ATRAD_RECORDING_READINESS_WAIT_SECONDS
+    ),
     maxTicks: parseOptionalPositiveIntegerFlag(args, '--max-ticks'),
     headless: false,
     readonlyMode: true
@@ -164,8 +185,31 @@ export function formatManualATradRecordSessionInstructions(
     `Recording output: ${config.outputPath}`,
     `Interval: ${config.intervalSeconds}s`,
     `Duration: ${config.durationSeconds}s`,
+    `Readiness retries: ${config.readinessRetries}`,
     `Confidence policy: ${config.allowMediumConfidence ? 'HIGH_CONFIDENCE + MEDIUM_CONFIDENCE' : 'HIGH_CONFIDENCE only'}`
   ];
+}
+
+export async function checkATradRecordingReadiness(
+  page: ManualATradPageLike
+): Promise<ATradRecordingReadinessCheck> {
+  const rawRows = await extractVisibleMarketWatchRows(page);
+  if (rawRows.length > 0) {
+    return {
+      ready: true,
+      rawRowsExtracted: rawRows.length,
+      marketWatchHeaderDetected: true
+    };
+  }
+
+  const diagnostics = await collectPageDiagnostics(page);
+  const marketWatchHeaderDetected = hasVisibleMarketWatchHeaders(diagnostics);
+
+  return {
+    ready: marketWatchHeaderDetected,
+    rawRowsExtracted: 0,
+    marketWatchHeaderDetected
+  };
 }
 
 export async function captureATradRecordingTick(
@@ -217,13 +261,11 @@ export async function runManualATradRecordSession(
 
   await runtime.ensureDir(dirname(config.outputPath));
   const resource = await runtime.launchSession(config);
-  const startedAtMs = runtime.now();
-  const sessionId = buildSessionId(startedAtMs);
-  const stopAtMs = startedAtMs + config.durationSeconds * 1000;
+  const initialNow = runtime.now();
   const session: ATradRecordedSession = {
-    sessionId,
-    startedAt: new Date(startedAtMs).toISOString(),
-    endedAt: new Date(startedAtMs).toISOString(),
+    sessionId: buildSessionId(initialNow),
+    startedAt: new Date(initialNow).toISOString(),
+    endedAt: new Date(initialNow).toISOString(),
     source: ATRAD_RECORDING_SOURCE,
     mode: ATRAD_RECORDING_MODE,
     confidencePolicy: config.allowMediumConfidence
@@ -255,6 +297,27 @@ export async function runManualATradRecordSession(
     }
 
     await runtime.waitForUser();
+    const readiness = await waitForATradRecordingReadiness(
+      getActivePage(resource.session, initialPage),
+      config,
+      runtime
+    );
+    if (!readiness.ready) {
+      const message = 'ATrad Market Watch was not ready after the configured readiness retries. No session file was written.';
+      runtime.log(message);
+      return {
+        ok: false,
+        message,
+        outputPath: config.outputPath,
+        session
+      };
+    }
+
+    const recordingStartedAtMs = runtime.now();
+    const stopAtMs = recordingStartedAtMs + config.durationSeconds * 1000;
+    session.sessionId = buildSessionId(recordingStartedAtMs);
+    session.startedAt = new Date(recordingStartedAtMs).toISOString();
+    session.endedAt = new Date(recordingStartedAtMs).toISOString();
 
     let tickNumber = 0;
     while (true) {
@@ -312,6 +375,11 @@ export async function runManualATradRecordSession(
       }
 
       if (runtime.now() >= stopAtMs) {
+        break;
+      }
+
+      const nextTickAtMs = runtime.now() + config.intervalSeconds * 1000;
+      if (nextTickAtMs >= stopAtMs) {
         break;
       }
 
@@ -382,6 +450,20 @@ function parsePositiveIntegerFlag(args: string[], flag: string, fallback: number
   return parsed;
 }
 
+function parseNonNegativeIntegerFlag(args: string[], flag: string, fallback: number): number {
+  const value = readFlagValue(args, flag);
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${flag} value: ${value}`);
+  }
+
+  return parsed;
+}
+
 function parseOptionalPositiveIntegerFlag(args: string[], flag: string): number | undefined {
   const value = readFlagValue(args, flag);
   if (value === undefined) {
@@ -405,8 +487,71 @@ function isRecordMetadata(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+async function waitForATradRecordingReadiness(
+  page: ManualATradPageLike,
+  config: ManualATradRecordSessionConfig,
+  runtime: ManualATradRecordSessionRuntime
+): Promise<ATradRecordingReadinessCheck> {
+  for (let attempt = 0; attempt <= config.readinessRetries; attempt += 1) {
+    const readiness = await checkATradRecordingReadiness(page);
+    if (readiness.ready) {
+      runtime.log(
+        `ATrad Market Watch ready: rawRows=${readiness.rawRowsExtracted}, headers=${readiness.marketWatchHeaderDetected ? 'yes' : 'no'}`
+      );
+      return readiness;
+    }
+
+    runtime.log(
+      'ATrad Market Watch is not ready yet. Finish login, select Full Watch - Equity, then press Enter again.'
+    );
+
+    if (attempt >= config.readinessRetries) {
+      return readiness;
+    }
+
+    if (config.readinessWaitSeconds > 0) {
+      runtime.log(`Waiting ${config.readinessWaitSeconds}s before the next readiness check.`);
+      await runtime.sleep(config.readinessWaitSeconds * 1000);
+    }
+
+    await runtime.waitForUser();
+  }
+
+  return {
+    ready: false,
+    rawRowsExtracted: 0,
+    marketWatchHeaderDetected: false
+  };
+}
+
 function asTicker(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function hasVisibleMarketWatchHeaders(
+  diagnostics: Awaited<ReturnType<typeof collectPageDiagnostics>>
+): boolean {
+  const haystack = [
+    diagnostics.pageTitle,
+    ...diagnostics.page.firstVisibleTextSnippets,
+    ...diagnostics.page.keywordMatches,
+    ...diagnostics.frames.flatMap((frame) => [
+      frame.title,
+      ...frame.firstVisibleTextSnippets,
+      ...frame.keywordMatches
+    ])
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  const hasWatchContext =
+    haystack.includes('market watch') ||
+    (haystack.includes('full watch') && haystack.includes('equity'));
+  const headerHits = ['security', 'bid', 'ask', 'last', 'volume'].filter((keyword) =>
+    haystack.includes(keyword)
+  ).length;
+
+  return hasWatchContext && headerHits >= 3;
 }
 
 function defaultRuntime(): ManualATradRecordSessionRuntime {

@@ -87,6 +87,8 @@ describe('manual ATrad record-session helpers', () => {
       outputPath: 'data/custom/atrad-session-20231114-221320.json',
       allowMediumConfidence: true,
       includeQuarantined: true,
+      readinessRetries: 3,
+      readinessWaitSeconds: 3,
       maxTicks: 3,
       headless: false,
       readonlyMode: true
@@ -107,26 +109,31 @@ describe('manual ATrad record-session helpers', () => {
     expect(instructions.join('\n')).toContain('Full Watch - Equity');
     expect(instructions.join('\n')).toContain('read-only');
     expect(instructions.join('\n')).toContain('data/live-sessions');
+    expect(instructions.join('\n')).toContain('Readiness retries: 3');
   });
 
   it('records only usable snapshots by default while looping for max ticks', async () => {
     const runtime = createFakeRuntime();
     const result = await runManualATradRecordSession(
-      createManualATradRecordSessionConfig(['--max-ticks', '2'], runtime.now()),
+      createManualATradRecordSessionConfig(['--max-ticks', '3', '--duration-seconds', '60'], runtime.now()),
       runtime
     );
 
     expect(result.ok).toBe(true);
-    expect(result.session.totals.ticksAttempted).toBe(2);
-    expect(result.session.totals.rawRowsExtracted).toBe(6);
-    expect(result.session.totals.usableSnapshots).toBe(2);
-    expect(result.session.totals.quarantinedSnapshots).toBe(2);
-    expect(result.session.totals.rejectedSnapshots).toBe(2);
-    expect(result.session.snapshots).toHaveLength(2);
+    expect(result.session.totals.ticksAttempted).toBe(3);
+    expect(result.session.totals.rawRowsExtracted).toBe(9);
+    expect(result.session.totals.usableSnapshots).toBe(3);
+    expect(result.session.totals.quarantinedSnapshots).toBe(3);
+    expect(result.session.totals.rejectedSnapshots).toBe(3);
+    expect(result.session.snapshots).toHaveLength(3);
     expect(result.session.snapshots.every((snapshot) => snapshot.ticker === 'HIGH.N0000')).toBe(true);
-    expect(result.session.diagnostics).toHaveLength(2);
+    expect(result.session.diagnostics).toHaveLength(3);
     expect(runtime.calls).toContain('wait');
-    expect(runtime.calls).toContain('sleep:15000');
+    expect(runtime.calls.filter((call) => call === 'sleep:15000')).toHaveLength(2);
+    expect(runtime.calls).toContain('log:ATrad Market Watch ready: rawRows=3, headers=yes');
+    expect(runtime.calls).toContain('log:Tick 1: usable=1, quarantined=1, rejected=1');
+    expect(runtime.calls).toContain('log:Tick 2: usable=1, quarantined=1, rejected=1');
+    expect(runtime.calls).toContain('log:Tick 3: usable=1, quarantined=1, rejected=1');
   });
 
   it('includes quarantined rows only in the optional quarantine section', async () => {
@@ -166,6 +173,70 @@ describe('manual ATrad record-session helpers', () => {
     expect(result.session.snapshots.map((snapshot) => snapshot.ticker)).toEqual(['HIGH.N0000', 'MEDM.N0000']);
   });
 
+  it('stops on duration before reaching the max tick limit', async () => {
+    const runtime = createFakeRuntime();
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(
+        ['--max-ticks', '5', '--duration-seconds', '25', '--interval-seconds', '10'],
+        runtime.now()
+      ),
+      runtime
+    );
+
+    expect(result.session.totals.ticksAttempted).toBe(3);
+    expect(runtime.calls.filter((call) => call === 'sleep:10000')).toHaveLength(2);
+  });
+
+  it('honors duration-only recording with interval spacing and no final wait', async () => {
+    const runtime = createFakeRuntime();
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(
+        ['--duration-seconds', '30', '--interval-seconds', '10'],
+        runtime.now()
+      ),
+      runtime
+    );
+
+    expect(result.session.totals.ticksAttempted).toBe(3);
+    expect(runtime.calls.filter((call) => call === 'sleep:10000')).toHaveLength(2);
+  });
+
+  it('waits and retries readiness without counting ticks', async () => {
+    const runtime = createFakeRuntime({ readinessSequence: ['not-ready', 'ready'] });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(
+        ['--max-ticks', '2', '--readiness-wait-seconds', '2'],
+        runtime.now()
+      ),
+      runtime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.session.totals.ticksAttempted).toBe(2);
+    expect(runtime.calls.filter((call) => call === 'wait')).toHaveLength(2);
+    expect(runtime.calls.filter((call) => call === 'sleep:2000')).toHaveLength(1);
+    expect(runtime.calls).toContain(
+      'log:ATrad Market Watch is not ready yet. Finish login, select Full Watch - Equity, then press Enter again.'
+    );
+  });
+
+  it('fails cleanly when readiness never passes and does not write a session file', async () => {
+    const runtime = createFakeRuntime({ readinessSequence: ['not-ready', 'not-ready', 'not-ready'] });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(
+        ['--readiness-retries', '2', '--readiness-wait-seconds', '1'],
+        runtime.now()
+      ),
+      runtime
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('not ready');
+    expect(result.session.totals.ticksAttempted).toBe(0);
+    expect(runtime.writes).toHaveLength(0);
+    expect(runtime.calls.filter((call) => call === 'sleep:1000')).toHaveLength(2);
+  });
+
   it('writes a clean session JSON structure without credentials or session tokens', async () => {
     const runtime = createFakeRuntime();
     const result = await runManualATradRecordSession(
@@ -174,7 +245,7 @@ describe('manual ATrad record-session helpers', () => {
     );
 
     expect(result.session).toMatchObject({
-      sessionId: 'atrad-session-20231114-221320',
+      sessionId: 'atrad-session-20231114-221405',
       source: 'atrad-full-watch-equity',
       mode: 'read-only-local-recording',
       confidencePolicy: 'HIGH_CONFIDENCE only',
@@ -184,7 +255,7 @@ describe('manual ATrad record-session helpers', () => {
 
     expect(runtime.writes).toHaveLength(1);
     expect(runtime.writes[0]?.path).toBe('data/live-sessions/atrad-session-20231114-221320.json');
-    expect(runtime.writes[0]?.contents).toContain('"sessionId": "atrad-session-20231114-221320"');
+    expect(runtime.writes[0]?.contents).toContain('"sessionId": "atrad-session-20231114-221405"');
     expect(runtime.writes[0]?.contents).not.toMatch(/cookie|storageState|session=|token|password|otp/i);
   });
 
@@ -198,13 +269,17 @@ describe('manual ATrad record-session helpers', () => {
   });
 });
 
-function createFakeRuntime(): ManualATradRecordSessionRuntime & {
+function createFakeRuntime(options: {
+  readinessSequence?: Array<'ready' | 'not-ready'>;
+} = {}): ManualATradRecordSessionRuntime & {
   calls: string[];
   writes: Array<{ path: string; contents: string }>;
 } {
   let now = 1_700_000_000_000;
   const calls: string[] = [];
   const writes: Array<{ path: string; contents: string }> = [];
+  const readinessSequence = options.readinessSequence ?? ['ready'];
+  let extractionAttempt = 0;
 
   return {
     calls,
@@ -214,11 +289,11 @@ function createFakeRuntime(): ManualATradRecordSessionRuntime & {
       return {
         session: {
           pages() {
-            return [createFakePage(calls)];
+            return [createFakePage(calls, readinessSequence, () => extractionAttempt, () => { extractionAttempt += 1; })];
           },
           async newPage() {
             calls.push('new-page');
-            return createFakePage(calls);
+            return createFakePage(calls, readinessSequence, () => extractionAttempt, () => { extractionAttempt += 1; });
           }
         },
         async close() {
@@ -228,6 +303,7 @@ function createFakeRuntime(): ManualATradRecordSessionRuntime & {
     },
     async waitForUser() {
       calls.push('wait');
+      now += 45_000;
     },
     now() {
       return now;
@@ -249,7 +325,12 @@ function createFakeRuntime(): ManualATradRecordSessionRuntime & {
   };
 }
 
-function createFakePage(calls: string[]) {
+function createFakePage(
+  calls: string[],
+  readinessSequence: Array<'ready' | 'not-ready'>,
+  getExtractionAttempt: () => number,
+  incrementExtractionAttempt: () => void
+) {
   const headers = Object.keys(highConfidenceRow);
   const asRowCells = (row: Record<string, string>) => headers.map((header) => row[header] ?? '');
 
@@ -273,6 +354,21 @@ function createFakePage(calls: string[]) {
       }
 
       if (pageFunction.includes('const allowedHeaders =')) {
+        const readinessState = readinessSequence[
+          Math.min(getExtractionAttempt(), readinessSequence.length - 1)
+        ] ?? 'ready';
+        incrementExtractionAttempt();
+
+        if (readinessState === 'not-ready') {
+          return {
+            chosenCandidateIndex: -1,
+            candidates: [],
+            dojoCandidates: [],
+            broadScan: undefined,
+            headerMatches: []
+          };
+        }
+
         return {
           chosenCandidateIndex: 0,
           candidates: [
@@ -295,7 +391,30 @@ function createFakePage(calls: string[]) {
         };
       }
 
-      return [];
+      if (pageFunction.includes("querySelectorAll('iframe').length")) {
+        return 0;
+      }
+
+      const diagnosticState = readinessSequence[
+        Math.max(0, Math.min(getExtractionAttempt() - 1, readinessSequence.length - 1))
+      ] ?? 'ready';
+      if (diagnosticState === 'not-ready') {
+        return {
+          tableCount: 0,
+          rowCount: 0,
+          visibleTextCount: 2,
+          firstVisibleTextSnippets: ['ATrad Login', 'Sign in'],
+          keywordMatches: []
+        };
+      }
+
+      return {
+        tableCount: 1,
+        rowCount: 0,
+        visibleTextCount: 5,
+        firstVisibleTextSnippets: ['Market Watch', 'Full Watch', 'Equity', 'Security', 'Volume'],
+        keywordMatches: ['Market Watch', 'Security', 'Bid', 'Ask', 'Last', 'Volume']
+      };
     }
   };
 }
