@@ -113,6 +113,12 @@ ATrad session restore may still fail even when storage state and a persistent pr
 
 The current ATrad observation path reads visible Market Watch rows from the `Full Watch - Equity` view when that table is present. The user may need to manually select `Full Watch - Equity` before pressing Enter in the same-session flow. This still does not place orders, send Telegram alerts, write Supabase records, or run the trading pipeline.
 
+## ATrad Local Session Recorder
+
+The `pnpm atrad:record-session` command is a local read-only ATrad session recorder. It keeps the browser session open after manual login and records usable `Full Watch - Equity` snapshots to a local JSON file under `data/live-sessions/`, which is ignored by Git.
+
+By default the recorder stores only usable high-confidence snapshots. Low-confidence rows are quarantined for diagnostics, and future custom watchlists can reduce noisy rows further. This recorder does not connect Telegram, Supabase, or the strategy pipeline, and it does not place orders or enable auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.
