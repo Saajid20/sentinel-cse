@@ -11,6 +11,10 @@ import {
 import { createManualATradLoginConfig, runManualATradLogin } from './manualATradLogin.js';
 import { createManualATradObserveOnceConfig, runManualATradObserveOnce } from './manualATradObserveOnce.js';
 import {
+  createManualATradCompareSessionsConfig,
+  runManualATradCompareSessions
+} from './manualATradCompareSessions.js';
+import {
   createManualATradReplaySessionConfig,
   runManualATradReplaySession
 } from './manualATradReplaySession.js';
@@ -31,6 +35,7 @@ export type SentinelCommand =
   | 'atrad-observe-once'
   | 'atrad-record-session'
   | 'atrad-replay-session'
+  | 'atrad-compare-sessions'
   | 'telegram-test'
   | 'supabase-test'
   | 'help';
@@ -98,6 +103,15 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
     case 'atrad-replay-session': {
       const result = await runManualATradReplaySession(
         createManualATradReplaySessionConfig(args.slice(1))
+      );
+      return {
+        exitCode: result.ok ? 0 : 1,
+        output: result.message
+      };
+    }
+    case 'atrad-compare-sessions': {
+      const result = await runManualATradCompareSessions(
+        createManualATradCompareSessionsConfig(args.slice(1))
       );
       return {
         exitCode: result.ok ? 0 : 1,
@@ -204,6 +218,7 @@ export function formatHelp(): string {
     '  pnpm sentinel atrad-observe-once',
     '  pnpm sentinel atrad-record-session',
     '  pnpm sentinel atrad-replay-session',
+    '  pnpm sentinel atrad-compare-sessions',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
     '  pnpm sentinel help',
@@ -217,6 +232,7 @@ export function formatHelp(): string {
     '  atrad-observe-once  Read Market Watch rows once using saved local storage state or --persistent-profile.',
     '  atrad-record-session  Record usable read-only Market Watch snapshots to an ignored local JSON session file.',
     '  atrad-replay-session  Replay a recorded local ATrad session JSON file through the safe local replay engine.',
+    '  atrad-compare-sessions  Compare one or more recorded local ATrad session JSON files for replay readiness.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'
