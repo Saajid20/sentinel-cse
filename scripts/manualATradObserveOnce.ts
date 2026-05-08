@@ -80,6 +80,7 @@ export interface ManualATradObserveOnceConfig {
   diagnose: boolean;
   debugRows: boolean;
   rawOutput: boolean;
+  allowMediumConfidence: boolean;
   observationTimeoutMs: number;
   readonlyMode: true;
 }
@@ -137,6 +138,13 @@ export interface SanitizedObservedMarketWatchRow {
   rawSnapshot: RawMarketSnapshot;
   snapshot?: MarketSnapshot;
   issues: MarketDataSanitizationIssue[];
+}
+
+export interface ATradUsableSnapshotPartition {
+  usableSnapshots: SanitizedObservedMarketWatchRow[];
+  quarantinedSnapshots: SanitizedObservedMarketWatchRow[];
+  rejectedSnapshots: SanitizedObservedMarketWatchRow[];
+  usablePolicy: 'HIGH_CONFIDENCE only' | 'HIGH_CONFIDENCE + MEDIUM_CONFIDENCE';
 }
 
 export type ATradParsedRowQualityStatus =
@@ -257,8 +265,13 @@ export interface ManualATradObserveOnceResult {
   message: string;
   rawRows: MarketWatchRow[];
   rawSnapshots: RawMarketSnapshot[];
+  rowResults: SanitizedObservedMarketWatchRow[];
   accepted: SanitizedObservedMarketWatchRow[];
   rejected: SanitizedObservedMarketWatchRow[];
+  usableSnapshots: SanitizedObservedMarketWatchRow[];
+  quarantinedSnapshots: SanitizedObservedMarketWatchRow[];
+  rejectedSnapshots: SanitizedObservedMarketWatchRow[];
+  usablePolicy: ATradUsableSnapshotPartition['usablePolicy'];
   qualityAssessments: ATradParsedRowQualityAssessment[];
   qualitySummary: ATradParsedRowQualitySummary;
   rawOutputEnabled?: boolean;
@@ -276,6 +289,7 @@ export function createManualATradObserveOnceConfig(args: string[] = []): ManualA
     diagnose: args.includes('--diagnose'),
     debugRows: args.includes('--debug-rows'),
     rawOutput: args.includes('--raw-output'),
+    allowMediumConfidence: args.includes('--allow-medium-confidence'),
     observationTimeoutMs: parseTimeoutMs(args),
     readonlyMode: true
   };
@@ -698,12 +712,69 @@ export function buildATradParsedRowQualitySummary(
   };
 }
 
+export function isUsableATradSnapshotQuality(
+  status: ATradParsedRowQualityStatus,
+  options: { allowMediumConfidence?: boolean } = {}
+): boolean {
+  if (status === 'HIGH_CONFIDENCE') {
+    return true;
+  }
+
+  return options.allowMediumConfidence === true && status === 'MEDIUM_CONFIDENCE';
+}
+
+export function buildUsableATradSnapshotSummary(
+  partition: ATradUsableSnapshotPartition
+): string[] {
+  return [
+    `Usable snapshots: ${partition.usableSnapshots.length}`,
+    `Quarantined low-confidence snapshots: ${partition.quarantinedSnapshots.length}`,
+    `Rejected snapshots: ${partition.rejectedSnapshots.length}`,
+    `usable policy: ${partition.usablePolicy}`
+  ];
+}
+
+export function partitionATradSnapshotsByConfidence(
+  rowResults: SanitizedObservedMarketWatchRow[],
+  qualityAssessments: ATradParsedRowQualityAssessment[],
+  options: { allowMediumConfidence?: boolean } = {}
+): ATradUsableSnapshotPartition {
+  const usableSnapshots: SanitizedObservedMarketWatchRow[] = [];
+  const quarantinedSnapshots: SanitizedObservedMarketWatchRow[] = [];
+  const rejectedSnapshots: SanitizedObservedMarketWatchRow[] = [];
+
+  rowResults.forEach((rowResult, index) => {
+    const assessment = qualityAssessments[index];
+    if (!assessment || assessment.status === 'REJECTED' || !rowResult.snapshot) {
+      rejectedSnapshots.push(rowResult);
+      return;
+    }
+
+    if (isUsableATradSnapshotQuality(assessment.status, options)) {
+      usableSnapshots.push(rowResult);
+      return;
+    }
+
+    quarantinedSnapshots.push(rowResult);
+  });
+
+  return {
+    usableSnapshots,
+    quarantinedSnapshots,
+    rejectedSnapshots,
+    usablePolicy: options.allowMediumConfidence === true
+      ? 'HIGH_CONFIDENCE + MEDIUM_CONFIDENCE'
+      : 'HIGH_CONFIDENCE only'
+  };
+}
+
 export function sanitizeMarketWatchRows(
   rows: MarketWatchRow[],
   timestamp: number,
   sanitizer: MarketDataSanitizer = new MarketDataSanitizer({ source: ATRAD_MARKET_WATCH_SOURCE })
-): Pick<ManualATradObserveOnceResult, 'rawSnapshots' | 'accepted' | 'rejected' | 'qualityAssessments' | 'qualitySummary'> {
+): Pick<ManualATradObserveOnceResult, 'rawSnapshots' | 'rowResults' | 'accepted' | 'rejected' | 'qualityAssessments' | 'qualitySummary'> {
   const rawSnapshots = rows.map((row) => marketWatchRowToRawSnapshot(row, timestamp));
+  const rowResults: SanitizedObservedMarketWatchRow[] = [];
   const accepted: SanitizedObservedMarketWatchRow[] = [];
   const rejected: SanitizedObservedMarketWatchRow[] = [];
   const qualityAssessments: ATradParsedRowQualityAssessment[] = [];
@@ -717,6 +788,7 @@ export function sanitizeMarketWatchRows(
       snapshot: result.snapshot,
       issues: result.issues
     };
+    rowResults.push(rowResult);
     qualityAssessments.push(assessATradParsedSnapshotQuality(row, rawSnapshot, result));
 
     if (result.accepted) {
@@ -728,6 +800,7 @@ export function sanitizeMarketWatchRows(
 
   return {
     rawSnapshots,
+    rowResults,
     accepted,
     rejected,
     qualityAssessments,
@@ -859,8 +932,13 @@ export async function runManualATradObserveOnce(
         message: 'ATrad observe-once read-only diagnostics completed.',
         rawRows: [],
         rawSnapshots: [],
+        rowResults: [],
         accepted: [],
         rejected: [],
+        usableSnapshots: [],
+        quarantinedSnapshots: [],
+        rejectedSnapshots: [],
+        usablePolicy: 'HIGH_CONFIDENCE only',
         qualityAssessments: [],
         qualitySummary: emptyQualitySummary(),
         diagnostics
@@ -883,12 +961,18 @@ export async function runManualATradObserveOnce(
 
     const rawRows = await extractVisibleMarketWatchRows(page);
     const sanitized = sanitizeMarketWatchRows(rawRows, runtime.now());
+    const partition = partitionATradSnapshotsByConfidence(
+      sanitized.rowResults,
+      sanitized.qualityAssessments,
+      { allowMediumConfidence: config.allowMediumConfidence }
+    );
     const result: ManualATradObserveOnceResult = {
       ok: true,
       message: 'ATrad observe-once read-only snapshot completed.',
       rawRows,
       rawOutputEnabled: config.rawOutput,
-      ...sanitized
+      ...sanitized,
+      ...partition
     };
 
     for (const line of formatObserveOnceSummary(result)) {
@@ -936,7 +1020,12 @@ export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): 
     'Sentinel-CSE ATrad observe-once read-only summary',
     `Raw rows extracted: ${result.rawRows.length}`,
     `Accepted snapshots: ${result.accepted.length}`,
-    `Rejected snapshots: ${result.rejected.length}`,
+    ...buildUsableATradSnapshotSummary({
+      usableSnapshots: result.usableSnapshots,
+      quarantinedSnapshots: result.quarantinedSnapshots,
+      rejectedSnapshots: result.rejectedSnapshots,
+      usablePolicy: result.usablePolicy
+    }),
     'Quality summary:',
     `- high confidence: ${result.qualitySummary.highConfidenceCount}`,
     `- medium confidence: ${result.qualitySummary.mediumConfidenceCount}`,
@@ -974,8 +1063,13 @@ export async function debugMarketWatchRows(
     message: 'ATrad observe-once read-only row debug completed.',
     rawRows: [],
     rawSnapshots: [],
+    rowResults: [],
     accepted: [],
     rejected: [],
+    usableSnapshots: [],
+    quarantinedSnapshots: [],
+    rejectedSnapshots: [],
+    usablePolicy: 'HIGH_CONFIDENCE only',
     qualityAssessments: [],
     qualitySummary: emptyQualitySummary(),
     extractionDebug: {
@@ -1546,8 +1640,13 @@ function emptyResult(ok: boolean, message: string): ManualATradObserveOnceResult
     message,
     rawRows: [],
     rawSnapshots: [],
+    rowResults: [],
     accepted: [],
     rejected: [],
+    usableSnapshots: [],
+    quarantinedSnapshots: [],
+    rejectedSnapshots: [],
+    usablePolicy: 'HIGH_CONFIDENCE only',
     qualityAssessments: [],
     qualitySummary: emptyQualitySummary()
   };

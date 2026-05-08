@@ -15,6 +15,7 @@ import {
   debugMarketWatchRows,
   extractVisibleMarketWatchRows,
   formatObserveOnceSummary,
+  partitionATradSnapshotsByConfidence,
   sanitizeMarketWatchRows,
   type ManualATradPageLike,
   type ManualATradObserveOnceResult
@@ -141,9 +142,21 @@ async function runDiagnostics(
     message: 'ATrad same-session read-only diagnostics completed.',
     rawRows: [],
     rawSnapshots: [],
+    rowResults: [],
     accepted: [],
     rejected: [],
-    diagnostics
+    diagnostics,
+    qualityAssessments: [],
+    qualitySummary: {
+      highConfidence: 0,
+      mediumConfidence: 0,
+      lowConfidence: 0,
+      rejected: 0
+    },
+    usableSnapshots: [],
+    quarantinedSnapshots: [],
+    rejectedSnapshots: [],
+    usablePolicy: 'HIGH_CONFIDENCE only'
   };
 }
 
@@ -153,11 +166,16 @@ async function runExtraction(
 ): Promise<ManualATradObserveOnceResult> {
   const rawRows = await extractVisibleMarketWatchRows(page);
   const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
+  const partition = partitionATradSnapshotsByConfidence(
+    sanitized.rowResults,
+    sanitized.qualityAssessments
+  );
   return {
     ok: true,
     message: 'ATrad same-session read-only snapshot completed.',
     rawRows,
-    ...sanitized
+    ...sanitized,
+    ...partition
   };
 }
 

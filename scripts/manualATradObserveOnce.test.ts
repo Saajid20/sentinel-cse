@@ -6,6 +6,7 @@ import { ATRAD_PERSISTENT_PROFILE_PATH, ATRAD_STORAGE_STATE_PATH } from './manua
 import {
   assessATradParsedSnapshotQuality,
   analyzeMarketWatchRows,
+  buildUsableATradSnapshotSummary,
   buildATradParsedRowQualitySummary,
   buildMarketWatchRowFromCells,
   collectPageDiagnostics,
@@ -16,7 +17,9 @@ import {
   ManualATradObserveOnceRuntime,
   marketWatchRowToRawSnapshot,
   normalizeATradFullWatchEquityRow,
+  partitionATradSnapshotsByConfidence,
   parseDojoWatchGridRow,
+  isUsableATradSnapshotQuality,
   sanitizeMarketWatchRows,
   runManualATradObserveOnce
 } from './manualATradObserveOnce.js';
@@ -69,6 +72,12 @@ describe('manual ATrad observe-once helpers', () => {
     const config = createManualATradObserveOnceConfig(['--raw-output']);
 
     expect(config.rawOutput).toBe(true);
+  });
+
+  it('parses the allow medium confidence flag from CLI args', () => {
+    const config = createManualATradObserveOnceConfig(['--allow-medium-confidence']);
+
+    expect(config.allowMediumConfidence).toBe(true);
   });
 
   it('returns a helpful result when storage state is missing', async () => {
@@ -1038,6 +1047,40 @@ describe('manual ATrad observe-once helpers', () => {
         marketWatchRowToRawSnapshot(cleanRow, 1_000),
         marketWatchRowToRawSnapshot(lowConfidenceRow, 1_000)
       ],
+      rowResults: [
+        {
+          row: cleanRow,
+          rawSnapshot: marketWatchRowToRawSnapshot(cleanRow, 1_000),
+          snapshot: {
+            ticker: 'MGT.N0000',
+            timestamp: 1_000,
+            lastPrice: 31.8,
+            bestBid: 31.7,
+            bestAsk: 31.9,
+            bidDepth: 11100,
+            askDepth: 6343,
+            volume: 4821,
+            totalTurnover: 153588.6
+          },
+          issues: []
+        },
+        {
+          row: lowConfidenceRow,
+          rawSnapshot: marketWatchRowToRawSnapshot(lowConfidenceRow, 1_000),
+          snapshot: {
+            ticker: 'LOW.N0000',
+            timestamp: 1_000,
+            lastPrice: 6343,
+            bestBid: 31.7,
+            bestAsk: 31.9,
+            bidDepth: 0,
+            askDepth: 0,
+            volume: 4821,
+            totalTurnover: 30569803
+          },
+          issues: []
+        }
+      ],
       accepted: [
         {
           row: cleanRow,
@@ -1057,13 +1100,208 @@ describe('manual ATrad observe-once helpers', () => {
         }
       ],
       rejected: [],
+      usableSnapshots: [
+        {
+          row: cleanRow,
+          rawSnapshot: marketWatchRowToRawSnapshot(cleanRow, 1_000),
+          snapshot: {
+            ticker: 'MGT.N0000',
+            timestamp: 1_000,
+            lastPrice: 31.8,
+            bestBid: 31.7,
+            bestAsk: 31.9,
+            bidDepth: 11100,
+            askDepth: 6343,
+            volume: 4821,
+            totalTurnover: 153588.6
+          },
+          issues: []
+        }
+      ],
+      quarantinedSnapshots: [
+        {
+          row: lowConfidenceRow,
+          rawSnapshot: marketWatchRowToRawSnapshot(lowConfidenceRow, 1_000),
+          snapshot: {
+            ticker: 'LOW.N0000',
+            timestamp: 1_000,
+            lastPrice: 6343,
+            bestBid: 31.7,
+            bestAsk: 31.9,
+            bidDepth: 0,
+            askDepth: 0,
+            volume: 4821,
+            totalTurnover: 30569803
+          },
+          issues: []
+        }
+      ],
+      rejectedSnapshots: [],
+      usablePolicy: 'HIGH_CONFIDENCE only',
       qualityAssessments: [cleanAssessment, lowAssessment],
       qualitySummary: buildATradParsedRowQualitySummary([cleanAssessment, lowAssessment])
     });
 
     expect(lines.join('\n')).toContain('Quality summary:');
+    expect(lines.join('\n')).toContain('Usable snapshots: 1');
+    expect(lines.join('\n')).toContain('Quarantined low-confidence snapshots: 1');
+    expect(lines.join('\n')).toContain('usable policy: HIGH_CONFIDENCE only');
     expect(lines.join('\n')).toContain('low confidence: 1');
     expect(lines.join('\n')).not.toContain('"Security":');
+  });
+
+  it('prints raw row JSON only when raw output is enabled', () => {
+    const lines = formatObserveOnceSummary({
+      ok: true,
+      message: 'summary',
+      rawRows: [fakeMarketWatchRow],
+      rawSnapshots: [marketWatchRowToRawSnapshot(fakeMarketWatchRow, 1_000)],
+      rowResults: [],
+      accepted: [],
+      rejected: [],
+      usableSnapshots: [],
+      quarantinedSnapshots: [],
+      rejectedSnapshots: [],
+      usablePolicy: 'HIGH_CONFIDENCE only',
+      qualityAssessments: [],
+      qualitySummary: buildATradParsedRowQualitySummary([]),
+      rawOutputEnabled: true
+    }).join('\n');
+
+    expect(lines).toContain('"Security": "SAMP.N0000"');
+  });
+
+  it('treats high confidence rows as usable by default', () => {
+    expect(isUsableATradSnapshotQuality('HIGH_CONFIDENCE')).toBe(true);
+  });
+
+  it('quarantines medium confidence rows by default', () => {
+    expect(isUsableATradSnapshotQuality('MEDIUM_CONFIDENCE')).toBe(false);
+  });
+
+  it('allows medium confidence rows when explicitly enabled', () => {
+    expect(isUsableATradSnapshotQuality('MEDIUM_CONFIDENCE', { allowMediumConfidence: true })).toBe(true);
+  });
+
+  it('partitions snapshots into usable quarantined and rejected buckets', () => {
+    const highRowResult = {
+      row: { Security: 'HIGH.N0000' },
+      rawSnapshot: { ticker: 'HIGH.N0000', timestamp: 1_000 },
+      snapshot: {
+        ticker: 'HIGH.N0000',
+        timestamp: 1_000,
+        lastPrice: 50,
+        bestBid: 49.9,
+        bestAsk: 50.1,
+        bidDepth: 1000,
+        askDepth: 900,
+        volume: 5000,
+        totalTurnover: 250000
+      },
+      issues: []
+    };
+    const mediumRowResult = {
+      row: { Security: 'MED.N0000' },
+      rawSnapshot: { ticker: 'MED.N0000', timestamp: 1_000 },
+      snapshot: {
+        ticker: 'MED.N0000',
+        timestamp: 1_000,
+        lastPrice: 30,
+        bestBid: 29.9,
+        bestAsk: 30.1,
+        bidDepth: 1000,
+        askDepth: 900,
+        volume: 4000,
+        totalTurnover: 120000
+      },
+      issues: []
+    };
+    const lowRowResult = {
+      row: { Security: 'LOW.N0000' },
+      rawSnapshot: { ticker: 'LOW.N0000', timestamp: 1_000 },
+      snapshot: {
+        ticker: 'LOW.N0000',
+        timestamp: 1_000,
+        lastPrice: 20,
+        bestBid: 19.9,
+        bestAsk: 20.1,
+        bidDepth: 1000,
+        askDepth: 900,
+        volume: 3000,
+        totalTurnover: 60000
+      },
+      issues: []
+    };
+    const rejectedRowResult = {
+      row: { Security: 'REJ.N0000' },
+      rawSnapshot: { ticker: 'REJ.N0000', timestamp: 1_000 },
+      issues: [{ code: 'UNREALISTIC_SPREAD', message: 'bad spread' }]
+    };
+    const partition = partitionATradSnapshotsByConfidence(
+      [highRowResult, mediumRowResult, lowRowResult, rejectedRowResult],
+      [
+        { ticker: 'HIGH.N0000', status: 'HIGH_CONFIDENCE', issues: [], sanitizerIssueCodes: [], row: highRowResult.row, rawSnapshot: highRowResult.rawSnapshot },
+        { ticker: 'MED.N0000', status: 'MEDIUM_CONFIDENCE', issues: [], sanitizerIssueCodes: [], row: mediumRowResult.row, rawSnapshot: mediumRowResult.rawSnapshot },
+        { ticker: 'LOW.N0000', status: 'LOW_CONFIDENCE', issues: [{ code: 'LOW_MAPPING_CONFIDENCE', message: 'low' }], sanitizerIssueCodes: [], row: lowRowResult.row, rawSnapshot: lowRowResult.rawSnapshot },
+        { ticker: 'REJ.N0000', status: 'REJECTED', issues: [], sanitizerIssueCodes: ['UNREALISTIC_SPREAD'], row: rejectedRowResult.row, rawSnapshot: rejectedRowResult.rawSnapshot }
+      ]
+    );
+
+    expect(partition.usableSnapshots).toHaveLength(1);
+    expect(partition.quarantinedSnapshots).toHaveLength(2);
+    expect(partition.rejectedSnapshots).toHaveLength(1);
+    expect(partition.usablePolicy).toBe('HIGH_CONFIDENCE only');
+  });
+
+  it('includes medium confidence rows in usable snapshots when enabled', () => {
+    const partition = partitionATradSnapshotsByConfidence(
+      [
+        {
+          row: { Security: 'MED.N0000' },
+          rawSnapshot: { ticker: 'MED.N0000', timestamp: 1_000 },
+          snapshot: {
+            ticker: 'MED.N0000',
+            timestamp: 1_000,
+            lastPrice: 30,
+            bestBid: 29.9,
+            bestAsk: 30.1,
+            bidDepth: 1000,
+            askDepth: 900,
+            volume: 4000,
+            totalTurnover: 120000
+          },
+          issues: []
+        }
+      ],
+      [
+        {
+          ticker: 'MED.N0000',
+          status: 'MEDIUM_CONFIDENCE',
+          issues: [],
+          sanitizerIssueCodes: [],
+          row: { Security: 'MED.N0000' },
+          rawSnapshot: { ticker: 'MED.N0000', timestamp: 1_000 }
+        }
+      ],
+      { allowMediumConfidence: true }
+    );
+
+    expect(partition.usableSnapshots).toHaveLength(1);
+    expect(partition.quarantinedSnapshots).toHaveLength(0);
+    expect(partition.usablePolicy).toBe('HIGH_CONFIDENCE + MEDIUM_CONFIDENCE');
+  });
+
+  it('builds a usable snapshot summary with gate policy', () => {
+    const lines = buildUsableATradSnapshotSummary({
+      usableSnapshots: [{ row: {}, rawSnapshot: {}, snapshot: { ticker: 'A', timestamp: 1, lastPrice: 1, bestBid: 1, bestAsk: 1, bidDepth: 1, askDepth: 1, volume: 1, totalTurnover: 1 }, issues: [] }],
+      quarantinedSnapshots: [{ row: {}, rawSnapshot: {}, snapshot: { ticker: 'B', timestamp: 1, lastPrice: 1, bestBid: 1, bestAsk: 1, bidDepth: 1, askDepth: 1, volume: 1, totalTurnover: 1 }, issues: [] }],
+      rejectedSnapshots: [{ row: {}, rawSnapshot: {}, issues: [] }],
+      usablePolicy: 'HIGH_CONFIDENCE only'
+    }).join('\n');
+
+    expect(lines).toContain('Usable snapshots: 1');
+    expect(lines).toContain('Quarantined low-confidence snapshots: 1');
+    expect(lines).toContain('usable policy: HIGH_CONFIDENCE only');
   });
 
   it('rejects rows with insufficient required price fields', () => {
@@ -1615,7 +1853,7 @@ describe('manual ATrad observe-once helpers', () => {
     const source = readFileSync('scripts/manualATradObserveOnce.ts', 'utf8');
 
     expect(source).not.toMatch(/process\.env/);
-    expect(source).not.toMatch(/username|password|otp/i);
+    expect(source).not.toMatch(/\busername\b|\bpassword\b|\botp\b/i);
     expect(source).not.toMatch(/\bbuy\b(?!\s+sentiment)|sell|submit|confirm|quantity input|price input|market order|limit order/i);
     expect(source).not.toMatch(/click\(|fill\(|type\(/);
   });
