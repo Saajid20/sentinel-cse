@@ -214,6 +214,33 @@ describe('manual ATrad observe-once helpers', () => {
     });
   });
 
+  it('cleans malformed CIC ticker suffix noise', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
+      ['CIC.N0000C`', 'C I C Holdings PLC', '1,000', '78.50', '79.00', '600', '78.80', '12,500']
+    );
+
+    expect(row.Security).toBe('CIC.N0000');
+  });
+
+  it('cleans malformed LOLC ticker suffix noise', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
+      ['LOLC.N0000C`', 'LOLC Holdings PLC', '1,000', '510.00', '512.00', '200', '511.00', '4,200']
+    );
+
+    expect(row.Security).toBe('LOLC.N0000');
+  });
+
+  it('cleans malformed COMB ticker suffix noise', () => {
+    const row = parseDojoWatchGridRow(
+      ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
+      ['COMB.N0000C`', 'Commercial Bank PLC', '1,000', '141.00', '141.25', '500', '141.10', '8,500']
+    );
+
+    expect(row.Security).toBe('COMB.N0000');
+  });
+
   it('parses a rich Dojo row with ticker, bid/ask, last, and volume', () => {
     const row = parseDojoWatchGridRow(
       ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume'],
@@ -393,7 +420,6 @@ describe('manual ATrad observe-once helpers', () => {
       'Buy Sentiment': '15.50%',
       Time: '10:15:48.000000'
     });
-    expect(row.VWA).toBeUndefined();
   });
 
   it('recovers DFCC last from a later price-like field instead of trusting an early quantity-like value', () => {
@@ -532,6 +558,31 @@ describe('manual ATrad observe-once helpers', () => {
     });
   });
 
+  it('leaves turnover-sized VWA candidates unset instead of mapping them as VWA', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'VWA2.N0000',
+      'TURNOVER TEST PLC',
+      '5,000',
+      '31.70',
+      '31.90',
+      '6,343',
+      '31.80',
+      '97',
+      '0.40',
+      '1.27',
+      '32.00',
+      '153,588.60',
+      '4,821',
+      '153,588.60',
+      '22',
+      '31.40',
+      '34.15%',
+      '10:15:47.383159'
+    ]);
+
+    expect(row.VWA).toBeUndefined();
+  });
+
   it('keeps genuinely ambiguous last values at low confidence when no better price is recoverable', () => {
     const row = normalizeATradFullWatchEquityRow([
       'BADL.N0000',
@@ -586,6 +637,53 @@ describe('manual ATrad observe-once helpers', () => {
     const assessment = assessATradParsedSnapshotQuality(row, rawSnapshot, { accepted: true, issues: [] });
 
     expect(['HIGH_CONFIDENCE', 'MEDIUM_CONFIDENCE']).toContain(assessment.status);
+  });
+
+  it('does not downgrade a clean row to low confidence just because VWA is missing', () => {
+    const row = {
+      Security: 'CIC.X0000',
+      'Bid Qty': '2,500',
+      'Bid Price': '72.00',
+      'Ask Price': '72.20',
+      'Ask Qty': '1,800',
+      Last: '72.10',
+      Volume: '12,500'
+    };
+    const assessment = assessATradParsedSnapshotQuality(
+      row,
+      marketWatchRowToRawSnapshot(row, 1_000),
+      { accepted: true, issues: [] }
+    );
+
+    expect(['HIGH_CONFIDENCE', 'MEDIUM_CONFIDENCE']).toContain(assessment.status);
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain('LOW_MAPPING_CONFIDENCE');
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain('VWA_OUTSIDE_PRICE_RANGE');
+  });
+
+  it('retains price-like VWA values near bid ask and last', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'CIC.X0000',
+      'CIC HOLDINGS PLC',
+      '2,500',
+      '72.00',
+      '72.20',
+      '1,800',
+      '72.10',
+      '400',
+      '0.10',
+      '0.14',
+      '72.40',
+      '72.00',
+      '72.08',
+      '12,500',
+      '901,000.00',
+      '14',
+      '72.00',
+      '18.00%',
+      '10:15:52'
+    ]);
+
+    expect(row.VWA).toBe('72.08');
   });
 
   it('assigns high or medium confidence to a clean CDB-shaped row', () => {

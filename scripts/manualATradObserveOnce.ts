@@ -67,7 +67,7 @@ const PREFERRED_MARKET_WATCH_KEYWORDS = [
 ];
 
 const DIAGNOSTIC_VISIBLE_TEXT_LIMIT = 30;
-const TICKER_PATTERN = /\b[A-Z0-9]{2,12}\.N\d{4}\b/;
+const TICKER_PATTERN = /\b[A-Z0-9]{2,12}\.[A-Z]\d{4}\b/;
 
 export type MarketWatchRow = Record<string, string>;
 
@@ -285,8 +285,9 @@ export function marketWatchRowToRawSnapshot(
   row: MarketWatchRow,
   timestamp: number
 ): RawMarketSnapshot {
+  const ticker = extractCseTicker(field(row, 'Security')) ?? field(row, 'Security');
   return {
-    ticker: field(row, 'Security'),
+    ticker,
     lastPrice: numericField(row, 'Last'),
     bestBid: numericField(row, 'Bid Price'),
     bestAsk: numericField(row, 'Ask Price'),
@@ -325,7 +326,9 @@ export function buildMarketWatchRowFromCells(headers: string[], cells: string[])
 
     const value = normalizeMarketWatchText(cells[index] ?? '');
     if (value.length > 0) {
-      mapped[normalizedHeader] = value;
+      mapped[normalizedHeader] = normalizedHeader === 'Security'
+        ? extractCseTicker(value) ?? value
+        : value;
     }
   });
 
@@ -336,7 +339,7 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
   const normalizedCells = cells
     .map((cell) => normalizeMarketWatchText(cell))
     .filter((cell) => cell.length > 0);
-  const tickerIndex = normalizedCells.findIndex((cell) => TICKER_PATTERN.test(cell));
+  const tickerIndex = normalizedCells.findIndex((cell) => Boolean(extractCseTicker(cell)));
 
   if (tickerIndex < 0) {
     return {};
@@ -348,9 +351,9 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
   }
 
   const mapped: MarketWatchRow = {};
-  const tickerMatch = working[0]?.match(TICKER_PATTERN);
-  if (tickerMatch) {
-    mapped.Security = tickerMatch[0];
+  const ticker = extractCseTicker(working[0]);
+  if (ticker) {
+    mapped.Security = ticker;
   }
 
   let cursor = 1;
@@ -454,8 +457,11 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
   }
   if (remainingPriceCandidates.length >= 3) {
     mapped.Low = remainingPriceCandidates[1] as string;
-    mapped.VWA = mapped.VWA ?? remainingPriceCandidates[2] as string;
-  } else if (remainingPriceCandidates.length === 2) {
+      const vwaCandidate = remainingPriceCandidates[2] as string;
+      if (looksLikeVwaCandidate(vwaCandidate, bid, ask, parseNumericValue(mapped.Last))) {
+        mapped.VWA = mapped.VWA ?? vwaCandidate;
+      }
+    } else if (remainingPriceCandidates.length === 2) {
     const secondCandidate = remainingPriceCandidates[1] as string;
     if (looksLikeVwaCandidate(secondCandidate, bid, ask, parseNumericValue(mapped.Last))) {
       mapped.VWA = mapped.VWA ?? secondCandidate;
@@ -471,7 +477,7 @@ export function parseDojoWatchGridRow(headers: string[], cells: string[]): Marke
   let mapped = buildMarketWatchRowFromCells(headers, cells);
   const normalizedHeaders = headers.map((header) => normalizeMarketWatchText(header));
   const securityHeaderIndex = normalizedHeaders.findIndex((header) => header === 'Security');
-  const tickerIndex = cells.findIndex((cell) => TICKER_PATTERN.test(cell));
+  const tickerIndex = cells.findIndex((cell) => Boolean(extractCseTicker(cell)));
 
   if (securityHeaderIndex >= 0 && tickerIndex >= 0 && tickerIndex !== securityHeaderIndex) {
     const offsetMapped: MarketWatchRow = {};
@@ -500,10 +506,10 @@ export function parseDojoWatchGridRow(headers: string[], cells: string[]): Marke
   }
 
   if (!mapped.Security) {
-    const tickerText = cells.find((cell) => TICKER_PATTERN.test(cell)) ?? '';
-    const tickerMatch = tickerText.match(TICKER_PATTERN);
-    if (tickerMatch) {
-      mapped.Security = tickerMatch[0];
+    const tickerText = cells.find((cell) => Boolean(extractCseTicker(cell))) ?? '';
+    const ticker = extractCseTicker(tickerText);
+    if (ticker) {
+      mapped.Security = ticker;
     }
   }
 
@@ -646,14 +652,11 @@ export function assessATradParsedSnapshotQuality(
     const mappedCoreFields = ['Security', 'Bid Price', 'Ask Price', 'Last', 'Volume'].filter((fieldName) =>
       field(row, fieldName)
     ).length;
-    const mappedTrailingFields = ['VWA', 'Turnover', 'Trades', 'Price Close', 'Buy Sentiment', 'Time'].filter(
-      (fieldName) => field(row, fieldName)
-    ).length;
-    if (mappedCoreFields < 5 || mappedTrailingFields === 0) {
+    if (mappedCoreFields < 5) {
       issues.push(
         issue(
           'LOW_MAPPING_CONFIDENCE',
-          'Required trading fields are present but the trailing mapping confidence is low.'
+          'Required trading fields are present but the core mapping confidence is low.'
         )
       );
     }
@@ -1137,12 +1140,22 @@ function emptyQualitySummary(): ATradParsedRowQualitySummary {
   };
 }
 
+function extractCseTicker(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = normalizeMarketWatchText(value).toUpperCase();
+  const match = normalized.match(/[A-Z0-9]{2,12}\.[A-Z]\d{4}/);
+  return match?.[0];
+}
+
 function isLikelyCompanyName(value: string | undefined): boolean {
   if (!value) {
     return false;
   }
 
-  return !TICKER_PATTERN.test(value) && !isPercentValue(value) && !isLikelyTimeValue(value) && !isNumericLike(value);
+  return !extractCseTicker(value) && !isPercentValue(value) && !isLikelyTimeValue(value) && !isNumericLike(value);
 }
 
 function findLikelyLastIndex(
@@ -1292,7 +1305,7 @@ function looksLikeVwaCandidate(
 
   const high = Math.max(...references);
   const low = Math.min(...references);
-  return numeric >= low && numeric <= high;
+  return numeric >= low * 0.98 && numeric <= high * 1.02;
 }
 
 function isLikelyTimeValue(value: string | undefined): boolean {
