@@ -16,6 +16,7 @@
     "atrad:login-and-observe": "tsx scripts/manualATradLoginAndObserve.ts",
     "atrad:observe-once": "tsx scripts/manualATradObserveOnce.ts",
     "atrad:record-session": "tsx scripts/manualATradRecordSession.ts",
+    "atrad:replay-session": "tsx scripts/manualATradReplaySession.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r run typecheck"

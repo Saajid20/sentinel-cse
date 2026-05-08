@@ -11,6 +11,10 @@ import {
 import { createManualATradLoginConfig, runManualATradLogin } from './manualATradLogin.js';
 import { createManualATradObserveOnceConfig, runManualATradObserveOnce } from './manualATradObserveOnce.js';
 import {
+  createManualATradReplaySessionConfig,
+  runManualATradReplaySession
+} from './manualATradReplaySession.js';
+import {
   createManualATradRecordSessionConfig,
   runManualATradRecordSession
 } from './manualATradRecordSession.js';
@@ -26,6 +30,7 @@ export type SentinelCommand =
   | 'atrad-login-and-observe'
   | 'atrad-observe-once'
   | 'atrad-record-session'
+  | 'atrad-replay-session'
   | 'telegram-test'
   | 'supabase-test'
   | 'help';
@@ -84,6 +89,15 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
     case 'atrad-record-session': {
       const result = await runManualATradRecordSession(
         createManualATradRecordSessionConfig(args.slice(1))
+      );
+      return {
+        exitCode: result.ok ? 0 : 1,
+        output: result.message
+      };
+    }
+    case 'atrad-replay-session': {
+      const result = await runManualATradReplaySession(
+        createManualATradReplaySessionConfig(args.slice(1))
       );
       return {
         exitCode: result.ok ? 0 : 1,
@@ -189,6 +203,7 @@ export function formatHelp(): string {
     '  pnpm sentinel atrad-login-and-observe',
     '  pnpm sentinel atrad-observe-once',
     '  pnpm sentinel atrad-record-session',
+    '  pnpm sentinel atrad-replay-session',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
     '  pnpm sentinel help',
@@ -201,6 +216,7 @@ export function formatHelp(): string {
     '  atrad-login-and-observe  Log in manually, then observe the current same-session page without reopening the browser.',
     '  atrad-observe-once  Read Market Watch rows once using saved local storage state or --persistent-profile.',
     '  atrad-record-session  Record usable read-only Market Watch snapshots to an ignored local JSON session file.',
+    '  atrad-replay-session  Replay a recorded local ATrad session JSON file through the safe local replay engine.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'
