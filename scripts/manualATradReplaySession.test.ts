@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { ManualATradReplaySessionRuntime } from './manualATradReplaySession.js';
 import {
+  analyzeATradReplayDiagnostics,
   createManualATradReplaySessionConfig,
   extractReplayableATradSnapshots,
   formatATradReplaySessionSummary,
@@ -184,8 +185,95 @@ describe('manual ATrad replay-session helpers', () => {
     expect(result.uniqueTickers).toBe(2);
     expect(result.replaySummary.snapshotsProcessed).toBe(3);
     expect(result.replaySummary.alertsSent).toBe(0);
+    expect(result.diagnostics.readinessStatus).toBe('PARTIALLY_READY');
+    expect(result.diagnostics.tickersWithRepeatedSnapshots).toBe(1);
+    expect(result.diagnostics.strategyReadySnapshotCount).toBe(2);
     expect(result.warning).toBe('No signals were generated during replay.');
     expect(calls.join('\n')).toContain('Sentinel-CSE ATrad recorded session replay summary');
+    expect(calls.join('\n')).toContain('ATrad replay diagnostics:');
+  });
+
+  it('reports diagnostics when no signals are generated', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const snapshots = extractReplayableATradSnapshots(session);
+    const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
+      snapshotsProcessed: 3,
+      signalsGenerated: 0,
+      alertsSent: 0,
+      outcomesClosed: 0,
+      finalActiveSignals: []
+    });
+
+    expect(diagnostics.likelyBlockers).toContain('insufficient time-series history');
+    expect(diagnostics.likelyBlockers).toContain('volume ratio unavailable');
+    expect(diagnostics.likelyBlockers).toContain('VWAP missing');
+    expect(diagnostics.likelyBlockers).toContain('first-5-minute high missing');
+  });
+
+  it('calculates repeated ticker count and average spread percent', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const snapshots = extractReplayableATradSnapshots(session);
+    const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
+      snapshotsProcessed: 3,
+      signalsGenerated: 0,
+      alertsSent: 0,
+      outcomesClosed: 0,
+      finalActiveSignals: []
+    });
+
+    expect(diagnostics.tickersWithRepeatedSnapshots).toBe(1);
+    expect(diagnostics.perTickerDiagnostics[0]).toMatchObject({
+      ticker: 'ALFA.N0000',
+      snapshots: 2,
+      enoughObservations: true,
+      strategyReady: true
+    });
+    expect(diagnostics.perTickerDiagnostics[0]?.averageSpreadPercent).toBeCloseTo(
+      ((((41.6 - 41.4) / 41.6) * 100) + (((41.7 - 41.5) / 41.7) * 100)) / 2,
+      5
+    );
+    expect(diagnostics.perTickerDiagnostics[1]).toMatchObject({
+      ticker: 'BETA.N0000',
+      snapshots: 1,
+      enoughObservations: false,
+      strategyReady: false
+    });
+  });
+
+  it('classifies too-short unrepeated data as NOT_READY', () => {
+    const session = parseATradRecordedSessionFile(
+      JSON.stringify({
+        ...fakeRecordedSession,
+        snapshots: [
+          { ...fakeRecordedSession.snapshots[0], ticker: 'ONE.N0000', timestamp: 1 },
+          { ...fakeRecordedSession.snapshots[1], ticker: 'TWO.N0000', timestamp: 2 }
+        ]
+      })
+    );
+    const snapshots = extractReplayableATradSnapshots(session);
+    const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
+      snapshotsProcessed: 2,
+      signalsGenerated: 0,
+      alertsSent: 0,
+      outcomesClosed: 0,
+      finalActiveSignals: []
+    });
+
+    expect(diagnostics.readinessStatus).toBe('NOT_READY');
+  });
+
+  it('classifies repeated clean data with missing strategy features as PARTIALLY_READY', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const snapshots = extractReplayableATradSnapshots(session);
+    const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
+      snapshotsProcessed: 3,
+      signalsGenerated: 0,
+      alertsSent: 0,
+      outcomesClosed: 0,
+      finalActiveSignals: []
+    });
+
+    expect(diagnostics.readinessStatus).toBe('PARTIALLY_READY');
   });
 
   it('formats a replay summary', () => {
@@ -211,12 +299,43 @@ describe('manual ATrad replay-session helpers', () => {
         startTime: 1_715_160_000_000,
         endTime: 1_715_160_030_000
       },
+      diagnostics: {
+        snapshotsProcessed: 3,
+        uniqueTickers: 2,
+        tickersWithRepeatedSnapshots: 1,
+        spreadBlockedCount: 0,
+        volumeBlockedCount: 3,
+        imbalanceBlockedCount: 0,
+        vwapMissingCount: 3,
+        firstFiveMinuteHighMissingCount: 3,
+        insufficientHistoryCount: 1,
+        qualityGateExcludedCount: 2,
+        strategyGeneratedSignalCount: 0,
+        strategyReadySnapshotCount: 3,
+        likelyBlockers: ['insufficient time-series history', 'volume ratio unavailable'],
+        recommendations: ['record longer session with interval <= 10s'],
+        readinessStatus: 'PARTIALLY_READY',
+        perTickerDiagnostics: [
+          {
+            ticker: 'ALFA.N0000',
+            snapshots: 2,
+            averageSpreadPercent: ((41.6 - 41.4) / 41.6) * 100,
+            latestLastPrice: 41.6,
+            latestBid: 41.5,
+            latestAsk: 41.7,
+            enoughObservations: true,
+            strategyReady: true
+          }
+        ]
+      },
       warning: 'No signals were generated during replay.'
     });
 
     expect(summary).toContain('sessionId: atrad-session-20260508-101500');
     expect(summary).toContain('total snapshots loaded: 3');
     expect(summary).toContain('warning: No signals were generated during replay.');
+    expect(summary).toContain('ATrad replay diagnostics:');
+    expect(summary).toContain('- readiness status: PARTIALLY_READY');
   });
 
   it('does not read environment variables or include live action strings', () => {

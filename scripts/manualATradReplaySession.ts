@@ -8,6 +8,9 @@ import {
 } from '../apps/worker/src/index.js';
 import type { ATradRecordedSession } from './manualATradRecordSession.js';
 
+const OPENING_MOMENTUM_SPREAD_THRESHOLD = 1.5;
+const OPENING_MOMENTUM_IMBALANCE_THRESHOLD = 0;
+
 export interface ManualATradReplaySessionConfig {
   inputPath: string;
   readonlyMode: true;
@@ -16,6 +19,41 @@ export interface ManualATradReplaySessionConfig {
 export interface ATradReplayTickerCount {
   ticker: string;
   snapshotCount: number;
+}
+
+export type ATradReplayReadinessStatus =
+  | 'NOT_READY'
+  | 'PARTIALLY_READY'
+  | 'READY_FOR_SHADOW_REPLAY';
+
+export interface ATradReplayTickerDiagnostic {
+  ticker: string;
+  snapshots: number;
+  averageSpreadPercent?: number;
+  latestLastPrice: number;
+  latestBid: number;
+  latestAsk: number;
+  enoughObservations: boolean;
+  strategyReady: boolean;
+}
+
+export interface ATradReplayDiagnostics {
+  snapshotsProcessed: number;
+  uniqueTickers: number;
+  tickersWithRepeatedSnapshots: number;
+  spreadBlockedCount: number;
+  volumeBlockedCount: number;
+  imbalanceBlockedCount: number;
+  vwapMissingCount: number;
+  firstFiveMinuteHighMissingCount: number;
+  insufficientHistoryCount: number;
+  qualityGateExcludedCount: number;
+  strategyGeneratedSignalCount: number;
+  strategyReadySnapshotCount: number;
+  likelyBlockers: string[];
+  recommendations: string[];
+  readinessStatus: ATradReplayReadinessStatus;
+  perTickerDiagnostics: ATradReplayTickerDiagnostic[];
 }
 
 export interface ManualATradReplaySessionResult {
@@ -29,6 +67,7 @@ export interface ManualATradReplaySessionResult {
   uniqueTickers: number;
   topTickers: ATradReplayTickerCount[];
   replaySummary: ReplayResultSummary;
+  diagnostics: ATradReplayDiagnostics;
   warning?: string;
 }
 
@@ -115,6 +154,87 @@ export function topTickersBySnapshotCount(
     .slice(0, limit);
 }
 
+export function analyzeATradReplayDiagnostics(
+  session: ATradRecordedSession,
+  snapshots: MarketSnapshot[],
+  replaySummary: ReplayResultSummary
+): ATradReplayDiagnostics {
+  const grouped = groupSnapshotsByTicker(snapshots);
+  const perTickerDiagnostics = [...grouped.entries()]
+    .map(([ticker, entries]) => buildTickerDiagnostic(ticker, entries))
+    .sort((left, right) => right.snapshots - left.snapshots || left.ticker.localeCompare(right.ticker))
+    .slice(0, 10);
+
+  const spreadBlockedCount = snapshots.filter((snapshot) => {
+    const spreadPercent = calculateSpreadPercent(snapshot);
+    return spreadPercent !== undefined && spreadPercent >= OPENING_MOMENTUM_SPREAD_THRESHOLD;
+  }).length;
+
+  const imbalanceBlockedCount = snapshots.filter(
+    (snapshot) => calculateOrderBookImbalance(snapshot) <= OPENING_MOMENTUM_IMBALANCE_THRESHOLD
+  ).length;
+
+  const tickerCounts = new Map<string, number>(
+    [...grouped.entries()].map(([ticker, entries]) => [ticker, entries.length])
+  );
+  const repeatedTickerSet = new Set(
+    [...tickerCounts.entries()].filter(([, count]) => count >= 2).map(([ticker]) => ticker)
+  );
+  const insufficientHistoryCount = snapshots.filter(
+    (snapshot) => (tickerCounts.get(snapshot.ticker) ?? 0) < 2
+  ).length;
+  const strategyReadySnapshotCount = snapshots.filter((snapshot) => {
+    const spreadPercent = calculateSpreadPercent(snapshot);
+    return (
+      (tickerCounts.get(snapshot.ticker) ?? 0) >= 2 &&
+      spreadPercent !== undefined &&
+      spreadPercent < OPENING_MOMENTUM_SPREAD_THRESHOLD &&
+      calculateOrderBookImbalance(snapshot) > OPENING_MOMENTUM_IMBALANCE_THRESHOLD
+    );
+  }).length;
+
+  const qualityGateExcludedCount =
+    (session.totals?.quarantinedSnapshots ?? 0) + (session.totals?.rejectedSnapshots ?? 0);
+  const vwapMissingCount = snapshots.length;
+  const firstFiveMinuteHighMissingCount = snapshots.length;
+  const volumeBlockedCount = snapshots.length;
+
+  const likelyBlockers = buildLikelyBlockers({
+    insufficientHistoryCount,
+    vwapMissingCount,
+    volumeBlockedCount,
+    firstFiveMinuteHighMissingCount,
+    spreadBlockedCount,
+    imbalanceBlockedCount
+  });
+  const readinessStatus = classifyReplayReadiness({
+    repeatedTickerCount: repeatedTickerSet.size,
+    snapshotsProcessed: snapshots.length,
+    strategyReadySnapshotCount,
+    vwapMissingCount,
+    firstFiveMinuteHighMissingCount
+  });
+
+  return {
+    snapshotsProcessed: replaySummary.snapshotsProcessed,
+    uniqueTickers: grouped.size,
+    tickersWithRepeatedSnapshots: repeatedTickerSet.size,
+    spreadBlockedCount,
+    volumeBlockedCount,
+    imbalanceBlockedCount,
+    vwapMissingCount,
+    firstFiveMinuteHighMissingCount,
+    insufficientHistoryCount,
+    qualityGateExcludedCount,
+    strategyGeneratedSignalCount: replaySummary.signalsGenerated,
+    strategyReadySnapshotCount,
+    likelyBlockers,
+    recommendations: buildReplayRecommendations(readinessStatus),
+    readinessStatus,
+    perTickerDiagnostics
+  };
+}
+
 export function formatATradReplaySessionSummary(
   result: ManualATradReplaySessionResult
 ): string[] {
@@ -144,6 +264,40 @@ export function formatATradReplaySessionSummary(
     lines.push(`warning: ${result.warning}`);
   }
 
+  lines.push('', 'ATrad replay diagnostics:');
+  lines.push(`- snapshots processed: ${result.diagnostics.snapshotsProcessed}`);
+  lines.push(`- unique tickers: ${result.diagnostics.uniqueTickers}`);
+  lines.push(`- tickers with repeated snapshots: ${result.diagnostics.tickersWithRepeatedSnapshots}`);
+  result.diagnostics.likelyBlockers.forEach((blocker) => {
+    lines.push(`- likely blocker: ${blocker}`);
+  });
+  lines.push(`- spread blocked: ${result.diagnostics.spreadBlockedCount}`);
+  lines.push(`- volume blocked: ${result.diagnostics.volumeBlockedCount}`);
+  lines.push(`- imbalance blocked: ${result.diagnostics.imbalanceBlockedCount}`);
+  lines.push(`- VWAP missing or unusable: ${result.diagnostics.vwapMissingCount}`);
+  lines.push(`- first-5-minute high missing or unusable: ${result.diagnostics.firstFiveMinuteHighMissingCount}`);
+  lines.push(`- insufficient time-series history: ${result.diagnostics.insufficientHistoryCount}`);
+  lines.push(`- sanitizer/quality gate excluded rows: ${result.diagnostics.qualityGateExcludedCount}`);
+  lines.push(`- strategy-ready snapshots: ${result.diagnostics.strategyReadySnapshotCount}`);
+  lines.push(`- readiness status: ${result.diagnostics.readinessStatus}`);
+  result.diagnostics.recommendations.forEach((recommendation) => {
+    lines.push(`- recommendation: ${recommendation}`);
+  });
+  lines.push('per-ticker diagnostics:');
+  if (result.diagnostics.perTickerDiagnostics.length === 0) {
+    lines.push('- none');
+  } else {
+    result.diagnostics.perTickerDiagnostics.forEach((ticker) => {
+      lines.push(
+        `- ${ticker.ticker}: snapshots=${ticker.snapshots}, avgSpread=${formatOptionalPercent(
+          ticker.averageSpreadPercent
+        )}, latestLast=${ticker.latestLastPrice.toFixed(2)}, latestBidAsk=${ticker.latestBid.toFixed(
+          2
+        )}/${ticker.latestAsk.toFixed(2)}, enoughObservations=${ticker.enoughObservations ? 'yes' : 'no'}, strategyReady=${ticker.strategyReady ? 'yes' : 'no'}`
+      );
+    });
+  }
+
   return lines;
 }
 
@@ -161,6 +315,7 @@ export async function runManualATradReplaySession(
   const pipeline = new SentinelPipeline({ runtime: { mode: 'SHADOW' } });
   const replayEngine = new MarketReplayEngine();
   const replaySummary = await replayEngine.replay(snapshots, pipeline);
+  const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, replaySummary);
   const warning = replaySummary.signalsGenerated === 0
     ? 'No signals were generated during replay.'
     : undefined;
@@ -176,6 +331,7 @@ export async function runManualATradReplaySession(
     uniqueTickers: new Set(snapshots.map((snapshot) => snapshot.ticker)).size,
     topTickers: topTickersBySnapshotCount(snapshots),
     replaySummary,
+    diagnostics,
     warning
   };
 
@@ -223,6 +379,138 @@ function isReplayableSnapshot(value: unknown): value is MarketSnapshot {
     typeof value.volume === 'number' &&
     typeof value.totalTurnover === 'number'
   );
+}
+
+function groupSnapshotsByTicker(snapshots: MarketSnapshot[]): Map<string, MarketSnapshot[]> {
+  const grouped = new Map<string, MarketSnapshot[]>();
+  for (const snapshot of snapshots) {
+    const existing = grouped.get(snapshot.ticker);
+    if (existing) {
+      existing.push(snapshot);
+    } else {
+      grouped.set(snapshot.ticker, [snapshot]);
+    }
+  }
+  return grouped;
+}
+
+function buildTickerDiagnostic(
+  ticker: string,
+  snapshots: MarketSnapshot[]
+): ATradReplayTickerDiagnostic {
+  const latest = snapshots[snapshots.length - 1] ?? snapshots[0];
+  const spreadValues = snapshots
+    .map(calculateSpreadPercent)
+    .filter((value): value is number => value !== undefined);
+  const averageSpreadPercent = spreadValues.length > 0
+    ? spreadValues.reduce((total, value) => total + value, 0) / spreadValues.length
+    : undefined;
+  const enoughObservations = snapshots.length >= 2;
+  const strategyReady =
+    enoughObservations &&
+    averageSpreadPercent !== undefined &&
+    averageSpreadPercent < OPENING_MOMENTUM_SPREAD_THRESHOLD &&
+    calculateOrderBookImbalance(latest) > OPENING_MOMENTUM_IMBALANCE_THRESHOLD;
+
+  return {
+    ticker,
+    snapshots: snapshots.length,
+    averageSpreadPercent,
+    latestLastPrice: latest.lastPrice,
+    latestBid: latest.bestBid,
+    latestAsk: latest.bestAsk,
+    enoughObservations,
+    strategyReady
+  };
+}
+
+function calculateSpreadPercent(snapshot: MarketSnapshot): number | undefined {
+  if (snapshot.bestAsk <= 0) {
+    return undefined;
+  }
+  return ((snapshot.bestAsk - snapshot.bestBid) / snapshot.bestAsk) * 100;
+}
+
+function calculateOrderBookImbalance(snapshot: MarketSnapshot): number {
+  const denominator = snapshot.bidDepth + snapshot.askDepth;
+  if (denominator === 0) {
+    return 0;
+  }
+  return (snapshot.bidDepth - snapshot.askDepth) / denominator;
+}
+
+function buildLikelyBlockers(counts: {
+  insufficientHistoryCount: number;
+  vwapMissingCount: number;
+  volumeBlockedCount: number;
+  firstFiveMinuteHighMissingCount: number;
+  spreadBlockedCount: number;
+  imbalanceBlockedCount: number;
+}): string[] {
+  const blockers: string[] = [];
+  if (counts.insufficientHistoryCount > 0) {
+    blockers.push('insufficient time-series history');
+  }
+  if (counts.volumeBlockedCount > 0) {
+    blockers.push('volume ratio unavailable');
+  }
+  if (counts.vwapMissingCount > 0) {
+    blockers.push('VWAP missing');
+  }
+  if (counts.firstFiveMinuteHighMissingCount > 0) {
+    blockers.push('first-5-minute high missing');
+  }
+  if (counts.spreadBlockedCount > 0) {
+    blockers.push('spread too wide');
+  }
+  if (counts.imbalanceBlockedCount > 0) {
+    blockers.push('order book imbalance below threshold');
+  }
+  return blockers.slice(0, 4);
+}
+
+function classifyReplayReadiness(input: {
+  repeatedTickerCount: number;
+  snapshotsProcessed: number;
+  strategyReadySnapshotCount: number;
+  vwapMissingCount: number;
+  firstFiveMinuteHighMissingCount: number;
+}): ATradReplayReadinessStatus {
+  if (input.repeatedTickerCount === 0 || input.snapshotsProcessed === 0) {
+    return 'NOT_READY';
+  }
+
+  if (
+    input.strategyReadySnapshotCount === 0 ||
+    input.vwapMissingCount > 0 ||
+    input.firstFiveMinuteHighMissingCount > 0
+  ) {
+    return 'PARTIALLY_READY';
+  }
+
+  return 'READY_FOR_SHADOW_REPLAY';
+}
+
+function buildReplayRecommendations(status: ATradReplayReadinessStatus): string[] {
+  if (status === 'NOT_READY') {
+    return [
+      'record longer session with interval <= 10s',
+      'capture more repeated ticker observations before replay'
+    ];
+  }
+
+  if (status === 'PARTIALLY_READY') {
+    return [
+      'record longer session with interval <= 10s',
+      'add feature builder for real ATrad snapshots'
+    ];
+  }
+
+  return ['continue collecting longer real sessions and compare replay outputs'];
+}
+
+function formatOptionalPercent(value: number | undefined): string {
+  return value === undefined ? 'n/a' : `${value.toFixed(2)}%`;
 }
 
 function defaultRuntime(): ManualATradReplaySessionRuntime {

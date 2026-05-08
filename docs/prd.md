@@ -123,6 +123,8 @@ By default the recorder stores only usable high-confidence snapshots. Low-confid
 
 The `pnpm atrad:replay-session -- --input <path>` command replays a locally recorded ATrad session JSON file for research and backtesting. It uses only local JSON files, does not connect to live ATrad, and runs through the safe local replay path with no Telegram, no Supabase, no order placement, and no auto-trading.
 
+Replay diagnostics now explain why a recorded session did or did not produce signals. These diagnostics do not change strategy thresholds; they highlight blockers such as missing VWAP or insufficient time-series history so future feature engineering and longer recordings can close the gap safely. This remains local-only research with no live trading or alerts.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.
