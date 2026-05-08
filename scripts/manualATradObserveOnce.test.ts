@@ -394,7 +394,81 @@ describe('manual ATrad observe-once helpers', () => {
       Time: '10:15:48.000000'
     });
     expect(row.VWA).toBeUndefined();
-    expect(row.Low).toBeUndefined();
+  });
+
+  it('recovers DFCC last from a later price-like field instead of trusting an early quantity-like value', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'DFCC.N0000',
+      'DFCC BANK PLC',
+      '1,000',
+      '141.00',
+      '141.25',
+      '2,500',
+      '70',
+      '141.10',
+      '3,500',
+      '0.10',
+      '0.07',
+      '141.50',
+      '141.05',
+      '250,000',
+      '35,275,000.00',
+      '48',
+      '140.80',
+      '44.00%',
+      '10:15:50'
+    ]);
+
+    expect(row).toMatchObject({
+      Security: 'DFCC.N0000',
+      Last: '141.10',
+      'Last Qty': '3,500',
+      Volume: '250,000',
+      Turnover: '35,275,000.00',
+      Trades: '48',
+      'Price Close': '140.80',
+      'Buy Sentiment': '44.00%',
+      Time: '10:15:50'
+    });
+    expect(row.Change).toBe('0.10');
+  });
+
+  it('recovers KOTA last from a later price-like field instead of a quantity-like 3,500 cell', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'KOTA.N0000',
+      'KOTAGALA PLANTATIONS PLC',
+      '5,000',
+      '10.20',
+      '10.30',
+      '4,500',
+      '3,500',
+      '10.25',
+      '1,250',
+      '0.05',
+      '0.49',
+      '10.40',
+      '10.15',
+      '85,000',
+      '872,000.00',
+      '18',
+      '10.10',
+      '20.00%',
+      '10:15:51'
+    ]);
+    const assessment = assessATradParsedSnapshotQuality(
+      row,
+      marketWatchRowToRawSnapshot(row, 1_000),
+      { accepted: true, issues: [] }
+    );
+
+    expect(row).toMatchObject({
+      Security: 'KOTA.N0000',
+      Last: '10.25',
+      'Last Qty': '1,250',
+      Volume: '85,000',
+      Turnover: '872,000.00'
+    });
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain('LAST_LOOKS_LIKE_QUANTITY');
   });
 
   it('does not map a shorter HNB row percent field as Volume', () => {
@@ -458,6 +532,35 @@ describe('manual ATrad observe-once helpers', () => {
     });
   });
 
+  it('keeps genuinely ambiguous last values at low confidence when no better price is recoverable', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'BADL.N0000',
+      'AMBIGUOUS HOLDINGS PLC',
+      '5,000',
+      '10.20',
+      '10.30',
+      '4,500',
+      '3,500',
+      '1,250',
+      '0.05',
+      '0.49',
+      '85,000',
+      '872,000.00',
+      '18',
+      '10.10',
+      '20.00%',
+      '10:15:51'
+    ]);
+    const assessment = assessATradParsedSnapshotQuality(
+      row,
+      marketWatchRowToRawSnapshot(row, 1_000),
+      { accepted: true, issues: [] }
+    );
+
+    expect(row.Last).toBeUndefined();
+    expect(assessment.status).toBe('LOW_CONFIDENCE');
+  });
+
   it('assigns high or medium confidence to a clean REEF-shaped row', () => {
     const row = normalizeATradFullWatchEquityRow([
       'REEF.N0000',
@@ -481,6 +584,42 @@ describe('manual ATrad observe-once helpers', () => {
     ]);
     const rawSnapshot = marketWatchRowToRawSnapshot(row, 1_000);
     const assessment = assessATradParsedSnapshotQuality(row, rawSnapshot, { accepted: true, issues: [] });
+
+    expect(['HIGH_CONFIDENCE', 'MEDIUM_CONFIDENCE']).toContain(assessment.status);
+  });
+
+  it('assigns high or medium confidence to a clean CDB-shaped row', () => {
+    const row = parseDojoWatchGridRow(
+      [
+        'Security',
+        'Company Name',
+        'Bid Qty',
+        'Bid Price',
+        'Ask Price',
+        'Ask Qty',
+        'Last',
+        'Last Qty',
+        'Volume',
+        'Turnover'
+      ],
+      [
+        'CDB.N0000',
+        'Ceylon Development Bank PLC',
+        '2,500',
+        '54.50',
+        '55.00',
+        '1,800',
+        '55.00',
+        '500',
+        '12,500',
+        '687,500'
+      ]
+    );
+    const assessment = assessATradParsedSnapshotQuality(
+      row,
+      marketWatchRowToRawSnapshot(row, 1_000),
+      { accepted: true, issues: [] }
+    );
 
     expect(['HIGH_CONFIDENCE', 'MEDIUM_CONFIDENCE']).toContain(assessment.status);
   });

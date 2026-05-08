@@ -359,7 +359,7 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
     cursor += 1;
   }
 
-  const leadingHeaders = ['Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last'] as const;
+  const leadingHeaders = ['Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty'] as const;
   for (const header of leadingHeaders) {
     const value = working[cursor];
     if (value) {
@@ -368,6 +368,8 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
     }
   }
 
+  const bid = parseNumericValue(mapped['Bid Price']);
+  const ask = parseNumericValue(mapped['Ask Price']);
   const trailing = working.slice(cursor);
   let end = trailing.length - 1;
 
@@ -408,23 +410,59 @@ export function normalizeATradFullWatchEquityRow(cells: string[]): MarketWatchRo
     mapped.Turnover = turnover;
   }
 
-  const volume = tryPop((value, endIndex) => endIndex >= 4 && isIntegerLike(value));
+  const volume = tryPop((value, endIndex) => endIndex >= 4 && isLikelyVolumeValue(value, bid, ask));
   if (volume) {
     mapped.Volume = volume;
   }
 
-  const vwa = tryPop((value, endIndex) => endIndex >= 4 && isNumericLike(value));
+  const vwa = tryPop((value, endIndex) => endIndex >= 5 && isPriceLikeNearReference(value, bid, ask));
   if (vwa) {
     mapped.VWA = vwa;
   }
 
-  const middleHeaders = ['Last Qty', 'Change', '% Change', 'High', 'Low'] as const;
-  trailing.slice(0, end + 1).forEach((value, index) => {
-    const header = middleHeaders[index];
-    if (header && value) {
-      mapped[header] = value;
+  const middle = trailing.slice(0, end + 1);
+  const lastIndex = findLikelyLastIndex(middle, bid, ask);
+
+  if (lastIndex >= 0) {
+    mapped.Last = middle[lastIndex] as string;
+  }
+
+  const afterLast = lastIndex >= 0 ? middle.slice(lastIndex + 1) : middle;
+  let middleCursor = 0;
+
+  if (isLikelyLastQuantityValue(afterLast[middleCursor], bid, ask)) {
+    mapped['Last Qty'] = afterLast[middleCursor] as string;
+    middleCursor += 1;
+  }
+
+  if (isLikelyChangeValue(afterLast[middleCursor], bid, ask, mapped.Last)) {
+    mapped.Change = afterLast[middleCursor] as string;
+    middleCursor += 1;
+  }
+
+  if (isLikelyPercentChangeValue(afterLast[middleCursor])) {
+    mapped['% Change'] = afterLast[middleCursor] as string;
+    middleCursor += 1;
+  }
+
+  const remainingPriceCandidates = afterLast
+    .slice(middleCursor)
+    .filter((value) => isPriceLikeNearReference(value, bid, ask, parseNumericValue(mapped.Last)));
+
+  if (remainingPriceCandidates.length >= 1) {
+    mapped.High = remainingPriceCandidates[0] as string;
+  }
+  if (remainingPriceCandidates.length >= 3) {
+    mapped.Low = remainingPriceCandidates[1] as string;
+    mapped.VWA = mapped.VWA ?? remainingPriceCandidates[2] as string;
+  } else if (remainingPriceCandidates.length === 2) {
+    const secondCandidate = remainingPriceCandidates[1] as string;
+    if (looksLikeVwaCandidate(secondCandidate, bid, ask, parseNumericValue(mapped.Last))) {
+      mapped.VWA = mapped.VWA ?? secondCandidate;
+    } else {
+      mapped.Low = secondCandidate;
     }
-  });
+  }
 
   return mapped;
 }
@@ -1107,6 +1145,156 @@ function isLikelyCompanyName(value: string | undefined): boolean {
   return !TICKER_PATTERN.test(value) && !isPercentValue(value) && !isLikelyTimeValue(value) && !isNumericLike(value);
 }
 
+function findLikelyLastIndex(
+  values: string[],
+  bid: number | undefined,
+  ask: number | undefined
+): number {
+  let bestIndex = -1;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  values.forEach((value, index) => {
+    const score = scoreLikelyLastValue(value, index, bid, ask);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+
+  return bestScore > 0 ? bestIndex : -1;
+}
+
+function scoreLikelyLastValue(
+  value: string | undefined,
+  index: number,
+  bid: number | undefined,
+  ask: number | undefined
+): number {
+  if (!value || isPercentValue(value) || isLikelyTimeValue(value)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const numeric = parseNumericValue(value);
+  if (numeric === undefined) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 30 - index * 4;
+  const hasDecimalInMarket = String(bid ?? '').includes('.') || String(ask ?? '').includes('.');
+  if (hasDecimalInMarket && value.includes('.')) {
+    score += 10;
+  }
+
+  if (bid !== undefined && ask !== undefined) {
+    const midpoint = (bid + ask) / 2;
+    const spread = Math.max(Math.abs(ask - bid), midpoint * 0.0025);
+    const distance = Math.abs(numeric - midpoint);
+    if (distance <= Math.max(spread * 4, midpoint * 0.03)) {
+      score += 50;
+    } else if (distance <= Math.max(spread * 15, midpoint * 0.12)) {
+      score += 20;
+    } else {
+      score -= 40;
+    }
+
+    if (numeric > Math.max(bid, ask) * 3 || numeric < Math.min(bid, ask) / 3) {
+      score -= 30;
+    }
+
+    if (isLikelyQuantityValue(value, bid, ask)) {
+      score -= 35;
+    }
+  }
+
+  return score;
+}
+
+function isPriceLikeNearReference(
+  value: string | undefined,
+  ...references: Array<number | undefined>
+): boolean {
+  const numeric = parseNumericValue(value);
+  if (numeric === undefined || isPercentValue(value) || isLikelyTimeValue(value)) {
+    return false;
+  }
+
+  const filteredReferences = references.filter((entry): entry is number => entry !== undefined);
+  if (filteredReferences.length === 0) {
+    return numeric < 10_000;
+  }
+
+  const referenceHigh = Math.max(...filteredReferences);
+  const referenceLow = Math.min(...filteredReferences);
+  return numeric >= referenceLow / 2 && numeric <= referenceHigh * 2;
+}
+
+function isLikelyQuantityValue(
+  value: string | undefined,
+  bid: number | undefined,
+  ask: number | undefined
+): boolean {
+  const numeric = parseNumericValue(value);
+  if (numeric === undefined || isPercentValue(value) || isLikelyTimeValue(value)) {
+    return false;
+  }
+
+  const reference = Math.max(bid ?? 0, ask ?? 0);
+  return isIntegerLike(value) && (value.includes(',') || (reference > 0 && numeric > reference * 3) || numeric >= 1000);
+}
+
+function isLikelyLastQuantityValue(
+  value: string | undefined,
+  bid: number | undefined,
+  ask: number | undefined
+): boolean {
+  return isLikelyQuantityValue(value, bid, ask);
+}
+
+function isLikelyChangeValue(
+  value: string | undefined,
+  bid: number | undefined,
+  ask: number | undefined,
+  last: string | undefined
+): boolean {
+  const numeric = parseNumericValue(value);
+  if (numeric === undefined || isPercentValue(value) || isLikelyTimeValue(value)) {
+    return false;
+  }
+
+  const reference = Math.max(parseNumericValue(last) ?? 0, bid ?? 0, ask ?? 0, 1);
+  return Math.abs(numeric) <= Math.max(reference * 0.2, 20);
+}
+
+function isLikelyPercentChangeValue(value: string | undefined): boolean {
+  if (isPercentValue(value)) {
+    return true;
+  }
+
+  const numeric = parseNumericValue(value);
+  return numeric !== undefined && Math.abs(numeric) <= 25;
+}
+
+function looksLikeVwaCandidate(
+  value: string | undefined,
+  bid: number | undefined,
+  ask: number | undefined,
+  last: number | undefined
+): boolean {
+  const numeric = parseNumericValue(value);
+  if (numeric === undefined) {
+    return false;
+  }
+
+  const references = [bid, ask, last].filter((entry): entry is number => entry !== undefined);
+  if (references.length === 0) {
+    return false;
+  }
+
+  const high = Math.max(...references);
+  const low = Math.min(...references);
+  return numeric >= low && numeric <= high;
+}
+
 function isLikelyTimeValue(value: string | undefined): boolean {
   return typeof value === 'string' && /^\d{1,2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value.trim());
 }
@@ -1125,7 +1313,16 @@ function isIntegerLike(value: string | undefined): boolean {
 }
 
 function isLikelyTurnoverValue(value: string | undefined): boolean {
-  return typeof value === 'string' && isNumericLike(value) && value.includes('.');
+  const numeric = parseNumericValue(value);
+  return typeof value === 'string' && numeric !== undefined && value.includes('.') && numeric >= 1_000;
+}
+
+function isLikelyVolumeValue(
+  value: string | undefined,
+  bid: number | undefined,
+  ask: number | undefined
+): boolean {
+  return isLikelyQuantityValue(value, bid, ask);
 }
 
 function numericField(row: MarketWatchRow, name: string): string | undefined {
