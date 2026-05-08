@@ -79,6 +79,7 @@ export interface ManualATradObserveOnceConfig {
   headless: boolean;
   diagnose: boolean;
   debugRows: boolean;
+  rawOutput: boolean;
   observationTimeoutMs: number;
   readonlyMode: true;
 }
@@ -132,9 +133,50 @@ export interface ManualATradPageDiagnostics {
 }
 
 export interface SanitizedObservedMarketWatchRow {
+  row: MarketWatchRow;
   rawSnapshot: RawMarketSnapshot;
   snapshot?: MarketSnapshot;
   issues: MarketDataSanitizationIssue[];
+}
+
+export type ATradParsedRowQualityStatus =
+  | 'HIGH_CONFIDENCE'
+  | 'MEDIUM_CONFIDENCE'
+  | 'LOW_CONFIDENCE'
+  | 'REJECTED';
+
+export type ATradParsedRowQualityIssueCode =
+  | 'LAST_OUTSIDE_BID_ASK_RANGE'
+  | 'LAST_LOOKS_LIKE_QUANTITY'
+  | 'VOLUME_LOOKS_LIKE_PERCENT'
+  | 'TURNOVER_LOOKS_LIKE_TIME'
+  | 'TRADES_LOOKS_LIKE_PERCENT'
+  | 'VWA_OUTSIDE_PRICE_RANGE'
+  | 'TRAILING_FIELDS_SHIFTED'
+  | 'TIME_FIELD_SHIFTED'
+  | 'LOW_MAPPING_CONFIDENCE';
+
+export interface ATradParsedRowQualityIssue {
+  code: ATradParsedRowQualityIssueCode;
+  message: string;
+  field?: string;
+}
+
+export interface ATradParsedRowQualityAssessment {
+  ticker?: string;
+  status: ATradParsedRowQualityStatus;
+  issues: ATradParsedRowQualityIssue[];
+  sanitizerIssueCodes: string[];
+  row: MarketWatchRow;
+  rawSnapshot: RawMarketSnapshot;
+}
+
+export interface ATradParsedRowQualitySummary {
+  highConfidenceCount: number;
+  mediumConfidenceCount: number;
+  lowConfidenceCount: number;
+  rejectedCount: number;
+  lowConfidenceRows: ATradParsedRowQualityAssessment[];
 }
 
 export interface MarketWatchDebugRowResult {
@@ -217,6 +259,9 @@ export interface ManualATradObserveOnceResult {
   rawSnapshots: RawMarketSnapshot[];
   accepted: SanitizedObservedMarketWatchRow[];
   rejected: SanitizedObservedMarketWatchRow[];
+  qualityAssessments: ATradParsedRowQualityAssessment[];
+  qualitySummary: ATradParsedRowQualitySummary;
+  rawOutputEnabled?: boolean;
   diagnostics?: ManualATradPageDiagnostics;
   extractionDebug?: MarketWatchExtractionDebug;
 }
@@ -230,6 +275,7 @@ export function createManualATradObserveOnceConfig(args: string[] = []): ManualA
     headless: args.includes('--headless'),
     diagnose: args.includes('--diagnose'),
     debugRows: args.includes('--debug-rows'),
+    rawOutput: args.includes('--raw-output'),
     observationTimeoutMs: parseTimeoutMs(args),
     readonlyMode: true
   };
@@ -452,22 +498,176 @@ function dedupeDojoMarketWatchRows(rows: MarketWatchRow[]): MarketWatchRow[] {
   return Array.from(deduped.values());
 }
 
+export function assessATradParsedSnapshotQuality(
+  row: MarketWatchRow,
+  rawSnapshot: RawMarketSnapshot,
+  sanitizedResult: { accepted: boolean; issues: Array<{ code: string }> }
+): ATradParsedRowQualityAssessment {
+  const issues: ATradParsedRowQualityIssue[] = [];
+  const bid = parseNumericValue(row['Bid Price']);
+  const ask = parseNumericValue(row['Ask Price']);
+  const last = parseNumericValue(row.Last);
+  const vwa = parseNumericValue(row.VWA);
+
+  if (row.Volume && isPercentValue(row.Volume)) {
+    issues.push(issue('VOLUME_LOOKS_LIKE_PERCENT', 'Volume looks like a percent field.', 'Volume'));
+  }
+
+  if (row.Turnover && isLikelyTimeValue(row.Turnover)) {
+    issues.push(issue('TURNOVER_LOOKS_LIKE_TIME', 'Turnover looks like a time value.', 'Turnover'));
+  }
+
+  if (row.Trades && isPercentValue(row.Trades)) {
+    issues.push(issue('TRADES_LOOKS_LIKE_PERCENT', 'Trades looks like a percent field.', 'Trades'));
+  }
+
+  if (row.Time && !isLikelyTimeValue(row.Time)) {
+    issues.push(issue('TIME_FIELD_SHIFTED', 'Time field does not look like a time value.', 'Time'));
+  }
+
+  const misplacedTimeField = findMisplacedTimeField(row);
+  if (!row.Time && misplacedTimeField) {
+    issues.push(
+      issue(
+        'TIME_FIELD_SHIFTED',
+        `Time-like value appears in ${misplacedTimeField} instead of Time.`,
+        misplacedTimeField
+      )
+    );
+  }
+
+  const misplacedPercentField = findMisplacedPercentField(row);
+  if (!row['Buy Sentiment'] && misplacedPercentField) {
+    issues.push(
+      issue(
+        'TRAILING_FIELDS_SHIFTED',
+        `Percent-like value appears in ${misplacedPercentField} while Buy Sentiment is missing.`,
+        misplacedPercentField
+      )
+    );
+  }
+
+  if (row['Price Close'] && (isPercentValue(row['Price Close']) || isLikelyTimeValue(row['Price Close']))) {
+    issues.push(
+      issue(
+        'TRAILING_FIELDS_SHIFTED',
+        'Price Close looks like a shifted percent or time field.',
+        'Price Close'
+      )
+    );
+  }
+
+  if (bid !== undefined && ask !== undefined && last !== undefined) {
+    const spread = Math.max(ask - bid, 0);
+    const tolerance = Math.max(spread * 3, ask * 0.03);
+    if (last < bid - tolerance || last > ask + tolerance) {
+      issues.push(
+        issue(
+          'LAST_OUTSIDE_BID_ASK_RANGE',
+          'Last price sits far outside the current bid/ask range.',
+          'Last'
+        )
+      );
+    }
+
+    if (
+      isIntegerLike(row.Last) &&
+      (String(row['Bid Price'] ?? '').includes('.') || String(row['Ask Price'] ?? '').includes('.')) &&
+      last > ask * 3
+    ) {
+      issues.push(
+        issue(
+          'LAST_LOOKS_LIKE_QUANTITY',
+          'Last looks more like a quantity than a tradable price.',
+          'Last'
+        )
+      );
+    }
+  }
+
+  if (
+    vwa !== undefined &&
+    bid !== undefined &&
+    ask !== undefined &&
+    last !== undefined
+  ) {
+    const referenceHigh = Math.max(bid, ask, last);
+    const referenceLow = Math.min(bid, ask, last);
+    if (vwa > referenceHigh * 5 || vwa < referenceLow / 5) {
+      issues.push(
+        issue(
+          'VWA_OUTSIDE_PRICE_RANGE',
+          'VWA looks far outside the observed price range.',
+          'VWA'
+        )
+      );
+    }
+  }
+
+  if (sanitizedResult.accepted && issues.length === 0) {
+    const mappedCoreFields = ['Security', 'Bid Price', 'Ask Price', 'Last', 'Volume'].filter((fieldName) =>
+      field(row, fieldName)
+    ).length;
+    const mappedTrailingFields = ['VWA', 'Turnover', 'Trades', 'Price Close', 'Buy Sentiment', 'Time'].filter(
+      (fieldName) => field(row, fieldName)
+    ).length;
+    if (mappedCoreFields < 5 || mappedTrailingFields === 0) {
+      issues.push(
+        issue(
+          'LOW_MAPPING_CONFIDENCE',
+          'Required trading fields are present but the trailing mapping confidence is low.'
+        )
+      );
+    }
+  }
+
+  const sanitizerIssueCodes = sanitizedResult.issues.map((entry) => entry.code);
+  const dedupedIssues = dedupeQualityIssues(issues);
+
+  return {
+    ticker: field(row, 'Security'),
+    status: determineQualityStatus(dedupedIssues, sanitizedResult.accepted),
+    issues: dedupedIssues,
+    sanitizerIssueCodes,
+    row,
+    rawSnapshot
+  };
+}
+
+export function buildATradParsedRowQualitySummary(
+  assessments: ATradParsedRowQualityAssessment[]
+): ATradParsedRowQualitySummary {
+  return {
+    highConfidenceCount: assessments.filter((assessment) => assessment.status === 'HIGH_CONFIDENCE').length,
+    mediumConfidenceCount: assessments.filter((assessment) => assessment.status === 'MEDIUM_CONFIDENCE').length,
+    lowConfidenceCount: assessments.filter((assessment) => assessment.status === 'LOW_CONFIDENCE').length,
+    rejectedCount: assessments.filter((assessment) => assessment.status === 'REJECTED').length,
+    lowConfidenceRows: assessments
+      .filter((assessment) => assessment.status === 'LOW_CONFIDENCE')
+      .slice(0, 5)
+  };
+}
+
 export function sanitizeMarketWatchRows(
   rows: MarketWatchRow[],
   timestamp: number,
   sanitizer: MarketDataSanitizer = new MarketDataSanitizer({ source: ATRAD_MARKET_WATCH_SOURCE })
-): Pick<ManualATradObserveOnceResult, 'rawSnapshots' | 'accepted' | 'rejected'> {
+): Pick<ManualATradObserveOnceResult, 'rawSnapshots' | 'accepted' | 'rejected' | 'qualityAssessments' | 'qualitySummary'> {
   const rawSnapshots = rows.map((row) => marketWatchRowToRawSnapshot(row, timestamp));
   const accepted: SanitizedObservedMarketWatchRow[] = [];
   const rejected: SanitizedObservedMarketWatchRow[] = [];
+  const qualityAssessments: ATradParsedRowQualityAssessment[] = [];
 
-  for (const rawSnapshot of rawSnapshots) {
+  for (const [index, rawSnapshot] of rawSnapshots.entries()) {
+    const row = rows[index] ?? {};
     const result = sanitizer.sanitize(rawSnapshot);
     const rowResult: SanitizedObservedMarketWatchRow = {
+      row,
       rawSnapshot,
       snapshot: result.snapshot,
       issues: result.issues
     };
+    qualityAssessments.push(assessATradParsedSnapshotQuality(row, rawSnapshot, result));
 
     if (result.accepted) {
       accepted.push(rowResult);
@@ -479,7 +679,9 @@ export function sanitizeMarketWatchRows(
   return {
     rawSnapshots,
     accepted,
-    rejected
+    rejected,
+    qualityAssessments,
+    qualitySummary: buildATradParsedRowQualitySummary(qualityAssessments)
   };
 }
 
@@ -609,6 +811,8 @@ export async function runManualATradObserveOnce(
         rawSnapshots: [],
         accepted: [],
         rejected: [],
+        qualityAssessments: [],
+        qualitySummary: emptyQualitySummary(),
         diagnostics
       };
 
@@ -633,6 +837,7 @@ export async function runManualATradObserveOnce(
       ok: true,
       message: 'ATrad observe-once read-only snapshot completed.',
       rawRows,
+      rawOutputEnabled: config.rawOutput,
       ...sanitized
     };
 
@@ -677,17 +882,31 @@ export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): 
     return formatExtractionDebugSummary(result.extractionDebug);
   }
 
-  return [
+  const lines = [
     'Sentinel-CSE ATrad observe-once read-only summary',
     `Raw rows extracted: ${result.rawRows.length}`,
-    JSON.stringify(result.rawRows, null, 2),
     `Accepted snapshots: ${result.accepted.length}`,
     `Rejected snapshots: ${result.rejected.length}`,
+    'Quality summary:',
+    `- high confidence: ${result.qualitySummary.highConfidenceCount}`,
+    `- medium confidence: ${result.qualitySummary.mediumConfidenceCount}`,
+    `- low confidence: ${result.qualitySummary.lowConfidenceCount}`,
+    `- rejected: ${result.qualitySummary.rejectedCount}`,
+    ...result.qualitySummary.lowConfidenceRows.flatMap((assessment, index) => [
+      `Low-confidence row ${index + 1}: ${assessment.ticker ?? 'unknown'} [${assessment.status}]`,
+      `- ${assessment.issues.map((issue) => issue.code).join(', ')}`
+    ]),
     ...result.rejected.flatMap((row, index) => [
       `Rejected row ${index + 1}: ${String(row.rawSnapshot.ticker ?? 'unknown')}`,
       ...row.issues.map((issue) => `- ${issue.code}: ${issue.message}`)
     ])
   ];
+
+  if (result.rawOutputEnabled) {
+    lines.splice(2, 0, JSON.stringify(result.rawRows, null, 2));
+  }
+
+  return lines;
 }
 
 export async function debugMarketWatchRows(
@@ -707,6 +926,8 @@ export async function debugMarketWatchRows(
     rawSnapshots: [],
     accepted: [],
     rejected: [],
+    qualityAssessments: [],
+    qualitySummary: emptyQualitySummary(),
     extractionDebug: {
       candidateCount: extraction.candidates.length,
       chosenCandidate: chosen
@@ -798,6 +1019,84 @@ function isLoginPageUrl(url: string): boolean {
 function field(row: MarketWatchRow, name: string): string | undefined {
   const value = row[name]?.trim();
   return value && value.length > 0 ? value : undefined;
+}
+
+function issue(
+  code: ATradParsedRowQualityIssueCode,
+  message: string,
+  field?: string
+): ATradParsedRowQualityIssue {
+  return { code, message, field };
+}
+
+function determineQualityStatus(
+  issues: ATradParsedRowQualityIssue[],
+  sanitizerAccepted: boolean
+): ATradParsedRowQualityStatus {
+  if (!sanitizerAccepted) {
+    return 'REJECTED';
+  }
+
+  if (issues.length === 0) {
+    return 'HIGH_CONFIDENCE';
+  }
+
+  const lowConfidenceCodes: ATradParsedRowQualityIssueCode[] = [
+    'LAST_LOOKS_LIKE_QUANTITY',
+    'VOLUME_LOOKS_LIKE_PERCENT',
+    'TURNOVER_LOOKS_LIKE_TIME',
+    'TRADES_LOOKS_LIKE_PERCENT',
+    'VWA_OUTSIDE_PRICE_RANGE',
+    'TRAILING_FIELDS_SHIFTED',
+    'TIME_FIELD_SHIFTED',
+    'LOW_MAPPING_CONFIDENCE'
+  ];
+
+  return issues.some((entry) => lowConfidenceCodes.includes(entry.code))
+    ? 'LOW_CONFIDENCE'
+    : 'MEDIUM_CONFIDENCE';
+}
+
+function dedupeQualityIssues(issues: ATradParsedRowQualityIssue[]): ATradParsedRowQualityIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((entry) => {
+    const key = `${entry.code}:${entry.field ?? ''}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function findMisplacedPercentField(row: MarketWatchRow): string | undefined {
+  const candidateFields = ['Last Qty', 'High', 'Low', 'VWA', 'Volume', 'Turnover', 'Trades', 'Price Close'];
+  return candidateFields.find((fieldName) => isPercentValue(row[fieldName]));
+}
+
+function findMisplacedTimeField(row: MarketWatchRow): string | undefined {
+  const candidateFields = ['Turnover', 'Trades', 'Price Close', 'Buy Sentiment', 'VWA', 'Volume'];
+  return candidateFields.find((fieldName) => isLikelyTimeValue(row[fieldName]));
+}
+
+function parseNumericValue(value: string | undefined): number | undefined {
+  const normalized = cleanNumericCellValue(value);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function emptyQualitySummary(): ATradParsedRowQualitySummary {
+  return {
+    highConfidenceCount: 0,
+    mediumConfidenceCount: 0,
+    lowConfidenceCount: 0,
+    rejectedCount: 0,
+    lowConfidenceRows: []
+  };
 }
 
 function isLikelyCompanyName(value: string | undefined): boolean {
@@ -956,7 +1255,9 @@ function emptyResult(ok: boolean, message: string): ManualATradObserveOnceResult
     rawRows: [],
     rawSnapshots: [],
     accepted: [],
-    rejected: []
+    rejected: [],
+    qualityAssessments: [],
+    qualitySummary: emptyQualitySummary()
   };
 }
 

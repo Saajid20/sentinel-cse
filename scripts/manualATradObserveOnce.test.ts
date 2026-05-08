@@ -4,7 +4,9 @@ import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import { MarketDataSanitizer } from '../packages/core/src/index.js';
 import { ATRAD_PERSISTENT_PROFILE_PATH, ATRAD_STORAGE_STATE_PATH } from './manualATradLogin.js';
 import {
+  assessATradParsedSnapshotQuality,
   analyzeMarketWatchRows,
+  buildATradParsedRowQualitySummary,
   buildMarketWatchRowFromCells,
   collectPageDiagnostics,
   createManualATradObserveOnceConfig,
@@ -61,6 +63,12 @@ describe('manual ATrad observe-once helpers', () => {
     const config = createManualATradObserveOnceConfig(['--debug-rows']);
 
     expect(config.debugRows).toBe(true);
+  });
+
+  it('parses the raw output flag from CLI args', () => {
+    const config = createManualATradObserveOnceConfig(['--raw-output']);
+
+    expect(config.rawOutput).toBe(true);
   });
 
   it('returns a helpful result when storage state is missing', async () => {
@@ -448,6 +456,194 @@ describe('manual ATrad observe-once helpers', () => {
       'Buy Sentiment': '51.00%',
       Time: '10:16:00'
     });
+  });
+
+  it('assigns high or medium confidence to a clean REEF-shaped row', () => {
+    const row = normalizeATradFullWatchEquityRow([
+      'REEF.N0000',
+      'CITRUS LEISURE PLC',
+      '50,000',
+      '4.70',
+      '4.80',
+      '12,500',
+      '4.80',
+      '2,500',
+      '0.10',
+      '2.13',
+      '4.90',
+      '4.75',
+      '3,998,716',
+      '19,145,319.50',
+      '615',
+      '4.70',
+      '51.00%',
+      '10:16:00'
+    ]);
+    const rawSnapshot = marketWatchRowToRawSnapshot(row, 1_000);
+    const assessment = assessATradParsedSnapshotQuality(row, rawSnapshot, { accepted: true, issues: [] });
+
+    expect(['HIGH_CONFIDENCE', 'MEDIUM_CONFIDENCE']).toContain(assessment.status);
+  });
+
+  it('flags last values that look like quantities', () => {
+    const row = {
+      Security: 'QTY.N0000',
+      'Bid Price': '31.70',
+      'Ask Price': '31.90',
+      Last: '6343',
+      Volume: '4,821'
+    };
+    const assessment = assessATradParsedSnapshotQuality(row, marketWatchRowToRawSnapshot(row, 1_000), {
+      accepted: true,
+      issues: []
+    });
+
+    expect(assessment.status).toBe('LOW_CONFIDENCE');
+    expect(assessment.issues.map((issue) => issue.code)).toContain('LAST_LOOKS_LIKE_QUANTITY');
+  });
+
+  it('flags volume values that look like percents', () => {
+    const row = {
+      Security: 'PCT.N0000',
+      'Bid Price': '31.70',
+      'Ask Price': '31.90',
+      Last: '31.80',
+      Volume: '1.72%'
+    };
+    const assessment = assessATradParsedSnapshotQuality(row, marketWatchRowToRawSnapshot(row, 1_000), {
+      accepted: true,
+      issues: []
+    });
+
+    expect(assessment.issues.map((issue) => issue.code)).toContain('VOLUME_LOOKS_LIKE_PERCENT');
+  });
+
+  it('flags turnover values that look like times', () => {
+    const row = {
+      Security: 'TIME.N0000',
+      'Bid Price': '31.70',
+      'Ask Price': '31.90',
+      Last: '31.80',
+      Volume: '4,821',
+      Turnover: '10:15:47.383159'
+    };
+    const assessment = assessATradParsedSnapshotQuality(row, marketWatchRowToRawSnapshot(row, 1_000), {
+      accepted: true,
+      issues: []
+    });
+
+    expect(assessment.issues.map((issue) => issue.code)).toContain('TURNOVER_LOOKS_LIKE_TIME');
+  });
+
+  it('flags VWA values that look turnover-sized', () => {
+    const row = {
+      Security: 'VWA.N0000',
+      'Bid Price': '31.70',
+      'Ask Price': '31.90',
+      Last: '31.80',
+      Volume: '4,821',
+      VWA: '153,588.60'
+    };
+    const assessment = assessATradParsedSnapshotQuality(row, marketWatchRowToRawSnapshot(row, 1_000), {
+      accepted: true,
+      issues: []
+    });
+
+    expect(assessment.issues.map((issue) => issue.code)).toContain('VWA_OUTSIDE_PRICE_RANGE');
+  });
+
+  it('preserves ASPH-like sanitizer rejection while marking the row rejected', () => {
+    const row = {
+      Security: 'ASPH.N0000',
+      'Bid Qty': '1,000',
+      'Bid Price': '100.00',
+      'Ask Price': '120.00',
+      'Ask Qty': '800',
+      Last: '110.00',
+      Volume: '12,500'
+    };
+    const sanitizer = new MarketDataSanitizer({ source: 'atrad-market-watch' });
+    const sanitized = sanitizer.sanitize(marketWatchRowToRawSnapshot(row, 1_000));
+    const assessment = assessATradParsedSnapshotQuality(row, marketWatchRowToRawSnapshot(row, 1_000), sanitized);
+
+    expect(sanitized.accepted).toBe(false);
+    expect(sanitized.issues.map((issue) => issue.code)).toContain('UNREALISTIC_SPREAD');
+    expect(assessment.status).toBe('REJECTED');
+    expect(assessment.sanitizerIssueCodes).toContain('UNREALISTIC_SPREAD');
+  });
+
+  it('builds a concise quality summary in normal output', () => {
+    const cleanRow = normalizeATradFullWatchEquityRow([
+      'MGT.N0000',
+      'HAYLEYS FABRIC PLC',
+      '11,100',
+      '31.70',
+      '31.90',
+      '6,343',
+      '31.80',
+      '97',
+      '0.40',
+      '1.27',
+      '32.00',
+      '31.86',
+      '4,821',
+      '153,588.60',
+      '22',
+      '31.40',
+      '34.15%',
+      '10:15:47.383159'
+    ]);
+    const lowConfidenceRow = {
+      Security: 'LOW.N0000',
+      'Bid Price': '31.70',
+      'Ask Price': '31.90',
+      Last: '6343',
+      Volume: '4,821'
+    };
+    const cleanAssessment = assessATradParsedSnapshotQuality(
+      cleanRow,
+      marketWatchRowToRawSnapshot(cleanRow, 1_000),
+      { accepted: true, issues: [] }
+    );
+    const lowAssessment = assessATradParsedSnapshotQuality(
+      lowConfidenceRow,
+      marketWatchRowToRawSnapshot(lowConfidenceRow, 1_000),
+      { accepted: true, issues: [] }
+    );
+    const lines = formatObserveOnceSummary({
+      ok: true,
+      message: 'summary',
+      rawRows: [cleanRow, lowConfidenceRow],
+      rawSnapshots: [
+        marketWatchRowToRawSnapshot(cleanRow, 1_000),
+        marketWatchRowToRawSnapshot(lowConfidenceRow, 1_000)
+      ],
+      accepted: [
+        {
+          row: cleanRow,
+          rawSnapshot: marketWatchRowToRawSnapshot(cleanRow, 1_000),
+          snapshot: {
+            ticker: 'MGT.N0000',
+            timestamp: 1_000,
+            lastPrice: 31.8,
+            bestBid: 31.7,
+            bestAsk: 31.9,
+            bidDepth: 11100,
+            askDepth: 6343,
+            volume: 4821,
+            totalTurnover: 153588.6
+          },
+          issues: []
+        }
+      ],
+      rejected: [],
+      qualityAssessments: [cleanAssessment, lowAssessment],
+      qualitySummary: buildATradParsedRowQualitySummary([cleanAssessment, lowAssessment])
+    });
+
+    expect(lines.join('\n')).toContain('Quality summary:');
+    expect(lines.join('\n')).toContain('low confidence: 1');
+    expect(lines.join('\n')).not.toContain('"Security":');
   });
 
   it('rejects rows with insufficient required price fields', () => {
