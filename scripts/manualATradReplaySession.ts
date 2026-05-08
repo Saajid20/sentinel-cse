@@ -9,6 +9,7 @@ import {
 import type { ATradRecordedSession } from './manualATradRecordSession.js';
 
 const OPENING_MOMENTUM_SPREAD_THRESHOLD = 1.5;
+const OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD = 2;
 const OPENING_MOMENTUM_IMBALANCE_THRESHOLD = 0;
 
 export interface ManualATradReplaySessionConfig {
@@ -19,6 +20,30 @@ export interface ManualATradReplaySessionConfig {
 export interface ATradReplayTickerCount {
   ticker: string;
   snapshotCount: number;
+}
+
+export interface ReplayableATradSnapshot extends MarketSnapshot {
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ATradReplayFeatures {
+  observationCount: number;
+  previousLastPrice?: number;
+  priceChangeFromPreviousPercent?: number;
+  sessionHighSoFar: number;
+  sessionLowSoFar: number;
+  firstObservedPrice: number;
+  volumeDeltaFromPrevious?: number;
+  volumeRatioEstimate?: number;
+  spreadPercent?: number;
+  orderBookImbalance?: number;
+  vwapEstimate?: number;
+  first5MinHighEstimate?: number;
+}
+
+export interface EnrichedATradReplaySnapshot extends ReplayableATradSnapshot {
+  replayFeatures: ATradReplayFeatures;
 }
 
 export type ATradReplayReadinessStatus =
@@ -39,6 +64,7 @@ export interface ATradReplayTickerDiagnostic {
 
 export interface ATradReplayDiagnostics {
   snapshotsProcessed: number;
+  enrichedSnapshotsCount: number;
   uniqueTickers: number;
   tickersWithRepeatedSnapshots: number;
   spreadBlockedCount: number;
@@ -46,8 +72,14 @@ export interface ATradReplayDiagnostics {
   imbalanceBlockedCount: number;
   vwapMissingCount: number;
   firstFiveMinuteHighMissingCount: number;
+  priceNotAboveVwapCount: number;
+  priceNotAboveMomentumTriggerCount: number;
   insufficientHistoryCount: number;
   qualityGateExcludedCount: number;
+  snapshotsWithVwapEstimate: number;
+  snapshotsWithFirstFiveMinuteHighEstimate: number;
+  snapshotsWithVolumeRatioEstimate: number;
+  snapshotsWithOrderBookImbalance: number;
   strategyGeneratedSignalCount: number;
   strategyReadySnapshotCount: number;
   likelyBlockers: string[];
@@ -135,7 +167,9 @@ export function extractReplayableATradSnapshots(session: ATradRecordedSession): 
       bidDepth: snapshot.bidDepth,
       askDepth: snapshot.askDepth,
       volume: snapshot.volume,
-      totalTurnover: snapshot.totalTurnover
+      totalTurnover: snapshot.totalTurnover,
+      source: isRecordObject(snapshot) && typeof snapshot.source === 'string' ? snapshot.source : undefined,
+      metadata: isRecordObject(snapshot) && isRecordObject(snapshot.metadata) ? snapshot.metadata : undefined
     }));
 }
 
@@ -159,19 +193,23 @@ export function analyzeATradReplayDiagnostics(
   snapshots: MarketSnapshot[],
   replaySummary: ReplayResultSummary
 ): ATradReplayDiagnostics {
-  const grouped = groupSnapshotsByTicker(snapshots);
+  const enrichedSnapshots = enrichATradReplaySnapshots(snapshots as ReplayableATradSnapshot[]);
+  const grouped = groupSnapshotsByTicker(enrichedSnapshots);
   const perTickerDiagnostics = [...grouped.entries()]
     .map(([ticker, entries]) => buildTickerDiagnostic(ticker, entries))
     .sort((left, right) => right.snapshots - left.snapshots || left.ticker.localeCompare(right.ticker))
     .slice(0, 10);
 
-  const spreadBlockedCount = snapshots.filter((snapshot) => {
-    const spreadPercent = calculateSpreadPercent(snapshot);
-    return spreadPercent !== undefined && spreadPercent >= OPENING_MOMENTUM_SPREAD_THRESHOLD;
-  }).length;
+  const spreadBlockedCount = enrichedSnapshots.filter(
+    (snapshot) =>
+      snapshot.replayFeatures.spreadPercent !== undefined &&
+      snapshot.replayFeatures.spreadPercent >= OPENING_MOMENTUM_SPREAD_THRESHOLD
+  ).length;
 
-  const imbalanceBlockedCount = snapshots.filter(
-    (snapshot) => calculateOrderBookImbalance(snapshot) <= OPENING_MOMENTUM_IMBALANCE_THRESHOLD
+  const imbalanceBlockedCount = enrichedSnapshots.filter(
+    (snapshot) =>
+      snapshot.replayFeatures.orderBookImbalance === undefined ||
+      snapshot.replayFeatures.orderBookImbalance <= OPENING_MOMENTUM_IMBALANCE_THRESHOLD
   ).length;
 
   const tickerCounts = new Map<string, number>(
@@ -180,24 +218,54 @@ export function analyzeATradReplayDiagnostics(
   const repeatedTickerSet = new Set(
     [...tickerCounts.entries()].filter(([, count]) => count >= 2).map(([ticker]) => ticker)
   );
-  const insufficientHistoryCount = snapshots.filter(
-    (snapshot) => (tickerCounts.get(snapshot.ticker) ?? 0) < 2
+  const insufficientHistoryCount = enrichedSnapshots.filter(
+    (snapshot) => snapshot.replayFeatures.observationCount < 2
   ).length;
-  const strategyReadySnapshotCount = snapshots.filter((snapshot) => {
-    const spreadPercent = calculateSpreadPercent(snapshot);
+  const snapshotsWithVwapEstimate = enrichedSnapshots.filter(
+    (snapshot) => snapshot.replayFeatures.vwapEstimate !== undefined
+  ).length;
+  const snapshotsWithFirstFiveMinuteHighEstimate = enrichedSnapshots.filter(
+    (snapshot) => snapshot.replayFeatures.first5MinHighEstimate !== undefined
+  ).length;
+  const snapshotsWithVolumeRatioEstimate = enrichedSnapshots.filter(
+    (snapshot) => snapshot.replayFeatures.volumeRatioEstimate !== undefined
+  ).length;
+  const snapshotsWithOrderBookImbalance = enrichedSnapshots.filter(
+    (snapshot) => snapshot.replayFeatures.orderBookImbalance !== undefined
+  ).length;
+  const vwapMissingCount = enrichedSnapshots.length - snapshotsWithVwapEstimate;
+  const firstFiveMinuteHighMissingCount = enrichedSnapshots.length - snapshotsWithFirstFiveMinuteHighEstimate;
+  const volumeBlockedCount = enrichedSnapshots.filter(
+    (snapshot) =>
+      snapshot.replayFeatures.volumeRatioEstimate === undefined ||
+      snapshot.replayFeatures.volumeRatioEstimate <= OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD
+  ).length;
+  const priceNotAboveVwapCount = enrichedSnapshots.filter(
+    (snapshot) =>
+      snapshot.replayFeatures.vwapEstimate !== undefined &&
+      snapshot.lastPrice <= snapshot.replayFeatures.vwapEstimate
+  ).length;
+  const priceNotAboveMomentumTriggerCount = enrichedSnapshots.filter(
+    (snapshot) =>
+      snapshot.replayFeatures.first5MinHighEstimate !== undefined &&
+      snapshot.lastPrice <= snapshot.replayFeatures.first5MinHighEstimate
+  ).length;
+  const strategyReadySnapshotCount = enrichedSnapshots.filter((snapshot) => {
+    const spreadPercent = snapshot.replayFeatures.spreadPercent;
     return (
-      (tickerCounts.get(snapshot.ticker) ?? 0) >= 2 &&
+      snapshot.replayFeatures.observationCount >= 2 &&
       spreadPercent !== undefined &&
       spreadPercent < OPENING_MOMENTUM_SPREAD_THRESHOLD &&
-      calculateOrderBookImbalance(snapshot) > OPENING_MOMENTUM_IMBALANCE_THRESHOLD
+      snapshot.replayFeatures.orderBookImbalance !== undefined &&
+      snapshot.replayFeatures.orderBookImbalance > OPENING_MOMENTUM_IMBALANCE_THRESHOLD &&
+      snapshot.replayFeatures.vwapEstimate !== undefined &&
+      snapshot.replayFeatures.first5MinHighEstimate !== undefined &&
+      snapshot.replayFeatures.volumeRatioEstimate !== undefined
     );
   }).length;
 
   const qualityGateExcludedCount =
     (session.totals?.quarantinedSnapshots ?? 0) + (session.totals?.rejectedSnapshots ?? 0);
-  const vwapMissingCount = snapshots.length;
-  const firstFiveMinuteHighMissingCount = snapshots.length;
-  const volumeBlockedCount = snapshots.length;
 
   const likelyBlockers = buildLikelyBlockers({
     insufficientHistoryCount,
@@ -217,6 +285,7 @@ export function analyzeATradReplayDiagnostics(
 
   return {
     snapshotsProcessed: replaySummary.snapshotsProcessed,
+    enrichedSnapshotsCount: enrichedSnapshots.length,
     uniqueTickers: grouped.size,
     tickersWithRepeatedSnapshots: repeatedTickerSet.size,
     spreadBlockedCount,
@@ -224,8 +293,14 @@ export function analyzeATradReplayDiagnostics(
     imbalanceBlockedCount,
     vwapMissingCount,
     firstFiveMinuteHighMissingCount,
+    priceNotAboveVwapCount,
+    priceNotAboveMomentumTriggerCount,
     insufficientHistoryCount,
     qualityGateExcludedCount,
+    snapshotsWithVwapEstimate,
+    snapshotsWithFirstFiveMinuteHighEstimate,
+    snapshotsWithVolumeRatioEstimate,
+    snapshotsWithOrderBookImbalance,
     strategyGeneratedSignalCount: replaySummary.signalsGenerated,
     strategyReadySnapshotCount,
     likelyBlockers,
@@ -266,6 +341,7 @@ export function formatATradReplaySessionSummary(
 
   lines.push('', 'ATrad replay diagnostics:');
   lines.push(`- snapshots processed: ${result.diagnostics.snapshotsProcessed}`);
+  lines.push(`- enriched snapshots: ${result.diagnostics.enrichedSnapshotsCount}`);
   lines.push(`- unique tickers: ${result.diagnostics.uniqueTickers}`);
   lines.push(`- tickers with repeated snapshots: ${result.diagnostics.tickersWithRepeatedSnapshots}`);
   result.diagnostics.likelyBlockers.forEach((blocker) => {
@@ -274,8 +350,14 @@ export function formatATradReplaySessionSummary(
   lines.push(`- spread blocked: ${result.diagnostics.spreadBlockedCount}`);
   lines.push(`- volume blocked: ${result.diagnostics.volumeBlockedCount}`);
   lines.push(`- imbalance blocked: ${result.diagnostics.imbalanceBlockedCount}`);
+  lines.push(`- snapshots with vwap/vwapEstimate: ${result.diagnostics.snapshotsWithVwapEstimate}`);
+  lines.push(`- snapshots with first5MinHigh/sessionHigh estimate: ${result.diagnostics.snapshotsWithFirstFiveMinuteHighEstimate}`);
+  lines.push(`- snapshots with volumeRatioEstimate: ${result.diagnostics.snapshotsWithVolumeRatioEstimate}`);
+  lines.push(`- snapshots with orderBookImbalance: ${result.diagnostics.snapshotsWithOrderBookImbalance}`);
   lines.push(`- VWAP missing or unusable: ${result.diagnostics.vwapMissingCount}`);
   lines.push(`- first-5-minute high missing or unusable: ${result.diagnostics.firstFiveMinuteHighMissingCount}`);
+  lines.push(`- price not above VWAP: ${result.diagnostics.priceNotAboveVwapCount}`);
+  lines.push(`- price not above required momentum trigger: ${result.diagnostics.priceNotAboveMomentumTriggerCount}`);
   lines.push(`- insufficient time-series history: ${result.diagnostics.insufficientHistoryCount}`);
   lines.push(`- sanitizer/quality gate excluded rows: ${result.diagnostics.qualityGateExcludedCount}`);
   lines.push(`- strategy-ready snapshots: ${result.diagnostics.strategyReadySnapshotCount}`);
@@ -299,6 +381,75 @@ export function formatATradReplaySessionSummary(
   }
 
   return lines;
+}
+
+export function enrichATradReplaySnapshots(
+  snapshots: ReplayableATradSnapshot[]
+): EnrichedATradReplaySnapshot[] {
+  const ordered = [...snapshots].sort((left, right) => left.timestamp - right.timestamp);
+  const state = new Map<
+    string,
+    {
+      observationCount: number;
+      sessionHighSoFar: number;
+      sessionLowSoFar: number;
+      firstObservedPrice: number;
+      previousLastPrice: number;
+      previousVolume: number;
+      previousVolumeDelta?: number;
+    }
+  >();
+
+  return ordered.map((snapshot) => {
+    const previous = state.get(snapshot.ticker);
+    const spreadPercent = calculateSpreadPercent(snapshot);
+    const orderBookImbalance = calculateOrderBookImbalance(snapshot);
+    const volumeDeltaFromPrevious =
+      previous && snapshot.volume >= previous.previousVolume
+        ? snapshot.volume - previous.previousVolume
+        : undefined;
+    const volumeRatioEstimate = buildVolumeRatioEstimate(previous, snapshot.volume, volumeDeltaFromPrevious);
+    const vwapEstimate = buildVwapEstimate(snapshot);
+    const sessionHighSoFar = previous
+      ? Math.max(previous.sessionHighSoFar, snapshot.lastPrice)
+      : snapshot.lastPrice;
+    const sessionLowSoFar = previous
+      ? Math.min(previous.sessionLowSoFar, snapshot.lastPrice)
+      : snapshot.lastPrice;
+
+    const replayFeatures: ATradReplayFeatures = {
+      observationCount: (previous?.observationCount ?? 0) + 1,
+      previousLastPrice: previous?.previousLastPrice,
+      priceChangeFromPreviousPercent:
+        previous && previous.previousLastPrice > 0
+          ? ((snapshot.lastPrice - previous.previousLastPrice) / previous.previousLastPrice) * 100
+          : undefined,
+      sessionHighSoFar,
+      sessionLowSoFar,
+      firstObservedPrice: previous?.firstObservedPrice ?? snapshot.lastPrice,
+      volumeDeltaFromPrevious,
+      volumeRatioEstimate,
+      spreadPercent,
+      orderBookImbalance,
+      vwapEstimate,
+      first5MinHighEstimate: previous?.sessionHighSoFar
+    };
+
+    state.set(snapshot.ticker, {
+      observationCount: replayFeatures.observationCount,
+      sessionHighSoFar,
+      sessionLowSoFar,
+      firstObservedPrice: replayFeatures.firstObservedPrice,
+      previousLastPrice: snapshot.lastPrice,
+      previousVolume: snapshot.volume,
+      previousVolumeDelta: volumeDeltaFromPrevious
+    });
+
+    return {
+      ...snapshot,
+      replayFeatures
+    };
+  });
 }
 
 export async function runManualATradReplaySession(
@@ -396,21 +547,25 @@ function groupSnapshotsByTicker(snapshots: MarketSnapshot[]): Map<string, Market
 
 function buildTickerDiagnostic(
   ticker: string,
-  snapshots: MarketSnapshot[]
+  snapshots: EnrichedATradReplaySnapshot[]
 ): ATradReplayTickerDiagnostic {
   const latest = snapshots[snapshots.length - 1] ?? snapshots[0];
   const spreadValues = snapshots
-    .map(calculateSpreadPercent)
+    .map((snapshot) => snapshot.replayFeatures.spreadPercent)
     .filter((value): value is number => value !== undefined);
   const averageSpreadPercent = spreadValues.length > 0
     ? spreadValues.reduce((total, value) => total + value, 0) / spreadValues.length
     : undefined;
-  const enoughObservations = snapshots.length >= 2;
+  const enoughObservations = latest.replayFeatures.observationCount >= 2;
   const strategyReady =
     enoughObservations &&
     averageSpreadPercent !== undefined &&
     averageSpreadPercent < OPENING_MOMENTUM_SPREAD_THRESHOLD &&
-    calculateOrderBookImbalance(latest) > OPENING_MOMENTUM_IMBALANCE_THRESHOLD;
+    latest.replayFeatures.orderBookImbalance !== undefined &&
+    latest.replayFeatures.orderBookImbalance > OPENING_MOMENTUM_IMBALANCE_THRESHOLD &&
+    latest.replayFeatures.vwapEstimate !== undefined &&
+    latest.replayFeatures.first5MinHighEstimate !== undefined &&
+    latest.replayFeatures.volumeRatioEstimate !== undefined;
 
   return {
     ticker,
@@ -437,6 +592,85 @@ function calculateOrderBookImbalance(snapshot: MarketSnapshot): number {
     return 0;
   }
   return (snapshot.bidDepth - snapshot.askDepth) / denominator;
+}
+
+export function buildATradReplayFeatures(
+  snapshots: ReplayableATradSnapshot[]
+): EnrichedATradReplaySnapshot[] {
+  return enrichATradReplaySnapshots(snapshots);
+}
+
+function buildVolumeRatioEstimate(
+  previous:
+    | {
+        previousVolume: number;
+        previousVolumeDelta?: number;
+      }
+    | undefined,
+  currentVolume: number,
+  currentDelta: number | undefined
+): number | undefined {
+  if (!previous) {
+    return undefined;
+  }
+
+  if (
+    previous.previousVolumeDelta !== undefined &&
+    previous.previousVolumeDelta > 0 &&
+    currentDelta !== undefined
+  ) {
+    return currentDelta / previous.previousVolumeDelta;
+  }
+
+  if (previous.previousVolume > 0) {
+    return currentVolume / previous.previousVolume;
+  }
+
+  return undefined;
+}
+
+function buildVwapEstimate(snapshot: ReplayableATradSnapshot): number | undefined {
+  const metadata = snapshot.metadata;
+  const metadataVwa = metadata ? parseNumericValue(metadata.vwa) : undefined;
+  if (metadataVwa !== undefined && isPriceLikeNearSnapshot(metadataVwa, snapshot)) {
+    return metadataVwa;
+  }
+
+  const turnover = metadata
+    ? parseNumericValue(metadata.turnover) ?? snapshot.totalTurnover
+    : snapshot.totalTurnover;
+  if (turnover !== undefined && snapshot.volume > 0) {
+    const estimate = turnover / snapshot.volume;
+    if (isPriceLikeNearSnapshot(estimate, snapshot)) {
+      return estimate;
+    }
+  }
+
+  return undefined;
+}
+
+function parseNumericValue(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.replace(/,/g, '').trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isPriceLikeNearSnapshot(value: number, snapshot: ReplayableATradSnapshot): boolean {
+  if (!Number.isFinite(value) || value <= 0) {
+    return false;
+  }
+
+  const referenceHigh = Math.max(snapshot.bestBid, snapshot.bestAsk, snapshot.lastPrice);
+  const referenceLow = Math.min(snapshot.bestBid, snapshot.bestAsk, snapshot.lastPrice);
+  return value >= referenceLow * 0.9 && value <= referenceHigh * 1.1;
 }
 
 function buildLikelyBlockers(counts: {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ManualATradReplaySessionRuntime } from './manualATradReplaySession.js';
 import {
   analyzeATradReplayDiagnostics,
+  buildATradReplayFeatures,
   createManualATradReplaySessionConfig,
   extractReplayableATradSnapshots,
   formatATradReplaySessionSummary,
@@ -136,6 +137,75 @@ describe('manual ATrad replay-session helpers', () => {
     ]);
   });
 
+  it('enriches snapshots in timestamp order and computes observation counts', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const enriched = buildATradReplayFeatures(extractReplayableATradSnapshots(session));
+
+    expect(enriched.map((snapshot) => snapshot.ticker)).toEqual([
+      'ALFA.N0000',
+      'ALFA.N0000',
+      'BETA.N0000'
+    ]);
+    expect(enriched.map((snapshot) => snapshot.replayFeatures.observationCount)).toEqual([1, 2, 1]);
+  });
+
+  it('computes spread percent order book imbalance and volume delta', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const enriched = buildATradReplayFeatures(extractReplayableATradSnapshots(session));
+
+    expect(enriched[0]?.replayFeatures.spreadPercent).toBeCloseTo(((41.6 - 41.4) / 41.6) * 100, 5);
+    expect(enriched[0]?.replayFeatures.orderBookImbalance).toBeCloseTo((900 - 600) / (900 + 600), 5);
+    expect(enriched[1]?.replayFeatures.volumeDeltaFromPrevious).toBe(1000);
+  });
+
+  it('computes a volume ratio estimate from prior observations', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const enriched = buildATradReplayFeatures(extractReplayableATradSnapshots(session));
+
+    expect(enriched[1]?.replayFeatures.volumeRatioEstimate).toBeCloseTo(13000 / 12000, 5);
+  });
+
+  it('uses metadata.vwa when valid and falls back to turnover over volume when valid', () => {
+    const session = parseATradRecordedSessionFile(
+      JSON.stringify({
+        ...fakeRecordedSession,
+        snapshots: [
+          {
+            ...fakeRecordedSession.snapshots[0],
+            metadata: { companyName: 'Beta PLC', vwa: '55.05', turnover: '826500' }
+          },
+          {
+            ...fakeRecordedSession.snapshots[1],
+            metadata: { companyName: 'Alfa PLC', turnover: '498000' }
+          }
+        ]
+      })
+    );
+    const enriched = buildATradReplayFeatures(extractReplayableATradSnapshots(session));
+
+    expect(enriched[0]?.replayFeatures.vwapEstimate).toBeCloseTo(41.5, 5);
+    expect(enriched[1]?.replayFeatures.vwapEstimate).toBeCloseTo(55.05, 5);
+  });
+
+  it('omits bad vwap estimates and approximates first5MinHigh from session highs', () => {
+    const session = parseATradRecordedSessionFile(
+      JSON.stringify({
+        ...fakeRecordedSession,
+        snapshots: [
+          {
+            ...fakeRecordedSession.snapshots[1],
+            metadata: { companyName: 'Alfa PLC', vwa: '9999', turnover: '99999999' }
+          },
+          fakeRecordedSession.snapshots[2]
+        ]
+      })
+    );
+    const enriched = buildATradReplayFeatures(extractReplayableATradSnapshots(session));
+
+    expect(enriched[0]?.replayFeatures.vwapEstimate).toBeUndefined();
+    expect(enriched[1]?.replayFeatures.first5MinHighEstimate).toBeCloseTo(41.5, 5);
+  });
+
   it('counts unique tickers and top tickers by snapshot count', () => {
     const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
     const snapshots = extractReplayableATradSnapshots(session);
@@ -187,7 +257,10 @@ describe('manual ATrad replay-session helpers', () => {
     expect(result.replaySummary.alertsSent).toBe(0);
     expect(result.diagnostics.readinessStatus).toBe('PARTIALLY_READY');
     expect(result.diagnostics.tickersWithRepeatedSnapshots).toBe(1);
-    expect(result.diagnostics.strategyReadySnapshotCount).toBe(2);
+    expect(result.diagnostics.strategyReadySnapshotCount).toBe(1);
+    expect(result.diagnostics.snapshotsWithVwapEstimate).toBe(3);
+    expect(result.diagnostics.snapshotsWithFirstFiveMinuteHighEstimate).toBe(1);
+    expect(result.diagnostics.snapshotsWithVolumeRatioEstimate).toBe(1);
     expect(result.warning).toBe('No signals were generated during replay.');
     expect(calls.join('\n')).toContain('Sentinel-CSE ATrad recorded session replay summary');
     expect(calls.join('\n')).toContain('ATrad replay diagnostics:');
@@ -206,7 +279,6 @@ describe('manual ATrad replay-session helpers', () => {
 
     expect(diagnostics.likelyBlockers).toContain('insufficient time-series history');
     expect(diagnostics.likelyBlockers).toContain('volume ratio unavailable');
-    expect(diagnostics.likelyBlockers).toContain('VWAP missing');
     expect(diagnostics.likelyBlockers).toContain('first-5-minute high missing');
   });
 
@@ -301,17 +373,24 @@ describe('manual ATrad replay-session helpers', () => {
       },
       diagnostics: {
         snapshotsProcessed: 3,
+        enrichedSnapshotsCount: 3,
         uniqueTickers: 2,
         tickersWithRepeatedSnapshots: 1,
         spreadBlockedCount: 0,
-        volumeBlockedCount: 3,
+        volumeBlockedCount: 2,
         imbalanceBlockedCount: 0,
-        vwapMissingCount: 3,
-        firstFiveMinuteHighMissingCount: 3,
+        vwapMissingCount: 0,
+        firstFiveMinuteHighMissingCount: 2,
+        priceNotAboveVwapCount: 0,
+        priceNotAboveMomentumTriggerCount: 0,
         insufficientHistoryCount: 1,
         qualityGateExcludedCount: 2,
+        snapshotsWithVwapEstimate: 3,
+        snapshotsWithFirstFiveMinuteHighEstimate: 1,
+        snapshotsWithVolumeRatioEstimate: 1,
+        snapshotsWithOrderBookImbalance: 3,
         strategyGeneratedSignalCount: 0,
-        strategyReadySnapshotCount: 3,
+        strategyReadySnapshotCount: 1,
         likelyBlockers: ['insufficient time-series history', 'volume ratio unavailable'],
         recommendations: ['record longer session with interval <= 10s'],
         readinessStatus: 'PARTIALLY_READY',

@@ -125,6 +125,8 @@ The `pnpm atrad:replay-session -- --input <path>` command replays a locally reco
 
 Replay diagnostics now explain why a recorded session did or did not produce signals. These diagnostics do not change strategy thresholds; they highlight blockers such as missing VWAP or insufficient time-series history so future feature engineering and longer recordings can close the gap safely. This remains local-only research with no live trading or alerts.
 
+The local replay feature builder derives strategy-supporting fields such as spread, order-book imbalance, VWAP estimates, volume-ratio estimates, and session-high-based trigger estimates from recorded ATrad sessions. These estimates are for replay and research only, do not loosen strategy thresholds, and do not enable live trading, alerts, Supabase writes, or orders.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.
