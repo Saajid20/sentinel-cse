@@ -8,10 +8,13 @@ import { assertATradReadOnlySafety } from '../packages/atrad/src/index.js';
 import type { MarketSnapshot } from '../packages/core/src/index.js';
 import { DEFAULT_ATRAD_BASE_URL } from './manualATradLogin.js';
 import {
+  collectVisibleATradPageText,
   collectPageDiagnostics,
+  detectATradMarketStateFromVisibleText,
   extractVisibleMarketWatchRows,
   partitionATradSnapshotsByConfidence,
   sanitizeMarketWatchRows,
+  type ATradMarketState,
   type ATradParsedRowQualityAssessment,
   type ATradParsedRowQualityStatus,
   type ManualATradPageLike,
@@ -49,6 +52,8 @@ export interface RecordedATradSnapshot extends MarketSnapshot {
 export interface ATradSessionTickDiagnostic {
   tickNumber: number;
   capturedAt: string;
+  marketState: ATradMarketState;
+  rawRows: number;
   rawRowsExtracted: number;
   acceptedSnapshots: number;
   usableSnapshots: number;
@@ -116,6 +121,7 @@ export interface ManualATradRecordSessionRuntime {
 
 interface ATradRecordingTickCapture {
   timestamp: number;
+  marketState: ATradMarketState;
   rawRowsExtracted: number;
   acceptedCount: number;
   usableRows: SanitizedObservedMarketWatchRow[];
@@ -223,6 +229,8 @@ export async function captureATradRecordingTick(
   timestamp: number,
   options: { allowMediumConfidence?: boolean } = {}
 ): Promise<ATradRecordingTickCapture> {
+  const visibleText = await collectVisibleATradPageText(page);
+  const visibleTextMarketState = detectATradMarketStateFromVisibleText(visibleText);
   const rawRows = await extractVisibleMarketWatchRows(page);
   const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
   const partition = partitionATradSnapshotsByConfidence(
@@ -230,14 +238,30 @@ export async function captureATradRecordingTick(
     sanitized.qualityAssessments,
     { allowMediumConfidence: options.allowMediumConfidence }
   );
+  const marketState = resolveATradTickMarketState(
+    visibleTextMarketState,
+    rawRows.length,
+    sanitized.qualityAssessments
+  );
+  const tickIsRecordable = marketState !== 'CLOSED' && marketState !== 'INACTIVE';
+  const usableRows = tickIsRecordable ? partition.usableSnapshots : [];
+  const quarantinedRows = tickIsRecordable ? partition.quarantinedSnapshots : [];
+  const rejectedRows = tickIsRecordable
+    ? partition.rejectedSnapshots
+    : [
+        ...partition.rejectedSnapshots,
+        ...partition.usableSnapshots,
+        ...partition.quarantinedSnapshots
+      ];
 
   return {
     timestamp,
+    marketState,
     rawRowsExtracted: rawRows.length,
     acceptedCount: sanitized.accepted.length,
-    usableRows: partition.usableSnapshots,
-    quarantinedRows: partition.quarantinedSnapshots,
-    rejectedRows: partition.rejectedSnapshots,
+    usableRows,
+    quarantinedRows,
+    rejectedRows,
     placeholderRows: sanitized.qualityAssessments.filter((assessment) =>
       assessment.issues.some((issue) => issue.code === 'PLACEHOLDER_ROW')
     ).length,
@@ -362,6 +386,8 @@ export async function runManualATradRecordSession(
       session.diagnostics.push({
         tickNumber,
         capturedAt: new Date(capture.timestamp).toISOString(),
+        marketState: capture.marketState,
+        rawRows: capture.rawRowsExtracted,
         rawRowsExtracted: capture.rawRowsExtracted,
         acceptedSnapshots: capture.acceptedCount,
         usableSnapshots: capture.usableRows.length,
@@ -387,7 +413,7 @@ export async function runManualATradRecordSession(
       }
 
       runtime.log(
-        `Tick ${tickNumber}: usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}, placeholders=${capture.placeholderRows}`
+        `Tick ${tickNumber}: marketState=${capture.marketState}, usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}, placeholders=${capture.placeholderRows}`
       );
 
       if (config.maxTicks !== undefined && tickNumber >= config.maxTicks) {
@@ -505,6 +531,41 @@ function readFlagValue(args: string[], flag: string): string | undefined {
 
 function isRecordMetadata(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function resolveATradTickMarketState(
+  visibleTextMarketState: ATradMarketState,
+  rawRowsExtracted: number,
+  qualityAssessments: ATradParsedRowQualityAssessment[]
+): ATradMarketState {
+  if (visibleTextMarketState === 'CLOSED') {
+    return 'CLOSED';
+  }
+
+  if (rawRowsExtracted === 0 || isMostlyInactiveATradTick(rawRowsExtracted, qualityAssessments)) {
+    return 'INACTIVE';
+  }
+
+  return visibleTextMarketState;
+}
+
+function isMostlyInactiveATradTick(
+  rawRowsExtracted: number,
+  qualityAssessments: ATradParsedRowQualityAssessment[]
+): boolean {
+  if (rawRowsExtracted === 0) {
+    return true;
+  }
+
+  const inactiveLikeRows = qualityAssessments.filter((assessment) =>
+    assessment.issues.some((issue) =>
+      issue.code === 'PLACEHOLDER_ROW' ||
+      issue.code === 'INACTIVE_MARKET_ROW' ||
+      issue.code === 'NON_TRADEABLE_ROW'
+    )
+  ).length;
+
+  return inactiveLikeRows > rawRowsExtracted / 2;
 }
 
 async function waitForATradRecordingReadiness(

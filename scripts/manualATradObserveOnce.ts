@@ -147,6 +147,8 @@ export interface ATradUsableSnapshotPartition {
   usablePolicy: 'HIGH_CONFIDENCE only' | 'HIGH_CONFIDENCE + MEDIUM_CONFIDENCE';
 }
 
+export type ATradMarketState = 'OPEN' | 'CLOSED' | 'UNKNOWN' | 'INACTIVE';
+
 export type ATradParsedRowQualityStatus =
   | 'HIGH_CONFIDENCE'
   | 'MEDIUM_CONFIDENCE'
@@ -851,6 +853,20 @@ export function partitionATradSnapshotsByConfidence(
   };
 }
 
+export function detectATradMarketStateFromVisibleText(visibleText: string): ATradMarketState {
+  const normalized = visibleText.replace(/\s+/g, ' ').trim();
+
+  if (/\bmarket\b\s*(?:status)?\s*(?::|is)?\s*closed?\b/i.test(normalized)) {
+    return 'CLOSED';
+  }
+
+  if (/\bmarket\b\s*(?:status)?\s*(?::|is)?\s*open\b/i.test(normalized)) {
+    return 'OPEN';
+  }
+
+  return 'UNKNOWN';
+}
+
 export function sanitizeMarketWatchRows(
   rows: MarketWatchRow[],
   timestamp: number,
@@ -1214,6 +1230,27 @@ export async function collectPageDiagnostics(
     page: pageDiagnostics,
     frames: frameDiagnostics
   };
+}
+
+export async function collectVisibleATradPageText(page: ManualATradPageLike): Promise<string> {
+  assertATradReadOnlySafety('read visible ATrad page text');
+
+  const frames = page.frames();
+  const targets: ManualATradFrameLike[] = frames.length > 0 ? frames : [page];
+  const texts: string[] = [];
+
+  for (const frame of targets) {
+    try {
+      const text = await frame.evaluate<string>(BROWSER_SAFE_VISIBLE_TEXT_EVALUATION);
+      if (text.trim().length > 0) {
+        texts.push(redactSensitiveText(text));
+      }
+    } catch {
+      // Cross-origin frames can reject evaluation; other frames still provide enough context.
+    }
+  }
+
+  return texts.join('\n');
 }
 
 function parseBaseUrl(args: string[]): string {
@@ -2288,6 +2325,14 @@ const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
 })()`;
 
 const BROWSER_SAFE_IFRAME_COUNT_EVALUATION = `(() => document.querySelectorAll('iframe').length)()`;
+
+const BROWSER_SAFE_VISIBLE_TEXT_EVALUATION = `(() => {
+  function normalize(value) {
+    return String(value || '').replace(/\\s+/g, ' ').trim();
+  }
+
+  return normalize(document.body ? (document.body.innerText || document.body.textContent || '') : '');
+})()`;
 
 const BROWSER_SAFE_DIAGNOSTICS_EVALUATION = `(() => {
   const keywords = ${JSON.stringify(DIAGNOSTIC_KEYWORDS)};

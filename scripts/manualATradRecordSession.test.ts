@@ -152,9 +152,78 @@ describe('manual ATrad record-session helpers', () => {
     expect(runtime.calls).toContain('wait');
     expect(runtime.calls.filter((call) => call === 'sleep:15000')).toHaveLength(2);
     expect(runtime.calls).toContain('log:ATrad Market Watch ready: rawRows=3, headers=yes');
-    expect(runtime.calls).toContain('log:Tick 1: usable=1, quarantined=1, rejected=1, placeholders=0');
-    expect(runtime.calls).toContain('log:Tick 2: usable=1, quarantined=1, rejected=1, placeholders=0');
-    expect(runtime.calls).toContain('log:Tick 3: usable=1, quarantined=1, rejected=1, placeholders=0');
+    expect(runtime.calls).toContain('log:Tick 1: marketState=OPEN, usable=1, quarantined=1, rejected=1, placeholders=0');
+    expect(runtime.calls).toContain('log:Tick 2: marketState=OPEN, usable=1, quarantined=1, rejected=1, placeholders=0');
+    expect(runtime.calls).toContain('log:Tick 3: marketState=OPEN, usable=1, quarantined=1, rejected=1, placeholders=0');
+  });
+
+  it('forces Market Close ticks to produce zero usable snapshots', async () => {
+    const runtime = createFakeRuntime({ marketText: 'Market :Close' });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1'], runtime.now()),
+      runtime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.session.totals.usableSnapshots).toBe(0);
+    expect(result.session.totals.quarantinedSnapshots).toBe(0);
+    expect(result.session.totals.rejectedSnapshots).toBe(3);
+    expect(result.session.snapshots).toHaveLength(0);
+    expect(result.session.diagnostics[0]).toMatchObject({
+      marketState: 'CLOSED',
+      rawRows: 3,
+      usableSnapshots: 0,
+      quarantinedSnapshots: 0,
+      rejectedSnapshots: 3
+    });
+    expect(runtime.calls).toContain('log:Tick 1: marketState=CLOSED, usable=0, quarantined=0, rejected=3, placeholders=0');
+  });
+
+  it('allows Market Open ticks to record normal usable rows', async () => {
+    const runtime = createFakeRuntime({ marketText: 'Market: Open' });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1'], runtime.now()),
+      runtime
+    );
+
+    expect(result.session.diagnostics[0]?.marketState).toBe('OPEN');
+    expect(result.session.totals.usableSnapshots).toBe(1);
+    expect(result.session.snapshots.map((snapshot) => snapshot.ticker)).toEqual(['HIGH.N0000']);
+  });
+
+  it('classifies mostly placeholder ticks as inactive and does not append snapshots', async () => {
+    const runtime = createFakeRuntime({
+      marketText: 'Market Watch Full Watch Equity',
+      rows: [placeholderRow, placeholderRow, highConfidenceRow]
+    });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1'], runtime.now()),
+      runtime
+    );
+
+    expect(result.session.diagnostics[0]).toMatchObject({
+      marketState: 'INACTIVE',
+      rawRows: 3,
+      usableSnapshots: 0,
+      placeholderRows: 2,
+      inactiveRows: 2
+    });
+    expect(result.session.totals.usableSnapshots).toBe(0);
+    expect(result.session.snapshots).toHaveLength(0);
+    expect(runtime.calls).toContain('log:Tick 1: marketState=INACTIVE, usable=0, quarantined=0, rejected=3, placeholders=2');
+  });
+
+  it('allows unknown market state when extracted rows look live', async () => {
+    const runtime = createFakeRuntime({ marketText: 'Market Watch Full Watch Equity' });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1'], runtime.now()),
+      runtime
+    );
+
+    expect(result.session.diagnostics[0]?.marketState).toBe('UNKNOWN');
+    expect(result.session.totals.usableSnapshots).toBe(1);
+    expect(result.session.snapshots.map((snapshot) => snapshot.ticker)).toEqual(['HIGH.N0000']);
+    expect(runtime.calls).toContain('log:Tick 1: marketState=UNKNOWN, usable=1, quarantined=1, rejected=1, placeholders=0');
   });
 
   it('includes quarantined rows only in the optional quarantine section', async () => {
@@ -191,12 +260,14 @@ describe('manual ATrad record-session helpers', () => {
     expect(result.session.totals.usableSnapshots).toBe(1);
     expect(result.session.snapshots.map((snapshot) => snapshot.ticker)).toEqual(['HIGH.N0000']);
     expect(result.session.diagnostics[0]).toMatchObject({
+      marketState: 'OPEN',
+      rawRows: 4,
       placeholderRows: 1,
       inactiveRows: 1,
       zeroVolumeRows: 1
     });
     expect(runtime.calls).toContain(
-      'log:Tick 1: usable=1, quarantined=1, rejected=2, placeholders=1'
+      'log:Tick 1: marketState=OPEN, usable=1, quarantined=1, rejected=2, placeholders=1'
     );
   });
 
@@ -315,6 +386,8 @@ describe('manual ATrad record-session helpers', () => {
 function createFakeRuntime(options: {
   readinessSequence?: Array<'ready' | 'not-ready'>;
   includePlaceholderRow?: boolean;
+  marketText?: string;
+  rows?: Array<Record<string, string>>;
 } = {}): ManualATradRecordSessionRuntime & {
   calls: string[];
   writes: Array<{ path: string; contents: string }>;
@@ -339,7 +412,9 @@ function createFakeRuntime(options: {
                 readinessSequence,
                 () => extractionAttempt,
                 () => { extractionAttempt += 1; },
-                options.includePlaceholderRow === true
+                options.includePlaceholderRow === true,
+                options.marketText,
+                options.rows
               )
             ];
           },
@@ -350,7 +425,9 @@ function createFakeRuntime(options: {
               readinessSequence,
               () => extractionAttempt,
               () => { extractionAttempt += 1; },
-              options.includePlaceholderRow === true
+              options.includePlaceholderRow === true,
+              options.marketText,
+              options.rows
             );
           }
         },
@@ -388,10 +465,18 @@ function createFakePage(
   readinessSequence: Array<'ready' | 'not-ready'>,
   getExtractionAttempt: () => number,
   incrementExtractionAttempt: () => void,
-  includePlaceholderRow: boolean
+  includePlaceholderRow: boolean,
+  marketText = 'Market: Open',
+  rows?: Array<Record<string, string>>
 ) {
   const headers = Object.keys(highConfidenceRow);
   const asRowCells = (row: Record<string, string>) => headers.map((header) => row[header] ?? '');
+  const visibleRows = rows ?? [
+    highConfidenceRow,
+    mediumConfidenceRow,
+    rejectedRow,
+    ...(includePlaceholderRow ? [placeholderRow] : [])
+  ];
 
   return {
     url() {
@@ -410,6 +495,10 @@ function createFakePage(
       calls.push(`evaluate:${typeof pageFunction}`);
       if (typeof pageFunction !== 'string') {
         return [];
+      }
+
+      if (pageFunction.includes('innerText || document.body.textContent')) {
+        return `${marketText} Market Watch Full Watch Equity Security Bid Ask Last Volume`;
       }
 
       if (pageFunction.includes('const allowedHeaders =')) {
@@ -437,12 +526,7 @@ function createFakePage(
               headerRowIndex: 0,
               headerCells: headers,
               containerTextMatches: ['Market Watch', 'Full Watch', 'Equity'],
-              rows: [
-                asRowCells(highConfidenceRow),
-                asRowCells(mediumConfidenceRow),
-                asRowCells(rejectedRow),
-                ...(includePlaceholderRow ? [asRowCells(placeholderRow)] : [])
-              ]
+              rows: visibleRows.map(asRowCells)
             }
           ],
           dojoCandidates: [],

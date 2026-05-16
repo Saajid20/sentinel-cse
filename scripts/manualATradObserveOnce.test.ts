@@ -12,6 +12,7 @@ import {
   collectPageDiagnostics,
   createManualATradObserveOnceConfig,
   DEFAULT_ATRAD_MARKET_WATCH_URL,
+  detectATradMarketStateFromVisibleText,
   extractVisibleMarketWatchRows,
   formatObserveOnceSummary,
   ManualATradObserveOnceRuntime,
@@ -100,6 +101,14 @@ describe('manual ATrad observe-once helpers', () => {
     const config = createManualATradObserveOnceConfig(['--allow-medium-confidence']);
 
     expect(config.allowMediumConfidence).toBe(true);
+  });
+
+  it('detects explicit ATrad market state from visible text variants', () => {
+    expect(detectATradMarketStateFromVisibleText('Full Watch - Equity Market :Open')).toBe('OPEN');
+    expect(detectATradMarketStateFromVisibleText('Full Watch - Equity Market: Open')).toBe('OPEN');
+    expect(detectATradMarketStateFromVisibleText('Full Watch - Equity Market :Close')).toBe('CLOSED');
+    expect(detectATradMarketStateFromVisibleText('Full Watch - Equity Market: Closed')).toBe('CLOSED');
+    expect(detectATradMarketStateFromVisibleText('Full Watch - Equity')).toBe('UNKNOWN');
   });
 
   it('returns a helpful result when storage state is missing', async () => {
