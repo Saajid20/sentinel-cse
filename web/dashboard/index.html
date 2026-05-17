@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sentinel-CSE Operator Dashboard</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Sentinel-CSE</p>
+        <h1>Read-only operator dashboard</h1>
+      </div>
+      <div class="status-pill" id="refresh-state">Loading local state</div>
+    </header>
+
+    <main class="dashboard-shell">
+      <section class="summary-strip" aria-label="Safety status">
+        <div class="metric">
+          <span>ATrad</span>
+          <strong id="metric-atrad">read-only/manual</strong>
+        </div>
+        <div class="metric">
+          <span>Auto-trading</span>
+          <strong id="metric-auto">disabled</strong>
+        </div>
+        <div class="metric">
+          <span>Orders</span>
+          <strong id="metric-orders">disabled</strong>
+        </div>
+        <div class="metric">
+          <span>Live services</span>
+          <strong id="metric-services">disabled</strong>
+        </div>
+      </section>
+
+      <section class="layout-grid">
+        <article class="panel wide" id="local-sessions">
+          <div class="panel-heading">
+            <h2>Local Sessions</h2>
+            <span class="panel-note">Ignored by Git</span>
+          </div>
+          <dl class="details">
+            <div><dt>Folder</dt><dd data-field="sessionsDir">...</dd></div>
+            <div><dt>Exists</dt><dd data-field="folderExists">...</dd></div>
+            <div><dt>Session files</dt><dd data-field="sessionFileCount">...</dd></div>
+            <div><dt>Latest file</dt><dd data-field="latestSessionFilePath">...</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel" id="latest-session">
+          <div class="panel-heading">
+            <h2>Latest Session Summary</h2>
+          </div>
+          <dl class="details compact">
+            <div><dt>Session</dt><dd data-field="sessionId">none</dd></div>
+            <div><dt>Started</dt><dd data-field="startedAt">n/a</dd></div>
+            <div><dt>Ended</dt><dd data-field="endedAt">n/a</dd></div>
+            <div><dt>Source</dt><dd data-field="source">n/a</dd></div>
+            <div><dt>Mode</dt><dd data-field="mode">n/a</dd></div>
+            <div><dt>Usable</dt><dd data-field="usableSnapshots">0</dd></div>
+            <div><dt>Quarantined</dt><dd data-field="quarantinedSnapshots">0</dd></div>
+            <div><dt>Rejected</dt><dd data-field="rejectedSnapshots">0</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel" id="market-states">
+          <div class="panel-heading">
+            <h2>Market State Counts</h2>
+          </div>
+          <div class="state-grid">
+            <div><span>OPEN</span><strong data-state="OPEN">0</strong></div>
+            <div><span>CLOSED</span><strong data-state="CLOSED">0</strong></div>
+            <div><span>INACTIVE</span><strong data-state="INACTIVE">0</strong></div>
+            <div><span>UNKNOWN</span><strong data-state="UNKNOWN">0</strong></div>
+          </div>
+        </article>
+
+        <article class="panel wide" id="tradeable-universe">
+          <div class="panel-heading">
+            <h2>Tradeable Universe</h2>
+            <span class="panel-note" data-field="universeSource">...</span>
+          </div>
+          <dl class="details">
+            <div><dt>Name</dt><dd data-field="universeName">...</dd></div>
+            <div><dt>Include count</dt><dd data-field="includeTickersCount">...</dd></div>
+            <div><dt>Included preview</dt><dd data-field="includedTickersPreview">...</dd></div>
+            <div><dt>Exclude patterns</dt><dd data-field="excludePatterns">...</dd></div>
+            <div><dt>Exclude non-voting</dt><dd data-field="excludeNonVoting">...</dd></div>
+            <div><dt>Max spread</dt><dd data-field="maximumSpreadPercent">...</dd></div>
+            <div><dt>Minimum confidence</dt><dd data-field="minimumConfidence">...</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel" id="replay-readiness">
+          <div class="panel-heading">
+            <h2>Replay Readiness</h2>
+          </div>
+          <dl class="details compact">
+            <div><dt>Snapshots</dt><dd data-field="snapshotsCount">0</dd></div>
+            <div><dt>Unique tickers</dt><dd data-field="uniqueTickers">0</dd></div>
+            <div><dt>Repeated tickers</dt><dd data-field="repeatedTickersEstimate">0</dd></div>
+            <div><dt>Likely useful</dt><dd data-field="likelyUsefulForReplay">no</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel recommendation" id="recommended-action">
+          <div class="panel-heading">
+            <h2>Recommended Next Action</h2>
+          </div>
+          <p data-field="recommendation">Loading local recommendation...</p>
+        </article>
+
+        <article class="panel command-panel wide">
+          <div class="panel-heading">
+            <h2>Useful Local Commands</h2>
+            <span class="panel-note">Display only</span>
+          </div>
+          <div class="commands" id="commands"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/dashboard.js" type="module"></script>
+  </body>
+</html>

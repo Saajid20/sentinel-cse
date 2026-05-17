@@ -31,6 +31,10 @@ import {
   formatSentinelDashboard,
   runSentinelDashboard
 } from './sentinelDashboard.js';
+import {
+  createDashboardServerConfig,
+  startDashboardServer
+} from './dashboardServer.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
 import { runManualSupabaseTest } from './manualSupabaseTest.js';
 import { runManualTelegramTest } from './manualTelegramTest.js';
@@ -38,6 +42,7 @@ import { runManualTelegramTest } from './manualTelegramTest.js';
 export type SentinelCommand =
   | 'status'
   | 'dashboard'
+  | 'dashboard-web'
   | 'basket'
   | 'experiment'
   | 'atrad-login'
@@ -72,6 +77,16 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
       return {
         exitCode: 0,
         output: config.json ? JSON.stringify(dashboard, null, 2) : formatSentinelDashboard(dashboard)
+      };
+    }
+    case 'dashboard-web': {
+      const handle = await startDashboardServer(createDashboardServerConfig(args.slice(1)));
+      return {
+        exitCode: 0,
+        output: [
+          `Sentinel-CSE read-only dashboard: ${handle.url}`,
+          'Safety reminder: local files only; no live ATrad, Telegram, Supabase, orders, or auto-trading.'
+        ].join('\n')
       };
     }
     case 'basket':
@@ -186,6 +201,7 @@ export function formatStatus(): string {
     '- ATrad mock observer',
     '- tradeable universe validation',
     '- read-only operator dashboard',
+    '- local read-only web dashboard',
     '',
     'Runtime mode:',
     '- default runtime mode: SHADOW',
@@ -242,6 +258,7 @@ export function formatHelp(): string {
     'Usage:',
     '  pnpm sentinel status',
     '  pnpm sentinel dashboard',
+    '  pnpm sentinel dashboard-web',
     '  pnpm sentinel basket',
     '  pnpm sentinel experiment',
     '  pnpm sentinel atrad-login',
@@ -258,6 +275,7 @@ export function formatHelp(): string {
     'Commands:',
     '  status         Show local capability and safety status.',
     '  dashboard      Show a read-only local operator dashboard for sessions, universe config, and next actions.',
+    '  dashboard-web  Start the local read-only browser dashboard on port 8787 by default.',
     '  basket         Run the mock basket replay evaluator.',
     '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
     '  atrad-login    Open a local manual ATrad login browser and save ignored session state. Supports --persistent-profile.',

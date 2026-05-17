@@ -11,6 +11,7 @@
     "basket:test": "tsx scripts/manualBasketReplay.ts",
     "build": "pnpm -r run build",
     "sentinel": "tsx scripts/sentinel.ts",
+    "dashboard": "tsx scripts/dashboardServer.ts",
     "supabase:test": "tsx scripts/manualSupabaseTest.ts",
     "telegram:test": "tsx scripts/manualTelegramTest.ts",
     "atrad:login": "tsx scripts/manualATradLogin.ts",
