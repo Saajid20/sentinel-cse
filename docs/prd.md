@@ -149,6 +149,8 @@ The `pnpm dashboard` script starts a local read-only browser dashboard on port `
 
 The web UI is display-only. Command snippets are shown as text for the operator to copy manually; the dashboard does not execute commands, expose credentials, expose storage state, connect live ATrad, send alerts, write Supabase records, place orders, or enable auto-trading.
 
+The current web surface follows the Stitch `Sentinel-CSE Research Operator Console` dashboard design as the visual source of truth: dark analytical palette, fixed left sidebar, read-only mode pill, structured status cards, and a segmented market-state bar. The implementation remains plain HTML, CSS, and client-side JavaScript over the existing read-only JSON endpoint.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

@@ -7,120 +7,187 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Sentinel-CSE</p>
-        <h1>Read-only operator dashboard</h1>
-      </div>
-      <div class="status-pill" id="refresh-state">Loading local state</div>
-    </header>
-
-    <main class="dashboard-shell">
-      <section class="summary-strip" aria-label="Safety status">
-        <div class="metric">
-          <span>ATrad</span>
-          <strong id="metric-atrad">read-only/manual</strong>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <span class="brand-mark">SC</span>
+          <div>
+            <p class="eyebrow">Sentinel-CSE</p>
+            <h1>Operator Console</h1>
+          </div>
         </div>
-        <div class="metric">
-          <span>Auto-trading</span>
-          <strong id="metric-auto">disabled</strong>
+
+        <div class="sidebar-panel">
+          <p class="sidebar-label">Mode</p>
+          <div class="mode-pill">READ-ONLY MODE</div>
+          <p class="sidebar-copy">Local analytics surface for sessions, replay readiness, and universe config.</p>
         </div>
-        <div class="metric">
-          <span>Orders</span>
-          <strong id="metric-orders">disabled</strong>
+
+        <nav class="sidebar-nav" aria-label="Dashboard sections">
+          <a href="#safety-status">Safety Status</a>
+          <a href="#latest-session">Latest Session</a>
+          <a href="#market-state">Market State</a>
+          <a href="#replay-readiness">Replay Readiness</a>
+          <a href="#tradeable-universe">Tradeable Universe</a>
+          <a href="#recommended-action">Next Action</a>
+          <a href="#useful-commands">Useful Commands</a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <p class="sidebar-label">Local only</p>
+          <p>No live ATrad, orders, Telegram, Supabase, or automated login.</p>
         </div>
-        <div class="metric">
-          <span>Live services</span>
-          <strong id="metric-services">disabled</strong>
-        </div>
-      </section>
+      </aside>
 
-      <section class="layout-grid">
-        <article class="panel wide" id="local-sessions">
-          <div class="panel-heading">
-            <h2>Local Sessions</h2>
-            <span class="panel-note">Ignored by Git</span>
+      <main class="main-shell">
+        <header class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Sentinel-CSE</p>
+            <h2>Read-only operator dashboard</h2>
+            <p class="hero-text">Session health, market-state drift, universe scope, and replay posture in one local console.</p>
           </div>
-          <dl class="details">
-            <div><dt>Folder</dt><dd data-field="sessionsDir">...</dd></div>
-            <div><dt>Exists</dt><dd data-field="folderExists">...</dd></div>
-            <div><dt>Session files</dt><dd data-field="sessionFileCount">...</dd></div>
-            <div><dt>Latest file</dt><dd data-field="latestSessionFilePath">...</dd></div>
-          </dl>
-        </article>
+          <div class="hero-actions">
+            <div class="refresh-meta">
+              <span class="meta-label">Last refreshed</span>
+              <strong id="refresh-state">Loading local state</strong>
+            </div>
+            <button type="button" class="refresh-button" id="refresh-button">Refresh</button>
+          </div>
+        </header>
 
-        <article class="panel" id="latest-session">
-          <div class="panel-heading">
-            <h2>Latest Session Summary</h2>
-          </div>
-          <dl class="details compact">
-            <div><dt>Session</dt><dd data-field="sessionId">none</dd></div>
-            <div><dt>Started</dt><dd data-field="startedAt">n/a</dd></div>
-            <div><dt>Ended</dt><dd data-field="endedAt">n/a</dd></div>
-            <div><dt>Source</dt><dd data-field="source">n/a</dd></div>
-            <div><dt>Mode</dt><dd data-field="mode">n/a</dd></div>
-            <div><dt>Usable</dt><dd data-field="usableSnapshots">0</dd></div>
-            <div><dt>Quarantined</dt><dd data-field="quarantinedSnapshots">0</dd></div>
-            <div><dt>Rejected</dt><dd data-field="rejectedSnapshots">0</dd></div>
-          </dl>
-        </article>
+        <section class="safety-strip" id="safety-status" aria-label="Safety status strip">
+          <article class="safety-card">
+            <span>ATrad mode</span>
+            <strong id="metric-atrad">read-only/manual</strong>
+          </article>
+          <article class="safety-card">
+            <span>Auto-trading</span>
+            <strong id="metric-auto">disabled</strong>
+          </article>
+          <article class="safety-card">
+            <span>Orders</span>
+            <strong id="metric-orders">disabled</strong>
+          </article>
+          <article class="safety-card">
+            <span>Live services</span>
+            <strong id="metric-services">disabled</strong>
+          </article>
+        </section>
 
-        <article class="panel" id="market-states">
-          <div class="panel-heading">
-            <h2>Market State Counts</h2>
-          </div>
-          <div class="state-grid">
-            <div><span>OPEN</span><strong data-state="OPEN">0</strong></div>
-            <div><span>CLOSED</span><strong data-state="CLOSED">0</strong></div>
-            <div><span>INACTIVE</span><strong data-state="INACTIVE">0</strong></div>
-            <div><span>UNKNOWN</span><strong data-state="UNKNOWN">0</strong></div>
-          </div>
-        </article>
+        <section class="dashboard-grid">
+          <article class="panel panel-session" id="latest-session">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">Session</p>
+                <h3>Latest session</h3>
+              </div>
+              <span class="panel-chip">Ignored by Git</span>
+            </div>
+            <div class="session-layout">
+              <div class="session-primary">
+                <p class="session-id" data-field="sessionId">none</p>
+                <p class="session-mode" data-field="mode">n/a</p>
+                <dl class="session-meta">
+                  <div><dt>Folder</dt><dd data-field="sessionsDir">...</dd></div>
+                  <div><dt>Latest file</dt><dd data-field="latestSessionFilePath">...</dd></div>
+                  <div><dt>Started</dt><dd data-field="startedAt">n/a</dd></div>
+                  <div><dt>Ended</dt><dd data-field="endedAt">n/a</dd></div>
+                  <div><dt>Source</dt><dd data-field="source">n/a</dd></div>
+                  <div><dt>Files</dt><dd><span data-field="sessionFileCount">0</span> total, folder <span data-field="folderExists">no</span></dd></div>
+                </dl>
+              </div>
+              <div class="session-stats">
+                <div><span>Ticks attempted</span><strong data-field="ticksAttempted">0</strong></div>
+                <div><span>Usable</span><strong data-field="usableSnapshots">0</strong></div>
+                <div><span>Quarantined</span><strong data-field="quarantinedSnapshots">0</strong></div>
+                <div><span>Rejected</span><strong data-field="rejectedSnapshots">0</strong></div>
+              </div>
+            </div>
+          </article>
 
-        <article class="panel wide" id="tradeable-universe">
-          <div class="panel-heading">
-            <h2>Tradeable Universe</h2>
-            <span class="panel-note" data-field="universeSource">...</span>
-          </div>
-          <dl class="details">
-            <div><dt>Name</dt><dd data-field="universeName">...</dd></div>
-            <div><dt>Include count</dt><dd data-field="includeTickersCount">...</dd></div>
-            <div><dt>Included preview</dt><dd data-field="includedTickersPreview">...</dd></div>
-            <div><dt>Exclude patterns</dt><dd data-field="excludePatterns">...</dd></div>
-            <div><dt>Exclude non-voting</dt><dd data-field="excludeNonVoting">...</dd></div>
-            <div><dt>Max spread</dt><dd data-field="maximumSpreadPercent">...</dd></div>
-            <div><dt>Minimum confidence</dt><dd data-field="minimumConfidence">...</dd></div>
-          </dl>
-        </article>
+          <article class="panel panel-market" id="market-state">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">Diagnostics</p>
+                <h3>Market state counts</h3>
+              </div>
+            </div>
+            <div class="state-bar" aria-label="Market state distribution">
+              <span class="state-segment state-open" data-state-bar="OPEN"></span>
+              <span class="state-segment state-closed" data-state-bar="CLOSED"></span>
+              <span class="state-segment state-inactive" data-state-bar="INACTIVE"></span>
+              <span class="state-segment state-unknown" data-state-bar="UNKNOWN"></span>
+            </div>
+            <div class="state-grid">
+              <div><span>OPEN</span><strong data-state="OPEN">0</strong></div>
+              <div><span>CLOSED</span><strong data-state="CLOSED">0</strong></div>
+              <div><span>INACTIVE</span><strong data-state="INACTIVE">0</strong></div>
+              <div><span>UNKNOWN</span><strong data-state="UNKNOWN">0</strong></div>
+            </div>
+          </article>
 
-        <article class="panel" id="replay-readiness">
-          <div class="panel-heading">
-            <h2>Replay Readiness</h2>
-          </div>
-          <dl class="details compact">
-            <div><dt>Snapshots</dt><dd data-field="snapshotsCount">0</dd></div>
-            <div><dt>Unique tickers</dt><dd data-field="uniqueTickers">0</dd></div>
-            <div><dt>Repeated tickers</dt><dd data-field="repeatedTickersEstimate">0</dd></div>
-            <div><dt>Likely useful</dt><dd data-field="likelyUsefulForReplay">no</dd></div>
-          </dl>
-        </article>
+          <article class="panel panel-readiness" id="replay-readiness">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">Replay</p>
+                <h3>Replay readiness</h3>
+              </div>
+              <span class="panel-chip readiness-chip" data-field="likelyUsefulForReplay">no</span>
+            </div>
+            <div class="readiness-metrics">
+              <div><span>Snapshots</span><strong data-field="snapshotsCount">0</strong></div>
+              <div><span>Unique tickers</span><strong data-field="uniqueTickers">0</strong></div>
+              <div><span>Repeated tickers</span><strong data-field="repeatedTickersEstimate">0</strong></div>
+            </div>
+            <p class="panel-footnote">Estimate only. This view does not run live replay or trigger pipeline actions.</p>
+          </article>
 
-        <article class="panel recommendation" id="recommended-action">
-          <div class="panel-heading">
-            <h2>Recommended Next Action</h2>
-          </div>
-          <p data-field="recommendation">Loading local recommendation...</p>
-        </article>
+          <article class="panel panel-universe" id="tradeable-universe">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">Universe</p>
+                <h3>Tradeable universe</h3>
+              </div>
+              <span class="panel-chip" data-field="universeSource">missing</span>
+            </div>
+            <dl class="details-grid">
+              <div><dt>Name</dt><dd data-field="universeName">n/a</dd></div>
+              <div><dt>Include count</dt><dd data-field="includeTickersCount">0</dd></div>
+              <div><dt>Include preview</dt><dd data-field="includedTickersPreview">none</dd></div>
+              <div><dt>Exclude patterns</dt><dd data-field="excludePatterns">none</dd></div>
+              <div><dt>Exclude non-voting</dt><dd data-field="excludeNonVoting">no</dd></div>
+              <div><dt>Max spread</dt><dd data-field="maximumSpreadPercent">n/a</dd></div>
+              <div><dt>Minimum confidence</dt><dd data-field="minimumConfidence">n/a</dd></div>
+            </dl>
+          </article>
 
-        <article class="panel command-panel wide">
-          <div class="panel-heading">
-            <h2>Useful Local Commands</h2>
-            <span class="panel-note">Display only</span>
-          </div>
-          <div class="commands" id="commands"></div>
-        </article>
-      </section>
-    </main>
+          <article class="panel panel-action" id="recommended-action">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">Operator guidance</p>
+                <h3>Recommended next action</h3>
+              </div>
+            </div>
+            <p class="action-copy" data-field="recommendation">Loading local recommendation...</p>
+          </article>
+
+          <article class="panel panel-commands" id="useful-commands">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">Local commands</p>
+                <h3>Useful Local Commands</h3>
+              </div>
+              <span class="panel-chip">Display only</span>
+            </div>
+            <div class="commands" id="commands"></div>
+          </article>
+        </section>
+
+        <footer class="dashboard-footer">
+          <p>Safety note: read-only local dashboard. No live ATrad connection, login automation, Telegram alerts, Supabase writes, orders, or auto-trading.</p>
+        </footer>
+      </main>
+    </div>
 
     <script src="/dashboard.js" type="module"></script>
   </body>

@@ -77,7 +77,8 @@ describe('dashboard web server', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
-    expect(html).toContain('Read-only operator dashboard');
+    expect(html).toContain('Operator Console');
+    expect(html).toContain('READ-ONLY MODE');
     expect(html).toContain('Useful Local Commands');
   });
 
