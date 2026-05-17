@@ -13,6 +13,7 @@ describe('sentinel operator console', () => {
     expect(result.output).toContain('pnpm sentinel atrad-record-session');
     expect(result.output).toContain('pnpm sentinel atrad-replay-session');
     expect(result.output).toContain('pnpm sentinel atrad-compare-sessions');
+    expect(result.output).toContain('pnpm sentinel universe-validate');
     expect(result.output).toContain('telegram-test');
     expect(result.output).toContain('supabase-test');
   });
@@ -27,6 +28,19 @@ describe('sentinel operator console', () => {
     expect(result.output).toContain('PAPER_ALERT mode available only when explicitly configured');
     expect(result.output).toContain('auto-trading disabled');
     expect(result.output).toContain('ATrad live connection disabled');
+  });
+
+  it('validates the example tradeable universe config', async () => {
+    const result = await runSentinelCommand([
+      'universe-validate',
+      '--config',
+      'config/tradeableUniverse.example.json'
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('Sentinel-CSE tradeable universe validation');
+    expect(result.output).toContain('name: default-cse-tradeable-universe');
+    expect(result.output).toContain('invalid ticker entries: 0');
   });
 
   it('returns an error for unknown commands', async () => {

@@ -22,6 +22,10 @@ import {
   createManualATradRecordSessionConfig,
   runManualATradRecordSession
 } from './manualATradRecordSession.js';
+import {
+  createValidateTradeableUniverseConfig,
+  runValidateTradeableUniverse
+} from './validateTradeableUniverse.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
 import { runManualSupabaseTest } from './manualSupabaseTest.js';
 import { runManualTelegramTest } from './manualTelegramTest.js';
@@ -36,6 +40,7 @@ export type SentinelCommand =
   | 'atrad-record-session'
   | 'atrad-replay-session'
   | 'atrad-compare-sessions'
+  | 'universe-validate'
   | 'telegram-test'
   | 'supabase-test'
   | 'help';
@@ -118,6 +123,15 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
         output: result.message
       };
     }
+    case 'universe-validate': {
+      const result = await runValidateTradeableUniverse(
+        createValidateTradeableUniverseConfig(args.slice(1))
+      );
+      return {
+        exitCode: result.ok ? 0 : 1,
+        output: result.output
+      };
+    }
     case 'telegram-test':
       await runManualTelegramTest();
       return {
@@ -156,6 +170,7 @@ export function formatStatus(): string {
     '- mock/real Telegram sender boundary',
     '- Supabase adapter/manual test',
     '- ATrad mock observer',
+    '- tradeable universe validation',
     '',
     'Runtime mode:',
     '- default runtime mode: SHADOW',
@@ -219,6 +234,7 @@ export function formatHelp(): string {
     '  pnpm sentinel atrad-record-session',
     '  pnpm sentinel atrad-replay-session',
     '  pnpm sentinel atrad-compare-sessions',
+    '  pnpm sentinel universe-validate --config <path>',
     '  pnpm sentinel telegram-test',
     '  pnpm sentinel supabase-test',
     '  pnpm sentinel help',
@@ -233,6 +249,7 @@ export function formatHelp(): string {
     '  atrad-record-session  Record usable read-only Market Watch snapshots to an ignored local JSON session file.',
     '  atrad-replay-session  Replay a recorded local ATrad session JSON file through the safe local replay engine.',
     '  atrad-compare-sessions  Compare one or more recorded local ATrad session JSON files for replay readiness.',
+    '  universe-validate  Validate a local tradeable universe JSON config.',
     '  telegram-test  Send exactly one manual Telegram test message using local environment variables.',
     '  supabase-test  Insert and read one harmless Supabase market_snapshots test row.',
     '  help           Show this help text.'

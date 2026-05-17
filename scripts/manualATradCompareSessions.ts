@@ -14,9 +14,16 @@ import {
   type ATradReplayTickerCount
 } from './manualATradReplaySession.js';
 import type { ATradRecordedSession } from './manualATradRecordSession.js';
+import {
+  filterSnapshotsByTradeableUniverse,
+  parseTradeableUniverseConfig,
+  type TradeableUniverseConfig,
+  type TradeableUniverseCoverageSummary
+} from './tradeableUniverse.js';
 
 export interface ManualATradCompareSessionsConfig {
   inputPaths: string[];
+  universePath?: string;
   readonlyMode: true;
 }
 
@@ -41,6 +48,7 @@ export interface ATradSessionComparisonEntry {
   topBlocker: string;
   topTickers: ATradReplayTickerCount[];
   diagnostics: ATradReplayDiagnostics;
+  universeCoverage?: TradeableUniverseCoverageSummary;
 }
 
 export interface ManualATradCompareSessionsResult {
@@ -48,6 +56,7 @@ export interface ManualATradCompareSessionsResult {
   message: string;
   sessions: ATradSessionComparisonEntry[];
   recommendations: string[];
+  universeName?: string;
 }
 
 export interface ManualATradCompareSessionsRuntime {
@@ -71,6 +80,7 @@ export function createManualATradCompareSessionsConfig(
 
   return {
     inputPaths,
+    ...(readFlagValue(args, '--universe') ? { universePath: readFlagValue(args, '--universe') } : {}),
     readonlyMode: true
   };
 }
@@ -83,12 +93,18 @@ export async function runManualATradCompareSessions(
     throw new Error('ATrad session comparison must run in readonlyMode.');
   }
 
+  const universe = config.universePath
+    ? parseTradeableUniverseConfig(
+        await loadATradSessionFile(config.universePath, runtime),
+        config.universePath
+      )
+    : undefined;
   const sessions: ATradSessionComparisonEntry[] = [];
 
   for (const inputPath of config.inputPaths) {
     const contents = await loadATradSessionFile(inputPath, runtime);
     const session = parseATradRecordedSessionFile(contents);
-    const entry = await compareSingleRecordedSession(inputPath, session);
+    const entry = await compareSingleRecordedSession(inputPath, session, universe);
     sessions.push(entry);
   }
 
@@ -97,7 +113,8 @@ export async function runManualATradCompareSessions(
     ok: true,
     message: 'ATrad recorded session comparison completed.',
     sessions,
-    recommendations
+    recommendations,
+    ...(universe ? { universeName: universe.name } : {})
   };
 
   for (const line of formatATradSessionComparisonSummary(result)) {
@@ -153,6 +170,7 @@ export function formatATradSessionComparisonSummary(
   const lines = [
     'Sentinel-CSE ATrad recorded session comparison',
     `Sessions compared: ${result.sessions.length}`,
+    ...(result.universeName ? [`Tradeable universe: ${result.universeName}`] : []),
     ''
   ];
 
@@ -163,6 +181,10 @@ export function formatATradSessionComparisonSummary(
     lines.push(`   endedAt: ${session.endedAt}`);
     lines.push(`   duration seconds: ${session.durationSeconds}`);
     lines.push(`   total snapshots loaded: ${session.totalSnapshotsLoaded}`);
+    if (session.universeCoverage) {
+      lines.push(`   universe-filtered snapshots: ${session.universeCoverage.filteredSnapshots}`);
+      lines.push(`   excluded by universe: ${session.universeCoverage.excludedByUniverse}`);
+    }
     lines.push(`   unique tickers: ${session.uniqueTickers}`);
     lines.push(`   replayed snapshots: ${session.replayedSnapshots}`);
     lines.push(`   enriched snapshots: ${session.enrichedSnapshots}`);
@@ -196,9 +218,14 @@ export function formatATradSessionComparisonSummary(
 
 async function compareSingleRecordedSession(
   inputPath: string,
-  session: ATradRecordedSession
+  session: ATradRecordedSession,
+  universe?: TradeableUniverseConfig
 ): Promise<ATradSessionComparisonEntry> {
-  const snapshots = extractReplayableATradSnapshots(session);
+  const loadedSnapshots = extractReplayableATradSnapshots(session);
+  const universeResult = universe
+    ? filterSnapshotsByTradeableUniverse(loadedSnapshots, universe)
+    : undefined;
+  const snapshots = universeResult?.snapshots ?? loadedSnapshots;
   const pipeline = new SentinelPipeline({ runtime: { mode: 'SHADOW' } });
   const replaySummary = await new MarketReplayEngine().replay(snapshots, pipeline);
   const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, replaySummary);
@@ -209,7 +236,7 @@ async function compareSingleRecordedSession(
     startedAt: session.startedAt,
     endedAt: session.endedAt,
     durationSeconds: calculateDurationSeconds(session.startedAt, session.endedAt),
-    totalSnapshotsLoaded: snapshots.length,
+    totalSnapshotsLoaded: loadedSnapshots.length,
     uniqueTickers: new Set(snapshots.map((snapshot) => snapshot.ticker)).size,
     replayedSnapshots: replaySummary.snapshotsProcessed,
     enrichedSnapshots: diagnostics.enrichedSnapshotsCount,
@@ -223,7 +250,8 @@ async function compareSingleRecordedSession(
     outcomesClosed: replaySummary.outcomesClosed,
     topBlocker: diagnostics.likelyBlockers[0] ?? 'none',
     topTickers: topTickersBySnapshotCount(snapshots, 5),
-    diagnostics
+    diagnostics,
+    ...(universeResult ? { universeCoverage: universeResult.coverage } : {})
   };
 }
 
@@ -264,6 +292,11 @@ function collectRepeatedFlagValues(args: string[], flag: string): string[] {
 function readFlagValues(args: string[], flag: string): string[] | undefined {
   const values = collectRepeatedFlagValues(args, flag);
   return values.length > 0 ? values : undefined;
+}
+
+function readFlagValue(args: string[], flag: string): string | undefined {
+  const index = args.findIndex((arg) => arg === flag);
+  return index >= 0 ? args[index + 1] : undefined;
 }
 
 function defaultRuntime(): ManualATradCompareSessionsRuntime {

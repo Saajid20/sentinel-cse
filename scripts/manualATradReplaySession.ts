@@ -7,6 +7,11 @@ import {
   SentinelPipeline
 } from '../apps/worker/src/index.js';
 import type { ATradRecordedSession } from './manualATradRecordSession.js';
+import {
+  filterSnapshotsByTradeableUniverse,
+  parseTradeableUniverseConfig,
+  type TradeableUniverseCoverageSummary
+} from './tradeableUniverse.js';
 
 const OPENING_MOMENTUM_SPREAD_THRESHOLD = 1.5;
 const OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD = 2;
@@ -14,6 +19,7 @@ const OPENING_MOMENTUM_IMBALANCE_THRESHOLD = 0;
 
 export interface ManualATradReplaySessionConfig {
   inputPath: string;
+  universePath?: string;
   readonlyMode: true;
 }
 
@@ -100,6 +106,7 @@ export interface ManualATradReplaySessionResult {
   topTickers: ATradReplayTickerCount[];
   replaySummary: ReplayResultSummary;
   diagnostics: ATradReplayDiagnostics;
+  universeCoverage?: TradeableUniverseCoverageSummary;
   warning?: string;
 }
 
@@ -118,6 +125,7 @@ export function createManualATradReplaySessionConfig(
 
   return {
     inputPath,
+    ...(readFlagValue(args, '--universe') ? { universePath: readFlagValue(args, '--universe') } : {}),
     readonlyMode: true
   };
 }
@@ -339,6 +347,24 @@ export function formatATradReplaySessionSummary(
     lines.push(`warning: ${result.warning}`);
   }
 
+  if (result.universeCoverage) {
+    lines.push('', 'Tradeable universe filter:');
+    lines.push(`- universe: ${result.universeCoverage.universeName}`);
+    lines.push(`- original snapshots: ${result.universeCoverage.originalSnapshots}`);
+    lines.push(`- universe-filtered snapshots: ${result.universeCoverage.filteredSnapshots}`);
+    lines.push(`- excluded by universe: ${result.universeCoverage.excludedByUniverse}`);
+    lines.push(`- original unique tickers: ${result.universeCoverage.originalUniqueTickers}`);
+    lines.push(`- filtered unique tickers: ${result.universeCoverage.filteredUniqueTickers}`);
+    lines.push('- top excluded reasons:');
+    if (result.universeCoverage.topExcludedReasons.length === 0) {
+      lines.push('- none');
+    } else {
+      result.universeCoverage.topExcludedReasons.forEach((reason) => {
+        lines.push(`- ${reason.reason}: ${reason.count}`);
+      });
+    }
+  }
+
   lines.push('', 'ATrad replay diagnostics:');
   lines.push(`- snapshots processed: ${result.diagnostics.snapshotsProcessed}`);
   lines.push(`- enriched snapshots: ${result.diagnostics.enrichedSnapshotsCount}`);
@@ -462,7 +488,17 @@ export async function runManualATradReplaySession(
 
   const contents = await loadATradReplayInput(config.inputPath, runtime);
   const session = parseATradRecordedSessionFile(contents);
-  const snapshots = extractReplayableATradSnapshots(session);
+  const loadedSnapshots = extractReplayableATradSnapshots(session);
+  const universe = config.universePath
+    ? parseTradeableUniverseConfig(
+        await loadATradReplayInput(config.universePath, runtime),
+        config.universePath
+      )
+    : undefined;
+  const universeResult = universe
+    ? filterSnapshotsByTradeableUniverse(loadedSnapshots, universe)
+    : undefined;
+  const snapshots = universeResult?.snapshots ?? loadedSnapshots;
   const pipeline = new SentinelPipeline({ runtime: { mode: 'SHADOW' } });
   const replayEngine = new MarketReplayEngine();
   const replaySummary = await replayEngine.replay(snapshots, pipeline);
@@ -478,11 +514,12 @@ export async function runManualATradReplaySession(
     source: session.source,
     startedAt: session.startedAt,
     endedAt: session.endedAt,
-    totalSnapshotsLoaded: snapshots.length,
+    totalSnapshotsLoaded: loadedSnapshots.length,
     uniqueTickers: new Set(snapshots.map((snapshot) => snapshot.ticker)).size,
     topTickers: topTickersBySnapshotCount(snapshots),
     replaySummary,
     diagnostics,
+    ...(universeResult ? { universeCoverage: universeResult.coverage } : {}),
     warning
   };
 

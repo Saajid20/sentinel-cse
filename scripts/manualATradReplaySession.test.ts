@@ -100,6 +100,21 @@ describe('manual ATrad replay-session helpers', () => {
     });
   });
 
+  it('parses an optional universe CLI flag', () => {
+    const config = createManualATradReplaySessionConfig([
+      '--input',
+      'data/live-sessions/example.json',
+      '--universe',
+      'config/universe.json'
+    ]);
+
+    expect(config).toEqual({
+      inputPath: 'data/live-sessions/example.json',
+      universePath: 'config/universe.json',
+      readonlyMode: true
+    });
+  });
+
   it('rejects a missing input path', () => {
     expect(() => createManualATradReplaySessionConfig([])).toThrow(
       'Missing required --input <path> for ATrad session replay.'
@@ -266,6 +281,55 @@ describe('manual ATrad replay-session helpers', () => {
     expect(calls.join('\n')).toContain('ATrad replay diagnostics:');
   });
 
+  it('applies a tradeable universe filter when provided', async () => {
+    const calls: string[] = [];
+    const runtime: ManualATradReplaySessionRuntime = {
+      async readFile(path) {
+        if (path === 'fixture.json') return JSON.stringify(fakeRecordedSession);
+        if (path === 'universe.json') {
+          return JSON.stringify({
+            name: 'focused-universe',
+            includeTickers: ['ALFA.N0000'],
+            excludeTickers: [],
+            excludePatterns: ['.R0000', '.U0000'],
+            rules: {
+              excludeRightsAndWarrants: true,
+              excludeNonVoting: false,
+              minimumAverageVolume: null,
+              maximumSpreadPercent: 5,
+              minimumSnapshotsPerSession: 3,
+              minimumConfidence: 'HIGH_CONFIDENCE'
+            }
+          });
+        }
+        throw new Error('ENOENT');
+      },
+      log(message) {
+        calls.push(message);
+      }
+    };
+
+    const result = await runManualATradReplaySession(
+      createManualATradReplaySessionConfig(['--input', 'fixture.json', '--universe', 'universe.json']),
+      runtime
+    );
+
+    expect(result.totalSnapshotsLoaded).toBe(3);
+    expect(result.replaySummary.snapshotsProcessed).toBe(2);
+    expect(result.uniqueTickers).toBe(1);
+    expect(result.universeCoverage).toMatchObject({
+      universeName: 'focused-universe',
+      originalSnapshots: 3,
+      filteredSnapshots: 2,
+      excludedByUniverse: 1
+    });
+    expect(result.universeCoverage?.topExcludedReasons[0]).toEqual({
+      reason: 'not in includeTickers',
+      count: 1
+    });
+    expect(calls.join('\n')).toContain('- excluded by universe: 1');
+  });
+
   it('reports diagnostics when no signals are generated', () => {
     const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
     const snapshots = extractReplayableATradSnapshots(session);
@@ -407,11 +471,21 @@ describe('manual ATrad replay-session helpers', () => {
           }
         ]
       },
+      universeCoverage: {
+        universeName: 'focused-universe',
+        originalSnapshots: 3,
+        filteredSnapshots: 2,
+        excludedByUniverse: 1,
+        originalUniqueTickers: 2,
+        filteredUniqueTickers: 1,
+        topExcludedReasons: [{ reason: 'not in includeTickers', count: 1 }]
+      },
       warning: 'No signals were generated during replay.'
     });
 
     expect(summary).toContain('sessionId: atrad-session-20260508-101500');
     expect(summary).toContain('total snapshots loaded: 3');
+    expect(summary).toContain('- excluded by universe: 1');
     expect(summary).toContain('warning: No signals were generated during replay.');
     expect(summary).toContain('ATrad replay diagnostics:');
     expect(summary).toContain('- readiness status: PARTIALLY_READY');

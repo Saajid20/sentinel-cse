@@ -143,6 +143,21 @@ describe('manual ATrad compare-sessions helpers', () => {
     expect(config.inputPaths).toEqual(['one.json', 'two.json']);
   });
 
+  it('accepts an optional universe path', () => {
+    const config = createManualATradCompareSessionsConfig([
+      '--input',
+      'one.json',
+      '--universe',
+      'universe.json'
+    ]);
+
+    expect(config).toEqual({
+      inputPaths: ['one.json'],
+      universePath: 'universe.json',
+      readonlyMode: true
+    });
+  });
+
   it('rejects missing inputs', () => {
     expect(() => createManualATradCompareSessionsConfig([])).toThrow(
       'Missing required --input <path> or --inputs <path1,path2,...> for ATrad session comparison.'
@@ -196,6 +211,53 @@ describe('manual ATrad compare-sessions helpers', () => {
     expect(result.recommendations).toContain('run replay experiment variants');
   });
 
+  it('applies a tradeable universe filter when provided', async () => {
+    const runtime: ManualATradCompareSessionsRuntime = {
+      async readFile(path) {
+        if (path === 'short.json') return JSON.stringify(sessionA);
+        if (path === 'longer.json') return JSON.stringify(sessionB);
+        if (path === 'universe.json') {
+          return JSON.stringify({
+            name: 'compare-universe',
+            includeTickers: ['AAA.N0000'],
+            excludeTickers: [],
+            excludePatterns: ['.R0000', '.U0000'],
+            rules: {
+              excludeRightsAndWarrants: true,
+              excludeNonVoting: false,
+              minimumAverageVolume: null,
+              maximumSpreadPercent: 5,
+              minimumSnapshotsPerSession: 3,
+              minimumConfidence: 'HIGH_CONFIDENCE'
+            }
+          });
+        }
+        throw new Error('ENOENT');
+      },
+      log() {}
+    };
+
+    const result = await runManualATradCompareSessions(
+      createManualATradCompareSessionsConfig([
+        '--input',
+        'short.json',
+        '--input',
+        'longer.json',
+        '--universe',
+        'universe.json'
+      ]),
+      runtime
+    );
+
+    expect(result.universeName).toBe('compare-universe');
+    expect(result.sessions[0]?.totalSnapshotsLoaded).toBe(2);
+    expect(result.sessions[0]?.replayedSnapshots).toBe(1);
+    expect(result.sessions[0]?.universeCoverage?.excludedByUniverse).toBe(1);
+    expect(result.sessions[1]?.totalSnapshotsLoaded).toBe(4);
+    expect(result.sessions[1]?.replayedSnapshots).toBe(3);
+    expect(result.sessions[1]?.universeCoverage?.filteredSnapshots).toBe(3);
+  });
+
   it('formats a comparison summary', () => {
     const summary = formatATradSessionComparisonSummary({
       ok: true,
@@ -221,13 +283,25 @@ describe('manual ATrad compare-sessions helpers', () => {
           outcomesClosed: 0,
           topBlocker: 'insufficient time-series history',
           topTickers: [{ ticker: 'AAA.N0000', snapshotCount: 1 }],
-          diagnostics: {} as never
+          diagnostics: {} as never,
+          universeCoverage: {
+            universeName: 'compare-universe',
+            originalSnapshots: 2,
+            filteredSnapshots: 1,
+            excludedByUniverse: 1,
+            originalUniqueTickers: 2,
+            filteredUniqueTickers: 1,
+            topExcludedReasons: [{ reason: 'not in includeTickers', count: 1 }]
+          }
         }
       ],
-      recommendations: ['record longer session']
+      recommendations: ['record longer session'],
+      universeName: 'compare-universe'
     });
 
     expect(summary).toContain('Sentinel-CSE ATrad recorded session comparison');
+    expect(summary).toContain('Tradeable universe: compare-universe');
+    expect(summary.join('\n')).toContain('excluded by universe: 1');
     expect(summary.join('\n')).toContain('readiness status: NOT_READY');
     expect(summary).toContain('Aggregate recommendations:');
   });

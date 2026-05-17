@@ -129,6 +129,14 @@ The local replay feature builder derives strategy-supporting fields such as spre
 
 The local comparison report can compare multiple recorded ATrad sessions side by side to show whether longer or denser recordings improve replay readiness. This is still local-only research with no live trading, alerts, Supabase writes, or orders.
 
+## Phase 20 Tradeable Universe
+
+Sentinel-CSE now supports a local tradeable universe/custom watchlist config for research and replay filtering. The checked-in example is `config/tradeableUniverse.example.json`; local custom configs can approve specific tickers, exclude tickers or suffix patterns, and apply research filters such as rights/warrants exclusion, optional non-voting exclusion, maximum spread, and confidence status.
+
+Full Watch - Equity extraction remains broad by default so diagnostics can still inspect the complete visible market watch. The universe layer filters future replay, comparison, research, and paper-signal candidates after extraction so noisy or non-strategy-relevant symbols do not dominate readiness diagnostics.
+
+This phase is local config and filtering only. It does not connect live ATrad to the Sentinel pipeline, send Telegram alerts, write Supabase records, place orders, or enable auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.
