@@ -7,6 +7,7 @@ describe('sentinel operator console', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain('pnpm sentinel status');
+    expect(result.output).toContain('pnpm sentinel dashboard');
     expect(result.output).toContain('pnpm sentinel atrad-login');
     expect(result.output).toContain('pnpm sentinel atrad-login-and-observe');
     expect(result.output).toContain('pnpm sentinel atrad-observe-once');
@@ -41,6 +42,16 @@ describe('sentinel operator console', () => {
     expect(result.output).toContain('Sentinel-CSE tradeable universe validation');
     expect(result.output).toContain('name: default-cse-tradeable-universe');
     expect(result.output).toContain('invalid ticker entries: 0');
+  });
+
+  it('prints a JSON dashboard summary', async () => {
+    const result = await runSentinelCommand(['dashboard', '--json', '--sessions-dir', 'missing-dashboard-dir']);
+    const parsed = JSON.parse(result.output);
+
+    expect(result.exitCode).toBe(0);
+    expect(parsed.safety.atradMode).toBe('read-only/manual');
+    expect(parsed.localFiles.exists).toBe(false);
+    expect(parsed.recommendation).toContain('Record an open-market ATrad session');
   });
 
   it('returns an error for unknown commands', async () => {

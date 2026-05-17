@@ -26,12 +26,18 @@ import {
   createValidateTradeableUniverseConfig,
   runValidateTradeableUniverse
 } from './validateTradeableUniverse.js';
+import {
+  createSentinelDashboardConfig,
+  formatSentinelDashboard,
+  runSentinelDashboard
+} from './sentinelDashboard.js';
 import { runManualBasketReplay } from './manualBasketReplay.js';
 import { runManualSupabaseTest } from './manualSupabaseTest.js';
 import { runManualTelegramTest } from './manualTelegramTest.js';
 
 export type SentinelCommand =
   | 'status'
+  | 'dashboard'
   | 'basket'
   | 'experiment'
   | 'atrad-login'
@@ -60,6 +66,14 @@ export async function runSentinelCommand(args: string[]): Promise<SentinelComman
         exitCode: 0,
         output: formatStatus()
       };
+    case 'dashboard': {
+      const config = createSentinelDashboardConfig(args.slice(1));
+      const dashboard = await runSentinelDashboard(config);
+      return {
+        exitCode: 0,
+        output: config.json ? JSON.stringify(dashboard, null, 2) : formatSentinelDashboard(dashboard)
+      };
+    }
     case 'basket':
       return {
         exitCode: 0,
@@ -171,6 +185,7 @@ export function formatStatus(): string {
     '- Supabase adapter/manual test',
     '- ATrad mock observer',
     '- tradeable universe validation',
+    '- read-only operator dashboard',
     '',
     'Runtime mode:',
     '- default runtime mode: SHADOW',
@@ -226,6 +241,7 @@ export function formatHelp(): string {
     '',
     'Usage:',
     '  pnpm sentinel status',
+    '  pnpm sentinel dashboard',
     '  pnpm sentinel basket',
     '  pnpm sentinel experiment',
     '  pnpm sentinel atrad-login',
@@ -241,6 +257,7 @@ export function formatHelp(): string {
     '',
     'Commands:',
     '  status         Show local capability and safety status.',
+    '  dashboard      Show a read-only local operator dashboard for sessions, universe config, and next actions.',
     '  basket         Run the mock basket replay evaluator.',
     '  experiment     Run Opening Momentum parameter experiments against the mock basket.',
     '  atrad-login    Open a local manual ATrad login browser and save ignored session state. Supports --persistent-profile.',

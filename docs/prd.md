@@ -137,6 +137,12 @@ Full Watch - Equity extraction remains broad by default so diagnostics can still
 
 This phase is local config and filtering only. It does not connect live ATrad to the Sentinel pipeline, send Telegram alerts, write Supabase records, place orders, or enable auto-trading.
 
+## Phase 21A Read-Only Operator Dashboard
+
+The `pnpm sentinel dashboard` command provides a local read-only operator dashboard. It summarizes safety status, ignored local ATrad session files, the latest recorded session, market-state tick counts, the active tradeable universe config, lightweight replay readiness hints, and one recommended next action.
+
+The dashboard reads only local JSON/config files and does not print raw snapshot JSON. It does not connect live ATrad, automate login, run the live Sentinel pipeline from ATrad, send Telegram alerts, write Supabase records, place orders, or enable auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.
