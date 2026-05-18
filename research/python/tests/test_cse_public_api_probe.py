@@ -23,9 +23,11 @@ from cse_public_api_probe import (  # noqa: E402
     BASE_URL,
     MAX_DISCOVERY_ATTEMPTS,
     ProbeError,
+    TIME_SHIFT_WARNING,
     build_discovery_dry_run_payload,
     build_discovery_payloads,
     build_dry_run_payload,
+    build_cross_check_report,
     build_endpoint_url,
     build_form_payload,
     compare_with_atrad_session,
@@ -33,12 +35,18 @@ from cse_public_api_probe import (  # noqa: E402
     execute_probe,
     execute_discovery,
     find_security_records,
+    format_cross_check_report,
     format_schema_summary,
     normalize_cse_record,
     parse_cli_params,
+    percentage_difference,
     prepare_probe_request,
     summarize_schema,
+    write_cross_check_csv,
+    write_cross_check_markdown,
 )
+
+TIME_SHIFT_WARNING_FRAGMENT = TIME_SHIFT_WARNING[:40]
 
 
 def make_temp_dir() -> Path:
@@ -68,6 +76,13 @@ class FakeResponse:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
+
+
+def make_trade_summary_payload(records: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "reqTradeSummery": records,
+        "responseTime": "2026-05-18T07:50:17Z",
+    }
 
 
 def test_endpoint_url_construction() -> None:
@@ -218,6 +233,224 @@ def test_compare_atrad_session_trade_summary_nested_req_trade_summery_uses_norma
     assert "- cse security-like records detected: 2" in result
     assert "volume=10,246/16,000" in result
     assert "turnover=1,042,468/670,400" in result
+
+
+def test_percentage_difference_uses_atrad_reference() -> None:
+    assert percentage_difference(101, 100) == pytest.approx(1.0)
+    assert percentage_difference(90, 100) == pytest.approx(10.0)
+
+
+def test_cross_check_report_classifies_ok_warn_check_and_missing() -> None:
+    payload = make_trade_summary_payload(
+        [
+            {
+                "symbol": "ALFA.N0000",
+                "price": "42.60",
+                "quantity": "2",
+                "sharevolume": "18,500",
+                "turnover": "760,000",
+                "tradevolume": "85",
+                "lastTradedTime": "2026-05-18T07:50:16Z",
+                "status": "OPEN",
+            },
+            {
+                "symbol": "BETA.N0000",
+                "price": "55.10",
+                "quantity": "9",
+                "sharevolume": "15,000",
+                "turnover": "826,500",
+                "tradevolume": "31",
+                "lastTradedTime": "2026-05-18T07:50:16Z",
+                "status": "OPEN",
+            },
+            {
+                "symbol": "ZETA.N0000",
+                "price": "12.00",
+                "quantity": "1",
+                "sharevolume": "2,000",
+                "turnover": "24,000",
+                "tradevolume": "12",
+                "lastTradedTime": "2026-05-18T07:50:16Z",
+                "status": "OPEN",
+            },
+        ]
+    )
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    rows = {row.ticker: row for row in report.rows}
+
+    assert report.matched_tickers == 2
+    assert report.missing_in_cse == 1
+    assert report.missing_in_atrad == 1
+    assert report.ok_count == 1
+    assert report.warn_count == 1
+    assert report.check_count == 0
+    assert rows["BETA.N0000"].classification == "OK"
+    assert rows["ALFA.N0000"].classification == "WARN"
+    assert rows["CALT.N0000"].classification == "MISSING_IN_CSE"
+    assert rows["ZETA.N0000"].classification == "MISSING_IN_ATRAD"
+
+
+def test_cross_check_report_classifies_check_for_large_differences() -> None:
+    payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    row = next(item for item in report.rows if item.ticker == "ALFA.N0000")
+
+    assert row.classification == "CHECK"
+    assert row.volume_diff_percent == pytest.approx(35.9625)
+    assert row.turnover_diff_percent == pytest.approx(55.499403341288776)
+
+
+def test_cross_check_report_sorts_by_severity() -> None:
+    payload = make_trade_summary_payload(
+        [
+            {
+                "symbol": "ALFA.N0000",
+                "price": "42.60",
+                "quantity": "2",
+                "sharevolume": "18,500",
+                "turnover": "760,000",
+            },
+            {
+                "symbol": "BETA.N0000",
+                "price": "55.10",
+                "quantity": "9",
+                "sharevolume": "15,000",
+                "turnover": "826,500",
+            },
+            {
+                "symbol": "ZETA.N0000",
+                "price": "12.00",
+                "quantity": "1",
+                "sharevolume": "2,000",
+                "turnover": "24,000",
+            },
+        ]
+    )
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+
+    assert [row.classification for row in report.rows[:4]] == [
+        "MISSING_IN_CSE",
+        "MISSING_IN_ATRAD",
+        "WARN",
+        "OK",
+    ]
+
+
+def test_cross_check_top_limits_displayed_rows() -> None:
+    payload = make_trade_summary_payload(
+        [
+            {"symbol": "ALFA.N0000", "price": "42.60", "sharevolume": "18,500", "turnover": "760,000"},
+            {"symbol": "BETA.N0000", "price": "55.10", "sharevolume": "15,000", "turnover": "826,500"},
+            {"symbol": "ZETA.N0000", "price": "12.00", "sharevolume": "2,000", "turnover": "24,000"},
+        ]
+    )
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    rendered = format_cross_check_report(report, top=1)
+
+    assert "ticker | class" in rendered
+    assert "MISSING_IN_CSE" not in rendered
+    assert "MISSING_IN_ATRAD" not in rendered
+    assert "BETA.N0000 | OK" not in rendered
+
+
+def test_cross_check_default_report_shows_missing_rows_in_separate_sections() -> None:
+    payload = make_trade_summary_payload(
+        [
+            {"symbol": "ALFA.N0000", "price": "42.60", "sharevolume": "18,500", "turnover": "760,000"},
+            {"symbol": "BETA.N0000", "price": "55.10", "sharevolume": "15,000", "turnover": "826,500"},
+            {"symbol": "ZETA.N0000", "price": "12.00", "sharevolume": "2,000", "turnover": "24,000"},
+        ]
+    )
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    rendered = format_cross_check_report(report)
+
+    assert "- matched ticker mismatches:" in rendered
+    assert "- missing in CSE sample:" in rendered
+    assert "- missing in ATrad sample:" in rendered
+    assert "  - CALT.N0000" in rendered
+    assert "  - ZETA.N0000" in rendered
+
+
+def test_cross_check_include_missing_includes_missing_rows_in_main_table() -> None:
+    payload = make_trade_summary_payload(
+        [
+            {"symbol": "ALFA.N0000", "price": "42.60", "sharevolume": "18,500", "turnover": "760,000"},
+            {"symbol": "BETA.N0000", "price": "55.10", "sharevolume": "15,000", "turnover": "826,500"},
+            {"symbol": "ZETA.N0000", "price": "12.00", "sharevolume": "2,000", "turnover": "24,000"},
+        ]
+    )
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    rendered = format_cross_check_report(report, top=3, include_missing=True)
+
+    assert "- top mismatches (including missing rows):" in rendered
+    assert "ZETA.N0000 | MISSING_IN_ATRAD" in rendered
+
+
+def test_cross_check_matched_only_suppresses_missing_sections() -> None:
+    payload = make_trade_summary_payload(
+        [
+            {"symbol": "ALFA.N0000", "price": "42.60", "sharevolume": "18,500", "turnover": "760,000"},
+            {"symbol": "BETA.N0000", "price": "55.10", "sharevolume": "15,000", "turnover": "826,500"},
+            {"symbol": "ZETA.N0000", "price": "12.00", "sharevolume": "2,000", "turnover": "24,000"},
+        ]
+    )
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    rendered = format_cross_check_report(report, matched_only=True)
+
+    assert "- missing in CSE sample:" not in rendered
+    assert "- missing in ATrad sample:" not in rendered
+
+
+def test_cross_check_markdown_report_writing() -> None:
+    directory = make_temp_dir()
+    try:
+        payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+        report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+        output = directory / "cross-check.md"
+
+        write_cross_check_markdown(report, output, top=3)
+
+        content = output.read_text(encoding="utf-8")
+        assert "# CSE-vs-ATrad Cross-Check Report: tradeSummary" in content
+        assert TIME_SHIFT_WARNING_FRAGMENT in content
+        assert "Matched Ticker Mismatches" in content
+        assert "Missing In CSE Sample" in content
+        assert "Missing In ATrad Sample" in content
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_cross_check_csv_report_writing() -> None:
+    directory = make_temp_dir()
+    try:
+        payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+        report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+        output = directory / "cross-check.csv"
+
+        write_cross_check_csv(report, output)
+
+        content = output.read_text(encoding="utf-8")
+        assert "ticker,classification,priceDiffPercent" in content
+        assert "ALFA.N0000,CHECK" in content
+        assert "BETA.N0000,OK" in content
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_cross_check_report_time_shift_caveat_appears() -> None:
+    payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+
+    report = build_cross_check_report(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+    rendered = format_cross_check_report(report)
+
+    assert TIME_SHIFT_WARNING_FRAGMENT in rendered
 
 
 def test_execute_probe_uses_one_network_call() -> None:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,17 @@ STATUS_KEYS = ("marketstatus", "status")
 TIMESTAMP_TOKENS = ("date", "time", "timestamp", "updated", "tradingday")
 BID_ASK_TOKENS = ("bid", "ask", "offer", "depth")
 MAX_DISCOVERY_ATTEMPTS = 8
+CROSS_CHECK_OK_PRICE_DIFF_PERCENT = 0.5
+CROSS_CHECK_OK_VOLUME_DIFF_PERCENT = 10.0
+CROSS_CHECK_OK_TURNOVER_DIFF_PERCENT = 10.0
+CROSS_CHECK_WARN_PRICE_DIFF_PERCENT = 2.0
+CROSS_CHECK_WARN_VOLUME_DIFF_PERCENT = 25.0
+CROSS_CHECK_WARN_TURNOVER_DIFF_PERCENT = 25.0
+DEFAULT_CROSS_CHECK_TOP = 25
+DEFAULT_MISSING_SAMPLE_TOP = 10
+TIME_SHIFT_WARNING = (
+    "Comparison may be time-shifted unless CSE API response was captured during the same ATrad recording window."
+)
 DISCOVERY_PARAMETER_SETS = (
     {},
     {"page": "1"},
@@ -87,6 +100,41 @@ class NormalizedCseRecord:
     trades: float | None
     timestamp: str | None
     status: str | None
+
+
+@dataclass(frozen=True)
+class CrossCheckRow:
+    ticker: str
+    classification: str
+    price_diff_percent: float | None
+    volume_diff_percent: float | None
+    turnover_diff_percent: float | None
+    cse_last_price: float | None
+    atrad_last_price: float | None
+    cse_volume: float | None
+    atrad_volume: float | None
+    cse_turnover: float | None
+    atrad_turnover: float | None
+    cse_trades: float | None
+    atrad_trades: float | None
+    cse_status: str | None
+    cse_timestamp: str | None
+
+
+@dataclass(frozen=True)
+class CrossCheckReport:
+    endpoint: str
+    atrad_session_path: str
+    cse_records: int
+    atrad_tickers: int
+    matched_tickers: int
+    missing_in_cse: int
+    missing_in_atrad: int
+    ok_count: int
+    warn_count: int
+    check_count: int
+    time_shift_warning: str
+    rows: list[CrossCheckRow]
 
 
 def validate_endpoint(endpoint: str) -> str:
@@ -461,6 +509,196 @@ def load_atrad_session(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def normalized_cse_records_by_ticker(
+    response_data: Any,
+    endpoint: str | None = None,
+) -> dict[str, NormalizedCseRecord]:
+    normalized_records: dict[str, NormalizedCseRecord] = {}
+    for record in find_security_records(response_data):
+        normalized = normalize_cse_record(record, endpoint)
+        if normalized is not None:
+            normalized_records[normalized.ticker] = normalized
+    return normalized_records
+
+
+def percentage_difference(current: float | None, reference: float | None) -> float | None:
+    if current is None or reference is None:
+        return None
+    if abs(reference) < 1e-9:
+        return 0.0 if abs(current) < 1e-9 else None
+    return abs((current - reference) / reference) * 100
+
+
+def classify_cross_check_row(
+    price_diff_percent: float | None,
+    volume_diff_percent: float | None,
+    turnover_diff_percent: float | None,
+) -> str:
+    primary_diffs = (price_diff_percent, volume_diff_percent, turnover_diff_percent)
+    if any(diff is None for diff in primary_diffs):
+        return "CHECK"
+    if (
+        price_diff_percent <= CROSS_CHECK_OK_PRICE_DIFF_PERCENT
+        and volume_diff_percent <= CROSS_CHECK_OK_VOLUME_DIFF_PERCENT
+        and turnover_diff_percent <= CROSS_CHECK_OK_TURNOVER_DIFF_PERCENT
+    ):
+        return "OK"
+    if (
+        price_diff_percent <= CROSS_CHECK_WARN_PRICE_DIFF_PERCENT
+        and volume_diff_percent <= CROSS_CHECK_WARN_VOLUME_DIFF_PERCENT
+        and turnover_diff_percent <= CROSS_CHECK_WARN_TURNOVER_DIFF_PERCENT
+    ):
+        return "WARN"
+    return "CHECK"
+
+
+def cross_check_sort_key(row: CrossCheckRow) -> tuple[int, float, str]:
+    severity_rank = {
+        "MISSING_IN_CSE": 4,
+        "MISSING_IN_ATRAD": 4,
+        "CHECK": 3,
+        "WARN": 2,
+        "OK": 1,
+    }
+    max_diff = max(
+        diff for diff in (row.price_diff_percent, row.volume_diff_percent, row.turnover_diff_percent) if diff is not None
+    ) if any(diff is not None for diff in (row.price_diff_percent, row.volume_diff_percent, row.turnover_diff_percent)) else -1.0
+    return (-severity_rank.get(row.classification, 0), -max_diff, row.ticker)
+
+
+def matched_cross_check_rows(report: CrossCheckReport) -> list[CrossCheckRow]:
+    return [
+        row
+        for row in report.rows
+        if row.classification not in {"MISSING_IN_CSE", "MISSING_IN_ATRAD"}
+    ]
+
+
+def missing_in_cse_rows(report: CrossCheckReport) -> list[CrossCheckRow]:
+    return [row for row in report.rows if row.classification == "MISSING_IN_CSE"]
+
+
+def missing_in_atrad_rows(report: CrossCheckReport) -> list[CrossCheckRow]:
+    return [row for row in report.rows if row.classification == "MISSING_IN_ATRAD"]
+
+
+def cross_check_missing_sample_limit(top: int) -> int:
+    if top == DEFAULT_CROSS_CHECK_TOP:
+        return DEFAULT_MISSING_SAMPLE_TOP
+    return max(top, 0)
+
+
+def build_cross_check_report(
+    response_data: Any,
+    atrad_session_path: str | Path,
+    endpoint: str | None = None,
+) -> CrossCheckReport:
+    normalized_endpoint = validate_endpoint(endpoint or "tradeSummary")
+    session = load_atrad_session(atrad_session_path)
+    latest_atrad = latest_atrad_snapshots_by_ticker(session)
+    cse_records = normalized_cse_records_by_ticker(response_data, normalized_endpoint)
+    rows: list[CrossCheckRow] = []
+
+    atrad_tickers = set(latest_atrad)
+    cse_tickers = set(cse_records)
+    all_tickers = sorted(atrad_tickers | cse_tickers)
+    for ticker in all_tickers:
+        cse_record = cse_records.get(ticker)
+        atrad_snapshot = latest_atrad.get(ticker)
+        if cse_record is None and atrad_snapshot is not None:
+            rows.append(
+                CrossCheckRow(
+                    ticker=ticker,
+                    classification="MISSING_IN_CSE",
+                    price_diff_percent=None,
+                    volume_diff_percent=None,
+                    turnover_diff_percent=None,
+                    cse_last_price=None,
+                    atrad_last_price=numeric_value(atrad_snapshot.get("lastPrice")),
+                    cse_volume=None,
+                    atrad_volume=numeric_value(atrad_snapshot.get("volume")),
+                    cse_turnover=None,
+                    atrad_turnover=numeric_value(atrad_snapshot.get("totalTurnover")),
+                    cse_trades=None,
+                    atrad_trades=extract_atrad_trade_count(atrad_snapshot),
+                    cse_status=None,
+                    cse_timestamp=None,
+                )
+            )
+            continue
+        if cse_record is not None and atrad_snapshot is None:
+            rows.append(
+                CrossCheckRow(
+                    ticker=ticker,
+                    classification="MISSING_IN_ATRAD",
+                    price_diff_percent=None,
+                    volume_diff_percent=None,
+                    turnover_diff_percent=None,
+                    cse_last_price=cse_record.last_price,
+                    atrad_last_price=None,
+                    cse_volume=cse_record.volume,
+                    atrad_volume=None,
+                    cse_turnover=cse_record.turnover,
+                    atrad_turnover=None,
+                    cse_trades=cse_record.trades,
+                    atrad_trades=None,
+                    cse_status=cse_record.status,
+                    cse_timestamp=cse_record.timestamp,
+                )
+            )
+            continue
+
+        assert cse_record is not None
+        assert atrad_snapshot is not None
+        atrad_last = numeric_value(atrad_snapshot.get("lastPrice"))
+        atrad_volume = numeric_value(atrad_snapshot.get("volume"))
+        atrad_turnover = numeric_value(atrad_snapshot.get("totalTurnover"))
+        atrad_trades = extract_atrad_trade_count(atrad_snapshot)
+        price_diff_percent = percentage_difference(cse_record.last_price, atrad_last)
+        volume_diff_percent = percentage_difference(cse_record.volume, atrad_volume)
+        turnover_diff_percent = percentage_difference(cse_record.turnover, atrad_turnover)
+        rows.append(
+            CrossCheckRow(
+                ticker=ticker,
+                classification=classify_cross_check_row(
+                    price_diff_percent,
+                    volume_diff_percent,
+                    turnover_diff_percent,
+                ),
+                price_diff_percent=price_diff_percent,
+                volume_diff_percent=volume_diff_percent,
+                turnover_diff_percent=turnover_diff_percent,
+                cse_last_price=cse_record.last_price,
+                atrad_last_price=atrad_last,
+                cse_volume=cse_record.volume,
+                atrad_volume=atrad_volume,
+                cse_turnover=cse_record.turnover,
+                atrad_turnover=atrad_turnover,
+                cse_trades=cse_record.trades,
+                atrad_trades=atrad_trades,
+                cse_status=cse_record.status,
+                cse_timestamp=cse_record.timestamp,
+            )
+        )
+
+    rows = sorted(rows, key=cross_check_sort_key)
+    classification_counts = Counter(row.classification for row in rows)
+    return CrossCheckReport(
+        endpoint=normalized_endpoint,
+        atrad_session_path=str(atrad_session_path),
+        cse_records=len(cse_records),
+        atrad_tickers=len(latest_atrad),
+        matched_tickers=len(atrad_tickers & cse_tickers),
+        missing_in_cse=classification_counts["MISSING_IN_CSE"],
+        missing_in_atrad=classification_counts["MISSING_IN_ATRAD"],
+        ok_count=classification_counts["OK"],
+        warn_count=classification_counts["WARN"],
+        check_count=classification_counts["CHECK"],
+        time_shift_warning=TIME_SHIFT_WARNING,
+        rows=rows,
+    )
+
+
 def compare_with_atrad_session(
     response_data: Any,
     atrad_session_path: str | Path,
@@ -605,10 +843,242 @@ def format_number(value: float | None) -> str:
     return f"{value:,.4f}".rstrip("0").rstrip(".")
 
 
+def format_diff_percent(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def format_cross_check_report(
+    report: CrossCheckReport,
+    top: int = DEFAULT_CROSS_CHECK_TOP,
+    *,
+    matched_only: bool = False,
+    include_missing: bool = False,
+) -> str:
+    main_rows = report.rows if include_missing else matched_cross_check_rows(report)
+    missing_cse = [] if matched_only else missing_in_cse_rows(report)
+    missing_atrad = [] if matched_only else missing_in_atrad_rows(report)
+    missing_top = cross_check_missing_sample_limit(top)
+    lines = [
+        "CSE-vs-ATrad cross-check report:",
+        f"- endpoint: {report.endpoint}",
+        f"- ATrad session path: {report.atrad_session_path}",
+        f"- CSE records: {report.cse_records}",
+        f"- ATrad tickers: {report.atrad_tickers}",
+        f"- matched tickers: {report.matched_tickers}",
+        f"- missing in CSE: {report.missing_in_cse}",
+        f"- missing in ATrad: {report.missing_in_atrad}",
+        f"- OK count: {report.ok_count}",
+        f"- WARN count: {report.warn_count}",
+        f"- CHECK count: {report.check_count}",
+        f"- likely time-shift warning: {report.time_shift_warning}",
+        "- thresholds:",
+        f"  - OK: price <= {CROSS_CHECK_OK_PRICE_DIFF_PERCENT:.2f}%, volume <= {CROSS_CHECK_OK_VOLUME_DIFF_PERCENT:.2f}%, turnover <= {CROSS_CHECK_OK_TURNOVER_DIFF_PERCENT:.2f}%",
+        f"  - WARN: price <= {CROSS_CHECK_WARN_PRICE_DIFF_PERCENT:.2f}%, volume <= {CROSS_CHECK_WARN_VOLUME_DIFF_PERCENT:.2f}%, turnover <= {CROSS_CHECK_WARN_TURNOVER_DIFF_PERCENT:.2f}%",
+        "- matched ticker mismatches:" if not include_missing else "- top mismatches (including missing rows):",
+        "ticker | class | priceDiff% | volumeDiff% | turnoverDiff% | CSE last | ATrad last | CSE volume | ATrad volume | CSE turnover | ATrad turnover",
+    ]
+    for row in main_rows[: max(top, 0)]:
+        lines.append(
+            " | ".join(
+                [
+                    row.ticker,
+                    row.classification,
+                    format_diff_percent(row.price_diff_percent),
+                    format_diff_percent(row.volume_diff_percent),
+                    format_diff_percent(row.turnover_diff_percent),
+                    format_number(row.cse_last_price),
+                    format_number(row.atrad_last_price),
+                    format_number(row.cse_volume),
+                    format_number(row.atrad_volume),
+                    format_number(row.cse_turnover),
+                    format_number(row.atrad_turnover),
+                ]
+            )
+        )
+    if not main_rows:
+        lines.append("none")
+    if not matched_only and not include_missing:
+        lines.append("- missing in CSE sample:")
+        if missing_cse:
+            lines.extend(f"  - {row.ticker}" for row in missing_cse[:missing_top])
+        else:
+            lines.append("  - none")
+        lines.append("- missing in ATrad sample:")
+        if missing_atrad:
+            lines.extend(f"  - {row.ticker}" for row in missing_atrad[:missing_top])
+        else:
+            lines.append("  - none")
+    return "\n".join(lines)
+
+
+def write_cross_check_markdown(
+    report: CrossCheckReport,
+    path: str | Path,
+    top: int = DEFAULT_CROSS_CHECK_TOP,
+    *,
+    matched_only: bool = False,
+    include_missing: bool = False,
+) -> None:
+    rows = (report.rows if include_missing else matched_cross_check_rows(report))[: max(top, 0)]
+    missing_cse = [] if matched_only else missing_in_cse_rows(report)
+    missing_atrad = [] if matched_only else missing_in_atrad_rows(report)
+    missing_top = cross_check_missing_sample_limit(top)
+    lines = [
+        f"# CSE-vs-ATrad Cross-Check Report: {report.endpoint}",
+        "",
+        "## Summary",
+        "",
+        f"- endpoint: `{report.endpoint}`",
+        f"- ATrad session path: `{report.atrad_session_path}`",
+        f"- CSE records: `{report.cse_records}`",
+        f"- ATrad tickers: `{report.atrad_tickers}`",
+        f"- matched tickers: `{report.matched_tickers}`",
+        f"- missing in CSE: `{report.missing_in_cse}`",
+        f"- missing in ATrad: `{report.missing_in_atrad}`",
+        f"- OK count: `{report.ok_count}`",
+        f"- WARN count: `{report.warn_count}`",
+        f"- CHECK count: `{report.check_count}`",
+        "",
+        "## Thresholds",
+        "",
+        f"- OK: price <= `{CROSS_CHECK_OK_PRICE_DIFF_PERCENT:.2f}%`, volume <= `{CROSS_CHECK_OK_VOLUME_DIFF_PERCENT:.2f}%`, turnover <= `{CROSS_CHECK_OK_TURNOVER_DIFF_PERCENT:.2f}%`",
+        f"- WARN: price <= `{CROSS_CHECK_WARN_PRICE_DIFF_PERCENT:.2f}%`, volume <= `{CROSS_CHECK_WARN_VOLUME_DIFF_PERCENT:.2f}%`, turnover <= `{CROSS_CHECK_WARN_TURNOVER_DIFF_PERCENT:.2f}%`",
+        "",
+        "## Caveat",
+        "",
+        f"- {report.time_shift_warning}",
+        "- `tradeSummary` has no bid/ask/depth fields and does not replace ATrad.",
+        "",
+        "## Matched Ticker Mismatches" if not include_missing else "## Top Mismatches Including Missing Rows",
+        "",
+        "| Ticker | Class | Price Diff % | Volume Diff % | Turnover Diff % | CSE Last | ATrad Last | CSE Volume | ATrad Volume | CSE Turnover | ATrad Turnover |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row.ticker} | {row.classification} | {format_diff_percent(row.price_diff_percent)} | "
+            f"{format_diff_percent(row.volume_diff_percent)} | {format_diff_percent(row.turnover_diff_percent)} | "
+            f"{format_number(row.cse_last_price)} | {format_number(row.atrad_last_price)} | "
+            f"{format_number(row.cse_volume)} | {format_number(row.atrad_volume)} | "
+            f"{format_number(row.cse_turnover)} | {format_number(row.atrad_turnover)} |"
+        )
+    if not rows:
+        lines.append("| none | none | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |")
+    if not matched_only and not include_missing:
+        lines.extend(
+            [
+                "",
+                "## Missing In CSE Sample",
+                "",
+            ]
+        )
+        if missing_cse:
+            lines.extend(f"- `{row.ticker}`" for row in missing_cse[:missing_top])
+        else:
+            lines.append("- none")
+        lines.extend(
+            [
+                "",
+                "## Missing In ATrad Sample",
+                "",
+            ]
+        )
+        if missing_atrad:
+            lines.extend(f"- `{row.ticker}`" for row in missing_atrad[:missing_top])
+        else:
+            lines.append("- none")
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_cross_check_csv(report: CrossCheckReport, path: str | Path) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "ticker",
+                "classification",
+                "priceDiffPercent",
+                "volumeDiffPercent",
+                "turnoverDiffPercent",
+                "cseLastPrice",
+                "atradLastPrice",
+                "cseVolume",
+                "atradVolume",
+                "cseTurnover",
+                "atradTurnover",
+                "cseTrades",
+                "atradTrades",
+                "cseStatus",
+                "cseTimestamp",
+            ],
+        )
+        writer.writeheader()
+        for row in report.rows:
+            writer.writerow(
+                {
+                    "ticker": row.ticker,
+                    "classification": row.classification,
+                    "priceDiffPercent": row.price_diff_percent,
+                    "volumeDiffPercent": row.volume_diff_percent,
+                    "turnoverDiffPercent": row.turnover_diff_percent,
+                    "cseLastPrice": row.cse_last_price,
+                    "atradLastPrice": row.atrad_last_price,
+                    "cseVolume": row.cse_volume,
+                    "atradVolume": row.atrad_volume,
+                    "cseTurnover": row.cse_turnover,
+                    "atradTurnover": row.atrad_turnover,
+                    "cseTrades": row.cse_trades,
+                    "atradTrades": row.atrad_trades,
+                    "cseStatus": row.cse_status,
+                    "cseTimestamp": row.cse_timestamp,
+                }
+            )
+
+
 def write_json_output(path: str | Path, payload: Any) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
+def cross_check_report_to_dict(report: CrossCheckReport) -> dict[str, Any]:
+    return {
+        "endpoint": report.endpoint,
+        "atradSessionPath": report.atrad_session_path,
+        "cseRecords": report.cse_records,
+        "atradTickers": report.atrad_tickers,
+        "matchedTickers": report.matched_tickers,
+        "missingInCse": report.missing_in_cse,
+        "missingInAtrad": report.missing_in_atrad,
+        "okCount": report.ok_count,
+        "warnCount": report.warn_count,
+        "checkCount": report.check_count,
+        "timeShiftWarning": report.time_shift_warning,
+        "rows": [
+            {
+                "ticker": row.ticker,
+                "classification": row.classification,
+                "priceDiffPercent": row.price_diff_percent,
+                "volumeDiffPercent": row.volume_diff_percent,
+                "turnoverDiffPercent": row.turnover_diff_percent,
+                "cseLastPrice": row.cse_last_price,
+                "atradLastPrice": row.atrad_last_price,
+                "cseVolume": row.cse_volume,
+                "atradVolume": row.atrad_volume,
+                "cseTurnover": row.cse_turnover,
+                "atradTurnover": row.atrad_turnover,
+                "cseTrades": row.cse_trades,
+                "atradTrades": row.atrad_trades,
+                "cseStatus": row.cse_status,
+                "cseTimestamp": row.cse_timestamp,
+            }
+            for row in report.rows
+        ],
+    }
 
 
 def build_dry_run_payload(prepared: PreparedProbeRequest) -> dict[str, Any]:
@@ -653,7 +1123,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--endpoint", required=True, help="Endpoint name under https://www.cse.lk/api/.")
     parser.add_argument("--output-json", help="Optional output path for raw probe result JSON.")
+    parser.add_argument("--output-md", help="Optional Markdown output path for cross-check reports.")
+    parser.add_argument("--output-csv", help="Optional CSV output path for cross-check reports.")
     parser.add_argument("--summary-only", action="store_true", help="Print schema summary only.")
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=DEFAULT_CROSS_CHECK_TOP,
+        help="Maximum number of cross-check rows to print in terminal and Markdown output.",
+    )
     parser.add_argument("--timeout-seconds", type=float, default=10, help="Single-request timeout in seconds.")
     parser.add_argument("--dry-run", action="store_true", help="Print the prepared request without calling the network.")
     parser.add_argument(
@@ -674,6 +1152,21 @@ def parse_args() -> argparse.Namespace:
         "--compare-atrad-session",
         help="Optional recorded ATrad session JSON path for overlap comparison.",
     )
+    parser.add_argument(
+        "--cross-check-report",
+        action="store_true",
+        help="Print a richer CSE-vs-ATrad cross-check report for tradeSummary research.",
+    )
+    parser.add_argument(
+        "--matched-only",
+        action="store_true",
+        help="Show only matched ticker mismatch rows in the cross-check display.",
+    )
+    parser.add_argument(
+        "--include-missing",
+        action="store_true",
+        help="Include missing rows in the main cross-check mismatch table.",
+    )
     return parser.parse_args()
 
 
@@ -683,6 +1176,16 @@ def main() -> int:
 
     if args.discover_pagination and args.compare_atrad_session:
         raise ProbeError("--discover-pagination cannot be combined with --compare-atrad-session.")
+    if args.cross_check_report and not args.compare_atrad_session:
+        raise ProbeError("--cross-check-report requires --compare-atrad-session.")
+    if args.cross_check_report and args.endpoint != "tradeSummary":
+        raise ProbeError("--cross-check-report currently supports --endpoint tradeSummary only.")
+    if (args.output_md or args.output_csv) and not args.cross_check_report:
+        raise ProbeError("--output-md and --output-csv require --cross-check-report.")
+    if args.matched_only and not args.cross_check_report:
+        raise ProbeError("--matched-only requires --cross-check-report.")
+    if args.include_missing and not args.cross_check_report:
+        raise ProbeError("--include-missing requires --cross-check-report.")
 
     if args.discover_pagination:
         payload = build_discovery_dry_run_payload(args.endpoint, args.timeout_seconds, request_params)
@@ -757,19 +1260,41 @@ def main() -> int:
         "summary": summary.__dict__,
         "response": response_data,
     }
-    if args.output_json:
-        write_json_output(args.output_json, output_payload)
 
     print(format_schema_summary(summary))
     if args.compare_atrad_session:
         print()
         print(compare_with_atrad_session(response_data, args.compare_atrad_session, prepared.endpoint))
+        if args.cross_check_report:
+            report = build_cross_check_report(response_data, args.compare_atrad_session, prepared.endpoint)
+            if args.output_md:
+                write_cross_check_markdown(
+                    report,
+                    args.output_md,
+                    top=args.top,
+                    matched_only=args.matched_only,
+                    include_missing=args.include_missing,
+                )
+            if args.output_csv:
+                write_cross_check_csv(report, args.output_csv)
+            output_payload["crossCheckReport"] = cross_check_report_to_dict(report)
+            print()
+            print(
+                format_cross_check_report(
+                    report,
+                    top=args.top,
+                    matched_only=args.matched_only,
+                    include_missing=args.include_missing,
+                )
+            )
     elif not args.summary_only:
         records = find_security_records(response_data)
         print()
         print(f"security-like records detected: {len(records)}")
         if records:
             print(f"first detected ticker/security: {extract_ticker_from_record(records[0]) or 'n/a'}")
+    if args.output_json:
+        write_json_output(args.output_json, output_payload)
     return 0
 
 

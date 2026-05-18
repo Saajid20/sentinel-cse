@@ -43,6 +43,7 @@ python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePric
 python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --param page=1 --param size=50 --dry-run
 python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --params-json '{"page":1,"size":50}' --dry-run
 python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --discover-pagination --dry-run
+python research/python/scripts/cse_public_api_probe.py --endpoint tradeSummary --compare-atrad-session data/live-sessions/example.json --cross-check-report
 ```
 
 Probe options:
@@ -50,10 +51,19 @@ Probe options:
 - `--param KEY=VALUE`: repeatable form-encoded POST body parameter.
 - `--params-json '{"page":1,"size":50}'`: JSON object form of request parameters.
 - `--discover-pagination`: bounded research-only discovery mode for likely pagination parameter shapes.
+- `--cross-check-report`: richer `tradeSummary`-vs-recorded-ATrad validation report with `OK`, `WARN`, `CHECK`, `MISSING_IN_CSE`, and `MISSING_IN_ATRAD` classifications.
 
 Discovery mode is intentionally capped to a small fixed set of attempts, does not retry, and must not be used for high-frequency polling.
 
 For `tradeSummary`, the probe now applies endpoint-specific comparison normalization before matching against a recorded ATrad session: `symbol -> ticker`, `price -> lastPrice`, `sharevolume -> volume`, `turnover -> turnover`, `tradevolume -> trades`, and `lastTradedTime -> timestamp`. Other endpoints still use cautious generic field inference.
+
+Cross-check report thresholds:
+
+- `OK`: price diff <= `0.50%`, volume diff <= `10.00%`, turnover diff <= `10.00%`
+- `WARN`: price diff <= `2.00%`, volume diff <= `25.00%`, turnover diff <= `25.00%`
+- `CHECK`: larger differences or missing comparable fields
+
+The report always warns that comparisons may be time-shifted unless the public CSE response was captured during the same ATrad recording window. `tradeSummary` does not include bid/ask/depth, so it is only a research cross-check and does not replace ATrad.
 
 ## Summarize One Session
 
