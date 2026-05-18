@@ -175,6 +175,12 @@ The CSE public API probe now supports explicit form parameters plus bounded pagi
 
 This remains research-only and low-rate. Discovery mode is capped, does not retry, does not poll, does not replace ATrad, and does not connect any CSE public API data into the Sentinel pipeline.
 
+## Phase 24.2 CSE tradeSummary Field Normalization
+
+The CSE public API probe now applies endpoint-specific normalization when comparing `tradeSummary` responses against recorded ATrad sessions. For `tradeSummary`, `symbol` maps to ticker, `price` maps to last price, `sharevolume` maps to total volume, `turnover` maps to turnover, `tradevolume` maps to trades when present, and `lastTradedTime` is preserved as timestamp context.
+
+This remains research-only comparison logic. It does not replace ATrad, does not feed public-site data into the Sentinel pipeline, does not send alerts, does not write Supabase records, does not place orders, and does not enable auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

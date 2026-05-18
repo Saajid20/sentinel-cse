@@ -78,6 +78,17 @@ class ProbeAttemptResult:
     response: Any
 
 
+@dataclass(frozen=True)
+class NormalizedCseRecord:
+    ticker: str
+    last_price: float | None
+    volume: float | None
+    turnover: float | None
+    trades: float | None
+    timestamp: str | None
+    status: str | None
+
+
 def validate_endpoint(endpoint: str) -> str:
     normalized = endpoint.strip()
     if normalized not in SUPPORTED_ENDPOINTS:
@@ -389,6 +400,36 @@ def extract_numeric_record_value(record: dict[str, Any], token_set: tuple[str, .
     return None
 
 
+def extract_numeric_record_value_by_priority(record: dict[str, Any], token_set: tuple[str, ...]) -> float | None:
+    normalized_items = [(normalize_key(key), value) for key, value in record.items()]
+    for token in token_set:
+        for normalized, value in normalized_items:
+            if token in normalized:
+                parsed = numeric_value(value)
+                if parsed is not None:
+                    return parsed
+    return None
+
+
+def extract_text_record_value(record: dict[str, Any], token_set: tuple[str, ...]) -> str | None:
+    for key, value in record.items():
+        normalized = normalize_key(key)
+        if any(token in normalized for token in token_set):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def extract_text_record_value_by_priority(record: dict[str, Any], token_set: tuple[str, ...]) -> str | None:
+    normalized_items = [(normalize_key(key), value) for key, value in record.items()]
+    for token in token_set:
+        for normalized, value in normalized_items:
+            if token in normalized:
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return None
+
+
 def extract_status_from_payload(response_data: Any) -> str | None:
     if isinstance(response_data, dict):
         for key, value in response_data.items():
@@ -420,7 +461,11 @@ def load_atrad_session(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def compare_with_atrad_session(response_data: Any, atrad_session_path: str | Path) -> str:
+def compare_with_atrad_session(
+    response_data: Any,
+    atrad_session_path: str | Path,
+    endpoint: str | None = None,
+) -> str:
     session = load_atrad_session(atrad_session_path)
     latest_atrad = latest_atrad_snapshots_by_ticker(session)
     cse_records = find_security_records(response_data)
@@ -443,25 +488,30 @@ def compare_with_atrad_session(response_data: Any, atrad_session_path: str | Pat
     matches: list[str] = []
     unmatched_cse = 0
     for record in cse_records:
-        ticker = extract_ticker_from_record(record)
-        if ticker is None:
+        normalized = normalize_cse_record(record, endpoint)
+        if normalized is None:
             continue
-        atrad_snapshot = latest_atrad.get(ticker)
+        atrad_snapshot = latest_atrad.get(normalized.ticker)
         if atrad_snapshot is None:
             unmatched_cse += 1
             continue
 
-        cse_last = extract_numeric_record_value(record, PRICE_KEYS)
-        cse_volume = extract_numeric_record_value(record, VOLUME_KEYS)
-        cse_turnover = extract_numeric_record_value(record, TURNOVER_KEYS)
         atrad_last = numeric_value(atrad_snapshot.get("lastPrice"))
         atrad_volume = numeric_value(atrad_snapshot.get("volume"))
         atrad_turnover = numeric_value(atrad_snapshot.get("totalTurnover"))
-        matches.append(
-            f"- {ticker}: lastPrice={format_compare_pair(cse_last, atrad_last)}, "
-            f"volume={format_compare_pair(cse_volume, atrad_volume)}, "
-            f"turnover={format_compare_pair(cse_turnover, atrad_turnover)}"
-        )
+        atrad_trades = extract_atrad_trade_count(atrad_snapshot)
+        comparison_fields = [
+            f"lastPrice={format_compare_pair(normalized.last_price, atrad_last)}",
+            f"volume={format_compare_pair(normalized.volume, atrad_volume)}",
+            f"turnover={format_compare_pair(normalized.turnover, atrad_turnover)}",
+        ]
+        if normalized.trades is not None or atrad_trades is not None:
+            comparison_fields.append(f"trades={format_compare_pair(normalized.trades, atrad_trades)}")
+        if normalized.timestamp:
+            comparison_fields.append(f"timestamp={normalized.timestamp}")
+        if normalized.status:
+            comparison_fields.append(f"status={normalized.status}")
+        matches.append(f"- {normalized.ticker}: " + ", ".join(comparison_fields))
 
     lines.append(f"- matched tickers: {len(matches)}")
     lines.append(f"- unmatched CSE records: {unmatched_cse}")
@@ -473,6 +523,33 @@ def compare_with_atrad_session(response_data: Any, atrad_session_path: str | Pat
     else:
         lines.append("- comparison note: CSE records were detected, but none matched ATrad ticker fields.")
     return "\n".join(lines)
+
+
+def normalize_cse_record(record: dict[str, Any], endpoint: str | None = None) -> NormalizedCseRecord | None:
+    ticker = extract_ticker_from_record(record)
+    if ticker is None:
+        return None
+
+    if endpoint == "tradeSummary":
+        return NormalizedCseRecord(
+            ticker=ticker,
+            last_price=extract_numeric_record_value_by_priority(record, ("price", "closingprice", "lasttradedprice")),
+            volume=extract_numeric_record_value_by_priority(record, ("sharevolume", "crossingvolume", "quantity")),
+            turnover=extract_numeric_record_value_by_priority(record, ("turnover",)),
+            trades=extract_numeric_record_value_by_priority(record, ("tradevolume",)),
+            timestamp=extract_text_record_value_by_priority(record, ("lasttradedtime",)),
+            status=extract_text_record_value_by_priority(record, ("status",)),
+        )
+
+    return NormalizedCseRecord(
+        ticker=ticker,
+        last_price=extract_numeric_record_value(record, PRICE_KEYS),
+        volume=extract_numeric_record_value(record, VOLUME_KEYS),
+        turnover=extract_numeric_record_value(record, TURNOVER_KEYS),
+        trades=extract_numeric_record_value(record, ("trades", "tradecount", "numberoftrades", "totaltrades")),
+        timestamp=extract_text_record_value(record, ("tradetime", "tradestime", "lasttradedtime", "time", "timestamp")),
+        status=extract_text_record_value(record, ("status",)),
+    )
 
 
 def latest_atrad_snapshots_by_ticker(session: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -488,6 +565,13 @@ def latest_atrad_snapshots_by_ticker(session: dict[str, Any]) -> dict[str, dict[
         if existing is None or timestamp >= existing.get("timestamp", float("-inf")):
             latest[ticker] = raw_snapshot
     return latest
+
+
+def extract_atrad_trade_count(snapshot: dict[str, Any]) -> float | None:
+    return extract_numeric_record_value(
+        snapshot,
+        ("trades", "tradecount", "numberoftrades", "totaltrades"),
+    )
 
 
 def numeric_value(value: Any) -> float | None:
@@ -679,7 +763,7 @@ def main() -> int:
     print(format_schema_summary(summary))
     if args.compare_atrad_session:
         print()
-        print(compare_with_atrad_session(response_data, args.compare_atrad_session))
+        print(compare_with_atrad_session(response_data, args.compare_atrad_session, prepared.endpoint))
     elif not args.summary_only:
         records = find_security_records(response_data)
         print()

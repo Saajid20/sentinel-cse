@@ -1,0 +1,39 @@
+{
+  "reqTradeSummery": [
+    {
+      "symbol": "ALFA.N0000",
+      "name": "Alfa PLC",
+      "price": "41.90",
+      "previousClose": "41.20",
+      "open": "41.50",
+      "high": "42.00",
+      "low": "41.40",
+      "closingPrice": "41.85",
+      "quantity": "2",
+      "crossingVolume": "120",
+      "sharevolume": "10,246",
+      "turnover": "1,042,468",
+      "tradevolume": "85",
+      "lastTradedTime": "2026-05-18T07:50:16Z",
+      "status": "OPEN"
+    },
+    {
+      "symbol": "BETA.N0000",
+      "name": "Beta PLC",
+      "price": "55.10",
+      "previousClose": "54.95",
+      "open": "55.00",
+      "high": "55.40",
+      "low": "54.90",
+      "closingPrice": "55.00",
+      "turnover": "826,500",
+      "sharevolume": "15,000",
+      "tradevolume": "31",
+      "crossingVolume": "0",
+      "quantity": "9",
+      "lastTradedTime": "2026-05-18T07:50:16Z",
+      "status": "OPEN"
+    }
+  ],
+  "responseTime": "2026-05-18T07:50:17Z"
+}

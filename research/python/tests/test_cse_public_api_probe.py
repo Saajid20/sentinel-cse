@@ -15,6 +15,7 @@ SAMPLE_DATA_DIR = PYTHON_ROOT / "sample_data"
 SESSION_SAMPLE_PATH = SAMPLE_DATA_DIR / "sample_session.json"
 MARKET_STATUS_SAMPLE_PATH = SAMPLE_DATA_DIR / "cse_public_api_sample_market_status.json"
 TODAY_SHARE_PRICE_SAMPLE_PATH = SAMPLE_DATA_DIR / "cse_public_api_sample_today_share_price.json"
+TRADE_SUMMARY_SAMPLE_PATH = SAMPLE_DATA_DIR / "cse_public_api_sample_trade_summary.json"
 TEST_TMP_ROOT = PYTHON_ROOT / ".tmp-test-output"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -33,6 +34,7 @@ from cse_public_api_probe import (  # noqa: E402
     execute_discovery,
     find_security_records,
     format_schema_summary,
+    normalize_cse_record,
     parse_cli_params,
     prepare_probe_request,
     summarize_schema,
@@ -169,11 +171,53 @@ def test_compare_atrad_session_handles_missing_fields_gracefully() -> None:
 def test_compare_atrad_session_matches_overlapping_fields() -> None:
     payload = load_json(TODAY_SHARE_PRICE_SAMPLE_PATH)
 
-    result = compare_with_atrad_session(payload, SESSION_SAMPLE_PATH)
+    result = compare_with_atrad_session(payload, SESSION_SAMPLE_PATH, "todaySharePrice")
 
     assert "- matched tickers: 2" in result
     assert "ALFA.N0000: lastPrice=41.9/41.9" in result
     assert "volume=16,000/16,000" in result
+
+
+def test_trade_summary_normalization_uses_sharevolume_for_volume() -> None:
+    payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+    record = payload["reqTradeSummery"][0]
+
+    normalized = normalize_cse_record(record, "tradeSummary")
+
+    assert normalized is not None
+    assert normalized.ticker == "ALFA.N0000"
+    assert normalized.last_price == 41.9
+    assert normalized.volume == 10246
+    assert normalized.turnover == 1042468
+    assert normalized.trades == 85
+    assert normalized.timestamp == "2026-05-18T07:50:16Z"
+    assert normalized.status == "OPEN"
+
+
+def test_compare_atrad_session_trade_summary_prefers_sharevolume_over_quantity() -> None:
+    payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+
+    result = compare_with_atrad_session(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+
+    assert "- matched tickers: 2" in result
+    assert "ALFA.N0000: lastPrice=41.9/41.9" in result
+    assert "volume=10,246/16,000" in result
+    assert "volume=2/16,000" not in result
+    assert "trades=85/unavailable" in result
+    assert "timestamp=2026-05-18T07:50:16Z" in result
+    assert "status=OPEN" in result
+
+
+def test_compare_atrad_session_trade_summary_nested_req_trade_summery_uses_normalized_fields() -> None:
+    payload = load_json(TRADE_SUMMARY_SAMPLE_PATH)
+
+    records = find_security_records(payload)
+    result = compare_with_atrad_session(payload, SESSION_SAMPLE_PATH, "tradeSummary")
+
+    assert len(records) == 2
+    assert "- cse security-like records detected: 2" in result
+    assert "volume=10,246/16,000" in result
+    assert "turnover=1,042,468/670,400" in result
 
 
 def test_execute_probe_uses_one_network_call() -> None:

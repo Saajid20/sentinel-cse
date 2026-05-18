@@ -53,6 +53,8 @@ Probe options:
 
 Discovery mode is intentionally capped to a small fixed set of attempts, does not retry, and must not be used for high-frequency polling.
 
+For `tradeSummary`, the probe now applies endpoint-specific comparison normalization before matching against a recorded ATrad session: `symbol -> ticker`, `price -> lastPrice`, `sharevolume -> volume`, `turnover -> turnover`, `tradevolume -> trades`, and `lastTradedTime -> timestamp`. Other endpoints still use cautious generic field inference.
+
 ## Summarize One Session
 
 ```powershell
