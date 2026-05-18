@@ -4,6 +4,17 @@ This folder is for offline analysis of recorded Sentinel-CSE ATrad session JSON 
 
 The TypeScript runtime remains the source of truth for read-only capture, replay, dashboards, and paper-trading research workflows. Python is intentionally separate and local-only: it reads already-recorded JSON files, produces terminal summaries, and can write Markdown or CSV reports for research review.
 
+## Unofficial CSE Public API Probe
+
+`research/python/scripts/cse_public_api_probe.py` is a research-only probe for unofficial public CSE website endpoints under `https://www.cse.lk/api/`.
+
+- These endpoints are not treated as stable or production-safe APIs.
+- Response shapes may change without notice.
+- Verify licensing, permission, and acceptable-use expectations with CSE before any production use.
+- Do not use this probe for live trading decisions.
+- Do not run high-frequency polling or request loops.
+- Use one manual request at a time only.
+
 ## Safety Boundary
 
 - Do not connect Python scripts to live ATrad.
@@ -22,6 +33,25 @@ python -m pip install -r research/python/requirements.txt
 ```
 
 The first version uses the Python standard library for analysis. `pytest` is included for tests.
+
+## Probe Commands
+
+```powershell
+python research/python/scripts/cse_public_api_probe.py --endpoint marketStatus --dry-run
+python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --summary-only
+python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --compare-atrad-session data/live-sessions/example.json
+python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --param page=1 --param size=50 --dry-run
+python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --params-json '{"page":1,"size":50}' --dry-run
+python research/python/scripts/cse_public_api_probe.py --endpoint todaySharePrice --discover-pagination --dry-run
+```
+
+Probe options:
+
+- `--param KEY=VALUE`: repeatable form-encoded POST body parameter.
+- `--params-json '{"page":1,"size":50}'`: JSON object form of request parameters.
+- `--discover-pagination`: bounded research-only discovery mode for likely pagination parameter shapes.
+
+Discovery mode is intentionally capped to a small fixed set of attempts, does not retry, and must not be used for high-frequency polling.
 
 ## Summarize One Session
 

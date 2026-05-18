@@ -214,6 +214,7 @@ function scenarioResult(
     summary: {
       snapshotsProcessed: 1,
       signalsGenerated,
+      generatedSignals: signals,
       alertsSent: signalsGenerated,
       outcomesClosed: outcomes.length,
       finalActiveSignals: []

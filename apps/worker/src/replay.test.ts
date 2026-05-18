@@ -118,6 +118,7 @@ describe('MarketReplayEngine', () => {
     expect(summary).toMatchObject({
       snapshotsProcessed: 5,
       signalsGenerated: 1,
+      generatedSignals: [expect.objectContaining({ ticker })],
       alertsSent: 2,
       outcomesClosed: 1,
       finalActiveSignals: [],

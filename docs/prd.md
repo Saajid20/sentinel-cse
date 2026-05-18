@@ -157,6 +157,24 @@ Sentinel-CSE now includes `research/python/`, a dependency-light offline researc
 
 The Python layer is research-only and does not change the TypeScript runtime. It does not connect live ATrad, automate login, send Telegram alerts, write Supabase records, place orders, run live ATrad data through the Sentinel pipeline, or enable auto-trading.
 
+## Phase 23 ATrad Strategy-Condition Diagnostics
+
+Sentinel-CSE replay now supports per-ticker Opening Momentum condition diagnostics for recorded ATrad sessions. This report breaks down why candidate symbols do or do not pass strategy conditions such as sufficient history, spread, VWAP availability, price above VWAP, first-high trigger availability, momentum trigger pass, volume ratio, and order-book imbalance.
+
+This report is diagnostic only. It explains why no signals fire without changing detector thresholds, changing Opening Momentum signal behavior, connecting live ATrad, sending alerts, writing Supabase records, placing orders, or enabling auto-trading.
+
+## Phase 24 CSE Public API Research Spike
+
+Sentinel-CSE now includes a research-only Python probe for unofficial public CSE website endpoints under `https://www.cse.lk/api/`. The probe is intended to inspect response schemas cautiously, issue one manual request at a time, and compare overlapping public fields against recorded ATrad sessions for offline research.
+
+This is not a production data feed. It does not replace ATrad, does not connect data into the Sentinel pipeline, does not send alerts, does not write Supabase records, does not place orders, and must not be used for live trading or high-frequency polling.
+
+## Phase 24.1 CSE Public API Pagination Discovery
+
+The CSE public API probe now supports explicit form parameters plus bounded pagination/parameter discovery for research. Operators can test a small fixed set of common POST payload shapes such as `page`, `size`, `start`, `length`, `offset`, and `limit` to see whether unofficial public endpoints expose more rows.
+
+This remains research-only and low-rate. Discovery mode is capped, does not retry, does not poll, does not replace ATrad, and does not connect any CSE public API data into the Sentinel pipeline.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

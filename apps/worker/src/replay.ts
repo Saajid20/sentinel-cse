@@ -12,6 +12,7 @@ export interface ReplayOptions {
 export interface ReplayResultSummary {
   snapshotsProcessed: number;
   signalsGenerated: number;
+  generatedSignals: Signal[];
   alertsSent: number;
   outcomesClosed: number;
   finalActiveSignals: Signal[];
@@ -31,6 +32,7 @@ export class MarketReplayEngine {
 
     let snapshotsProcessed = 0;
     let signalsGenerated = 0;
+    const generatedSignals: Signal[] = [];
     let alertsSent = 0;
     let outcomesClosed = 0;
     let startTime: number | undefined;
@@ -43,6 +45,9 @@ export class MarketReplayEngine {
       const result = await pipeline.processSnapshot(snapshot);
       snapshotsProcessed += 1;
       signalsGenerated += result.generatedSignal ? 1 : 0;
+      if (result.generatedSignal) {
+        generatedSignals.push(result.generatedSignal);
+      }
       alertsSent += result.sentMessages.length;
 
       const finalEvents = result.events.filter((event) => FINAL_STATUSES.has(event.newStatus));
@@ -56,6 +61,7 @@ export class MarketReplayEngine {
     return {
       snapshotsProcessed,
       signalsGenerated,
+      generatedSignals,
       alertsSent,
       outcomesClosed,
       finalActiveSignals: await pipeline.listActiveSignals(),

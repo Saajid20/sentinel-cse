@@ -45,6 +45,7 @@ research/python/.venv/
 __pycache__/
 .pytest_cache/
 research/python/.tmp-test-output/
+research/python/tmp*/
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/

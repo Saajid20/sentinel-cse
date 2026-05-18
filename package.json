@@ -24,6 +24,7 @@
     "research:python:test": "python -m pytest research/python/tests",
     "research:session:summary": "python research/python/scripts/summarize_session.py",
     "research:sessions:compare": "python research/python/scripts/compare_sessions.py",
+    "research:cse-api:probe": "python research/python/scripts/cse_public_api_probe.py",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r run typecheck"

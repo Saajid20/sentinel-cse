@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ManualATradReplaySessionRuntime } from './manualATradReplaySession.js';
 import {
   analyzeATradReplayDiagnostics,
+  analyzeATradStrategyConditionDiagnostics,
   buildATradReplayFeatures,
   createManualATradReplaySessionConfig,
   extractReplayableATradSnapshots,
@@ -111,6 +112,20 @@ describe('manual ATrad replay-session helpers', () => {
     expect(config).toEqual({
       inputPath: 'data/live-sessions/example.json',
       universePath: 'config/universe.json',
+      readonlyMode: true
+    });
+  });
+
+  it('parses the condition diagnostics flag', () => {
+    const config = createManualATradReplaySessionConfig([
+      '--input',
+      'data/live-sessions/example.json',
+      '--condition-diagnostics'
+    ]);
+
+    expect(config).toEqual({
+      inputPath: 'data/live-sessions/example.json',
+      conditionDiagnostics: true,
       readonlyMode: true
     });
   });
@@ -336,6 +351,7 @@ describe('manual ATrad replay-session helpers', () => {
     const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
       snapshotsProcessed: 3,
       signalsGenerated: 0,
+      generatedSignals: [],
       alertsSent: 0,
       outcomesClosed: 0,
       finalActiveSignals: []
@@ -352,6 +368,7 @@ describe('manual ATrad replay-session helpers', () => {
     const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
       snapshotsProcessed: 3,
       signalsGenerated: 0,
+      generatedSignals: [],
       alertsSent: 0,
       outcomesClosed: 0,
       finalActiveSignals: []
@@ -390,6 +407,7 @@ describe('manual ATrad replay-session helpers', () => {
     const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
       snapshotsProcessed: 2,
       signalsGenerated: 0,
+      generatedSignals: [],
       alertsSent: 0,
       outcomesClosed: 0,
       finalActiveSignals: []
@@ -404,12 +422,99 @@ describe('manual ATrad replay-session helpers', () => {
     const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, {
       snapshotsProcessed: 3,
       signalsGenerated: 0,
+      generatedSignals: [],
       alertsSent: 0,
       outcomesClosed: 0,
       finalActiveSignals: []
     });
 
     expect(diagnostics.readinessStatus).toBe('PARTIALLY_READY');
+  });
+
+  it('does not print condition diagnostics by default', async () => {
+    const calls: string[] = [];
+    const runtime: ManualATradReplaySessionRuntime = {
+      async readFile() {
+        return JSON.stringify(fakeRecordedSession);
+      },
+      log(message) {
+        calls.push(message);
+      }
+    };
+
+    await runManualATradReplaySession(
+      createManualATradReplaySessionConfig(['--input', 'fixture.json']),
+      runtime
+    );
+
+    expect(calls.join('\n')).not.toContain('ATrad strategy condition diagnostics:');
+  });
+
+  it('prints condition diagnostics when requested and counts conditions per ticker', async () => {
+    const calls: string[] = [];
+    const runtime: ManualATradReplaySessionRuntime = {
+      async readFile() {
+        return JSON.stringify(fakeRecordedSession);
+      },
+      log(message) {
+        calls.push(message);
+      }
+    };
+
+    const result = await runManualATradReplaySession(
+      createManualATradReplaySessionConfig([
+        '--input',
+        'fixture.json',
+        '--condition-diagnostics'
+      ]),
+      runtime
+    );
+
+    expect(result.conditionDiagnostics).toBeDefined();
+    expect(result.conditionDiagnostics?.perTicker[0]).toMatchObject({
+      ticker: 'ALFA.N0000',
+      snapshots: 2,
+      sufficientHistory: 1,
+      spreadPass: 2,
+      vwapAvailable: 2,
+      priceAboveVwap: 0,
+      firstHighAvailable: 1,
+      momentumPass: 1,
+      volumeRatioAvailable: 1,
+      volumeRatioPass: 0,
+      imbalanceAvailable: 2,
+      imbalancePass: 2,
+      signals: 0
+    });
+    expect(calls.join('\n')).toContain('ATrad strategy condition diagnostics:');
+    expect(calls.join('\n')).toContain(
+      'ALFA.N0000 | 2/2 | 1/2 | 0/2 | 2/2 | 2/2 | 0/2 | 1/2 | 1/2 | 1/2 | 0/2 | 2/2 | 2/2 | 0/2'
+    );
+  });
+
+  it('identifies top blockers by ticker from enriched replay features', () => {
+    const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
+    const diagnostics = analyzeATradStrategyConditionDiagnostics(
+      extractReplayableATradSnapshots(session),
+      {
+        snapshotsProcessed: 3,
+        signalsGenerated: 0,
+        generatedSignals: [],
+        alertsSent: 0,
+        outcomesClosed: 0,
+        finalActiveSignals: []
+      }
+    );
+
+    expect(diagnostics.thresholdSummary).toMatchObject({
+      maxSpreadPercent: 1.5,
+      minimumVolumeRatio: 2,
+      minimumImbalance: 0
+    });
+    expect(diagnostics.perTicker[0]?.topBlockers).toEqual([
+      'price below VWAP',
+      'first high unavailable'
+    ]);
   });
 
   it('formats a replay summary', () => {
@@ -429,6 +534,7 @@ describe('manual ATrad replay-session helpers', () => {
       replaySummary: {
         snapshotsProcessed: 3,
         signalsGenerated: 0,
+        generatedSignals: [],
         alertsSent: 0,
         outcomesClosed: 0,
         finalActiveSignals: [],

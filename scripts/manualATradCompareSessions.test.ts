@@ -387,4 +387,11 @@ describe('manual ATrad compare-sessions helpers', () => {
     expect(source).not.toMatch(/telegram|supabase/i);
     expect(source).not.toMatch(/buy|sell|submit|confirm|market order|limit order/i);
   });
+
+  it('does not introduce live action strings in replay diagnostics code', () => {
+    const source = readFileSync('scripts/manualATradReplaySession.ts', 'utf8');
+
+    expect(source).not.toMatch(/telegram|supabase/i);
+    expect(source).not.toMatch(/buy|sell|submit|confirm|market order|limit order/i);
+  });
 });

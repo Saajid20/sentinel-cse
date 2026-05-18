@@ -1,0 +1,29 @@
+{
+  "reqTodaySharePrice": [
+    {
+      "symbol": "ALFA.N0000",
+      "security": "Alfa PLC",
+      "lastTradedPrice": "41.90",
+      "sharevolume": "16,000",
+      "turnover": "670,400",
+      "bestBid": "41.80",
+      "bestOffer": "42.00",
+      "bidDepth": "1,200",
+      "askDepth": "550",
+      "tradeTime": "2026-05-18T07:50:16Z"
+    },
+    {
+      "symbol": "BETA.N0000",
+      "security": "Beta PLC",
+      "lastTradedPrice": "55.10",
+      "sharevolume": "15,000",
+      "turnover": "826,500",
+      "bestBid": "55.00",
+      "bestOffer": "55.20",
+      "bidDepth": "1,000",
+      "askDepth": "700",
+      "tradeTime": "2026-05-18T07:50:16Z"
+    }
+  ],
+  "responseTime": "2026-05-18T07:50:17Z"
+}

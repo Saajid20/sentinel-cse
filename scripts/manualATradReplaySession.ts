@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import type { MarketSnapshot } from '@sentinel/core';
+import { DEFAULT_OPENING_MOMENTUM_PARAMETERS } from '../packages/strategies/src/index.js';
 import {
   MarketReplayEngine,
   ReplayResultSummary,
@@ -13,13 +14,15 @@ import {
   type TradeableUniverseCoverageSummary
 } from './tradeableUniverse.js';
 
-const OPENING_MOMENTUM_SPREAD_THRESHOLD = 1.5;
-const OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD = 2;
-const OPENING_MOMENTUM_IMBALANCE_THRESHOLD = 0;
+const OPENING_MOMENTUM_SPREAD_THRESHOLD = DEFAULT_OPENING_MOMENTUM_PARAMETERS.spreadPercentThreshold;
+const OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD = DEFAULT_OPENING_MOMENTUM_PARAMETERS.volumeRatioThreshold;
+const OPENING_MOMENTUM_IMBALANCE_THRESHOLD =
+  DEFAULT_OPENING_MOMENTUM_PARAMETERS.orderBookImbalanceThreshold;
 
 export interface ManualATradReplaySessionConfig {
   inputPath: string;
   universePath?: string;
+  conditionDiagnostics?: boolean;
   readonlyMode: true;
 }
 
@@ -68,6 +71,36 @@ export interface ATradReplayTickerDiagnostic {
   strategyReady: boolean;
 }
 
+export interface ATradReplayTickerConditionDiagnostic {
+  ticker: string;
+  snapshots: number;
+  sufficientHistory: number;
+  strategyReady: number;
+  spreadPass: number;
+  vwapAvailable: number;
+  priceAboveVwap: number;
+  firstHighAvailable: number;
+  momentumPass: number;
+  volumeRatioAvailable: number;
+  volumeRatioPass: number;
+  imbalanceAvailable: number;
+  imbalancePass: number;
+  signals: number;
+  topBlockers: string[];
+}
+
+export interface ATradReplayConditionThresholdSummary {
+  maxSpreadPercent: number;
+  minimumVolumeRatio: number;
+  minimumImbalance: number;
+  momentumTriggerBasis: string;
+}
+
+export interface ATradReplayConditionDiagnostics {
+  thresholdSummary: ATradReplayConditionThresholdSummary;
+  perTicker: ATradReplayTickerConditionDiagnostic[];
+}
+
 export interface ATradReplayDiagnostics {
   snapshotsProcessed: number;
   enrichedSnapshotsCount: number;
@@ -106,6 +139,7 @@ export interface ManualATradReplaySessionResult {
   topTickers: ATradReplayTickerCount[];
   replaySummary: ReplayResultSummary;
   diagnostics: ATradReplayDiagnostics;
+  conditionDiagnostics?: ATradReplayConditionDiagnostics;
   universeCoverage?: TradeableUniverseCoverageSummary;
   warning?: string;
 }
@@ -126,6 +160,7 @@ export function createManualATradReplaySessionConfig(
   return {
     inputPath,
     ...(readFlagValue(args, '--universe') ? { universePath: readFlagValue(args, '--universe') } : {}),
+    ...(hasFlag(args, '--condition-diagnostics') ? { conditionDiagnostics: true } : {}),
     readonlyMode: true
   };
 }
@@ -406,6 +441,61 @@ export function formatATradReplaySessionSummary(
     });
   }
 
+  if (result.conditionDiagnostics) {
+    lines.push('', 'ATrad strategy condition diagnostics:');
+    lines.push('- threshold summary:');
+    lines.push(`  max spread %: ${result.conditionDiagnostics.thresholdSummary.maxSpreadPercent}`);
+    lines.push(`  minimum volume ratio: ${result.conditionDiagnostics.thresholdSummary.minimumVolumeRatio}`);
+    lines.push(`  minimum imbalance: ${result.conditionDiagnostics.thresholdSummary.minimumImbalance}`);
+    lines.push(
+      `  momentum trigger basis: ${result.conditionDiagnostics.thresholdSummary.momentumTriggerBasis}`
+    );
+    lines.push('- per-ticker rows:');
+    lines.push(
+      '  ticker | snapshots | historyPass | strategyReady | spreadPass | vwapAvailable | priceAboveVwap | firstHighAvailable | momentumPass | volumeRatioAvailable | volumeRatioPass | imbalanceAvailable | imbalancePass | signals'
+    );
+    if (result.conditionDiagnostics.perTicker.length === 0) {
+      lines.push('  none');
+    } else {
+      result.conditionDiagnostics.perTicker.forEach((ticker) => {
+        lines.push(
+          `  ${ticker.ticker} | ${formatConditionCount(ticker.snapshots, ticker.snapshots)} | ${formatConditionCount(
+            ticker.sufficientHistory,
+            ticker.snapshots
+          )} | ${formatConditionCount(ticker.strategyReady, ticker.snapshots)} | ${formatConditionCount(
+            ticker.spreadPass,
+            ticker.snapshots
+          )} | ${formatConditionCount(ticker.vwapAvailable, ticker.snapshots)} | ${formatConditionCount(
+            ticker.priceAboveVwap,
+            ticker.snapshots
+          )} | ${formatConditionCount(
+            ticker.firstHighAvailable,
+            ticker.snapshots
+          )} | ${formatConditionCount(ticker.momentumPass, ticker.snapshots)} | ${formatConditionCount(
+            ticker.volumeRatioAvailable,
+            ticker.snapshots
+          )} | ${formatConditionCount(ticker.volumeRatioPass, ticker.snapshots)} | ${formatConditionCount(
+            ticker.imbalanceAvailable,
+            ticker.snapshots
+          )} | ${formatConditionCount(ticker.imbalancePass, ticker.snapshots)} | ${formatConditionCount(
+            ticker.signals,
+            ticker.snapshots
+          )}`
+        );
+      });
+    }
+    lines.push('- top blockers by ticker:');
+    if (result.conditionDiagnostics.perTicker.length === 0) {
+      lines.push('- none');
+    } else {
+      result.conditionDiagnostics.perTicker.forEach((ticker) => {
+        lines.push(
+          `- ${ticker.ticker}: ${ticker.topBlockers.length > 0 ? ticker.topBlockers.join(', ') : 'none'}`
+        );
+      });
+    }
+  }
+
   return lines;
 }
 
@@ -503,6 +593,9 @@ export async function runManualATradReplaySession(
   const replayEngine = new MarketReplayEngine();
   const replaySummary = await replayEngine.replay(snapshots, pipeline);
   const diagnostics = analyzeATradReplayDiagnostics(session, snapshots, replaySummary);
+  const conditionDiagnostics = config.conditionDiagnostics
+    ? analyzeATradStrategyConditionDiagnostics(snapshots as ReplayableATradSnapshot[], replaySummary)
+    : undefined;
   const warning = replaySummary.signalsGenerated === 0
     ? 'No signals were generated during replay.'
     : undefined;
@@ -519,6 +612,7 @@ export async function runManualATradReplaySession(
     topTickers: topTickersBySnapshotCount(snapshots),
     replaySummary,
     diagnostics,
+    ...(conditionDiagnostics ? { conditionDiagnostics } : {}),
     ...(universeResult ? { universeCoverage: universeResult.coverage } : {}),
     warning
   };
@@ -545,6 +639,10 @@ async function loadATradReplayInput(
 function readFlagValue(args: string[], flag: string): string | undefined {
   const index = args.findIndex((arg) => arg === flag);
   return index >= 0 ? args[index + 1] : undefined;
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+  return args.includes(flag);
 }
 
 function isRecordObject(value: unknown): value is Record<string, unknown> {
@@ -616,6 +714,133 @@ function buildTickerDiagnostic(
   };
 }
 
+function buildTickerConditionDiagnostic(
+  ticker: string,
+  snapshots: EnrichedATradReplaySnapshot[],
+  signals: number
+): ATradReplayTickerConditionDiagnostic {
+  const snapshotCount = snapshots.length;
+  let sufficientHistory = 0;
+  let strategyReady = 0;
+  let spreadPass = 0;
+  let vwapAvailable = 0;
+  let priceAboveVwap = 0;
+  let firstHighAvailable = 0;
+  let momentumPass = 0;
+  let volumeRatioAvailable = 0;
+  let volumeRatioPass = 0;
+  let imbalanceAvailable = 0;
+  let imbalancePass = 0;
+  const blockerCounts = new Map<string, number>();
+
+  for (const snapshot of snapshots) {
+    const features = snapshot.replayFeatures;
+    const hasHistory = features.observationCount >= 2;
+    const spreadPercent = features.spreadPercent;
+    const vwapEstimate = features.vwapEstimate;
+    const firstHigh = features.first5MinHighEstimate;
+    const volumeRatio = features.volumeRatioEstimate;
+    const imbalance = features.orderBookImbalance;
+
+    if (hasHistory) {
+      sufficientHistory += 1;
+    } else {
+      incrementBlocker(blockerCounts, 'insufficient history');
+    }
+
+    if (spreadPercent !== undefined) {
+      if (spreadPercent < OPENING_MOMENTUM_SPREAD_THRESHOLD) {
+        spreadPass += 1;
+      } else {
+        incrementBlocker(blockerCounts, 'spread blocked');
+      }
+    } else {
+      incrementBlocker(blockerCounts, 'spread unavailable');
+    }
+
+    if (vwapEstimate !== undefined) {
+      vwapAvailable += 1;
+      if (snapshot.lastPrice > vwapEstimate) {
+        priceAboveVwap += 1;
+      } else {
+        incrementBlocker(blockerCounts, 'price below VWAP');
+      }
+    } else {
+      incrementBlocker(blockerCounts, 'VWAP unavailable');
+    }
+
+    if (firstHigh !== undefined) {
+      firstHighAvailable += 1;
+      if (snapshot.lastPrice > firstHigh) {
+        momentumPass += 1;
+      } else {
+        incrementBlocker(blockerCounts, 'momentum trigger blocked');
+      }
+    } else {
+      incrementBlocker(blockerCounts, 'first high unavailable');
+    }
+
+    if (volumeRatio !== undefined) {
+      volumeRatioAvailable += 1;
+      if (volumeRatio > OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD) {
+        volumeRatioPass += 1;
+      } else {
+        incrementBlocker(blockerCounts, 'volume ratio blocked');
+      }
+    } else {
+      incrementBlocker(blockerCounts, 'volume ratio unavailable');
+    }
+
+    if (imbalance !== undefined) {
+      imbalanceAvailable += 1;
+      if (imbalance > OPENING_MOMENTUM_IMBALANCE_THRESHOLD) {
+        imbalancePass += 1;
+      } else {
+        incrementBlocker(blockerCounts, 'imbalance blocked');
+      }
+    } else {
+      incrementBlocker(blockerCounts, 'imbalance unavailable');
+    }
+
+    if (
+      hasHistory &&
+      spreadPercent !== undefined &&
+      spreadPercent < OPENING_MOMENTUM_SPREAD_THRESHOLD &&
+      vwapEstimate !== undefined &&
+      snapshot.lastPrice > vwapEstimate &&
+      firstHigh !== undefined &&
+      snapshot.lastPrice > firstHigh &&
+      volumeRatio !== undefined &&
+      volumeRatio > OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD &&
+      imbalance !== undefined &&
+      imbalance > OPENING_MOMENTUM_IMBALANCE_THRESHOLD
+    ) {
+      strategyReady += 1;
+    }
+  }
+
+  return {
+    ticker,
+    snapshots: snapshotCount,
+    sufficientHistory,
+    strategyReady,
+    spreadPass,
+    vwapAvailable,
+    priceAboveVwap,
+    firstHighAvailable,
+    momentumPass,
+    volumeRatioAvailable,
+    volumeRatioPass,
+    imbalanceAvailable,
+    imbalancePass,
+    signals,
+    topBlockers: [...blockerCounts.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 2)
+      .map(([reason]) => reason)
+  };
+}
+
 function calculateSpreadPercent(snapshot: MarketSnapshot): number | undefined {
   if (snapshot.bestAsk <= 0) {
     return undefined;
@@ -635,6 +860,37 @@ export function buildATradReplayFeatures(
   snapshots: ReplayableATradSnapshot[]
 ): EnrichedATradReplaySnapshot[] {
   return enrichATradReplaySnapshots(snapshots);
+}
+
+export function analyzeATradStrategyConditionDiagnostics(
+  snapshots: ReplayableATradSnapshot[],
+  replaySummary: ReplayResultSummary
+): ATradReplayConditionDiagnostics {
+  const enrichedSnapshots = enrichATradReplaySnapshots(snapshots);
+  const grouped = groupSnapshotsByTicker(enrichedSnapshots);
+  const signalCounts = new Map<string, number>();
+  for (const signal of replaySummary.generatedSignals) {
+    signalCounts.set(signal.ticker, (signalCounts.get(signal.ticker) ?? 0) + 1);
+  }
+
+  const perTicker = [...grouped.entries()]
+    .map(([ticker, entries]) => buildTickerConditionDiagnostic(ticker, entries, signalCounts.get(ticker) ?? 0))
+    .sort(
+      (left, right) =>
+        right.snapshots - left.snapshots ||
+        right.strategyReady - left.strategyReady ||
+        left.ticker.localeCompare(right.ticker)
+    );
+
+  return {
+    thresholdSummary: {
+      maxSpreadPercent: OPENING_MOMENTUM_SPREAD_THRESHOLD,
+      minimumVolumeRatio: OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD,
+      minimumImbalance: OPENING_MOMENTUM_IMBALANCE_THRESHOLD,
+      momentumTriggerBasis: 'lastPrice > first5MinHighEstimate derived from prior session high'
+    },
+    perTicker
+  };
 }
 
 function buildVolumeRatioEstimate(
@@ -782,6 +1038,14 @@ function buildReplayRecommendations(status: ATradReplayReadinessStatus): string[
 
 function formatOptionalPercent(value: number | undefined): string {
   return value === undefined ? 'n/a' : `${value.toFixed(2)}%`;
+}
+
+function formatConditionCount(passed: number, total: number): string {
+  return `${passed}/${total}`;
+}
+
+function incrementBlocker(blockerCounts: Map<string, number>, blocker: string): void {
+  blockerCounts.set(blocker, (blockerCounts.get(blocker) ?? 0) + 1);
 }
 
 function defaultRuntime(): ManualATradReplaySessionRuntime {
