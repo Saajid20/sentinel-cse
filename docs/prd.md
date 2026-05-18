@@ -151,6 +151,12 @@ The web UI is display-only. Command snippets are shown as text for the operator 
 
 The current web surface follows the Stitch `Sentinel-CSE Research Operator Console` dashboard design as the visual source of truth: dark analytical palette, fixed left sidebar, read-only mode pill, structured status cards, and a segmented market-state bar. The implementation remains plain HTML, CSS, and client-side JavaScript over the existing read-only JSON endpoint.
 
+## Phase 22 Python Research Workspace
+
+Sentinel-CSE now includes `research/python/`, a dependency-light offline research workspace for analyzing recorded ATrad session JSON files. The first scripts summarize a single recorded session and compare multiple recorded sessions using fake/sample data in Git and operator-provided local files outside version control.
+
+The Python layer is research-only and does not change the TypeScript runtime. It does not connect live ATrad, automate login, send Telegram alerts, write Supabase records, place orders, run live ATrad data through the Sentinel pipeline, or enable auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

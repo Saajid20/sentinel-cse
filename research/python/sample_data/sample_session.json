@@ -1,0 +1,141 @@
+{
+  "sessionId": "sample-atrad-session-20260508-101500",
+  "startedAt": "2026-05-08T10:15:00.000Z",
+  "endedAt": "2026-05-08T10:16:00.000Z",
+  "source": "atrad-full-watch-equity",
+  "mode": "read-only-local-recording",
+  "confidencePolicy": "HIGH_CONFIDENCE only",
+  "intervalSeconds": 10,
+  "durationSeconds": 60,
+  "totals": {
+    "ticksAttempted": 4,
+    "rawRowsExtracted": 8,
+    "usableSnapshots": 5,
+    "quarantinedSnapshots": 1,
+    "rejectedSnapshots": 2
+  },
+  "snapshots": [
+    {
+      "ticker": "ALFA.N0000",
+      "timestamp": 1778220900000,
+      "lastPrice": 41.5,
+      "bestBid": 41.4,
+      "bestAsk": 41.6,
+      "bidDepth": 900,
+      "askDepth": 600,
+      "volume": 12000,
+      "totalTurnover": 498000,
+      "source": "atrad-market-watch",
+      "metadata": {
+        "companyName": "Alfa PLC",
+        "qualityStatus": "HIGH_CONFIDENCE"
+      }
+    },
+    {
+      "ticker": "ALFA.N0000",
+      "timestamp": 1778220910000,
+      "lastPrice": 41.7,
+      "bestBid": 41.6,
+      "bestAsk": 41.8,
+      "bidDepth": 950,
+      "askDepth": 650,
+      "volume": 13500,
+      "totalTurnover": 562950,
+      "source": "atrad-market-watch",
+      "metadata": {
+        "companyName": "Alfa PLC",
+        "qualityStatus": "HIGH_CONFIDENCE"
+      }
+    },
+    {
+      "ticker": "BETA.N0000",
+      "timestamp": 1778220920000,
+      "lastPrice": 55.1,
+      "bestBid": 55,
+      "bestAsk": 55.2,
+      "bidDepth": 1000,
+      "askDepth": 700,
+      "volume": 15000,
+      "totalTurnover": 826500,
+      "source": "atrad-market-watch",
+      "metadata": {
+        "companyName": "Beta PLC",
+        "qualityStatus": "HIGH_CONFIDENCE"
+      }
+    },
+    {
+      "ticker": "CALT.N0000",
+      "timestamp": 1778220930000,
+      "lastPrice": 18.2,
+      "bestBid": 18.1,
+      "bestAsk": 18.3,
+      "bidDepth": 500,
+      "askDepth": 450,
+      "volume": 3000,
+      "totalTurnover": 54600,
+      "source": "atrad-market-watch",
+      "metadata": {
+        "companyName": "Calt Research PLC",
+        "qualityStatus": "HIGH_CONFIDENCE"
+      }
+    },
+    {
+      "ticker": "ALFA.N0000",
+      "timestamp": 1778220940000,
+      "lastPrice": 41.9,
+      "bestBid": 41.8,
+      "bestAsk": 42,
+      "bidDepth": 1200,
+      "askDepth": 550,
+      "volume": 16000,
+      "totalTurnover": 670400,
+      "source": "atrad-market-watch",
+      "metadata": {
+        "companyName": "Alfa PLC",
+        "qualityStatus": "HIGH_CONFIDENCE"
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "tickNumber": 1,
+      "capturedAt": "2026-05-08T10:15:00.000Z",
+      "marketState": "OPEN",
+      "rawRowsExtracted": 2,
+      "acceptedSnapshots": 2,
+      "usableSnapshots": 2,
+      "quarantinedSnapshots": 0,
+      "rejectedSnapshots": 0
+    },
+    {
+      "tickNumber": 2,
+      "capturedAt": "2026-05-08T10:15:10.000Z",
+      "marketState": "OPEN",
+      "rawRowsExtracted": 2,
+      "acceptedSnapshots": 2,
+      "usableSnapshots": 2,
+      "quarantinedSnapshots": 0,
+      "rejectedSnapshots": 0
+    },
+    {
+      "tickNumber": 3,
+      "capturedAt": "2026-05-08T10:15:20.000Z",
+      "marketState": "INACTIVE",
+      "rawRowsExtracted": 2,
+      "acceptedSnapshots": 1,
+      "usableSnapshots": 1,
+      "quarantinedSnapshots": 1,
+      "rejectedSnapshots": 0
+    },
+    {
+      "tickNumber": 4,
+      "capturedAt": "2026-05-08T10:15:30.000Z",
+      "marketState": "UNKNOWN",
+      "rawRowsExtracted": 2,
+      "acceptedSnapshots": 0,
+      "usableSnapshots": 0,
+      "quarantinedSnapshots": 0,
+      "rejectedSnapshots": 2
+    }
+  ]
+}

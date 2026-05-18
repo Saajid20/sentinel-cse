@@ -40,6 +40,10 @@ build/Release
 # Dependency directories
 node_modules/
 jspm_packages/
+.venv/
+research/python/.venv/
+__pycache__/
+.pytest_cache/
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
@@ -83,6 +87,8 @@ storageState.json
 data/live-sessions/
 data/live-sessions/*
 config/tradeableUniverse.json
+research/python/reports/*
+!research/python/reports/.gitkeep
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
