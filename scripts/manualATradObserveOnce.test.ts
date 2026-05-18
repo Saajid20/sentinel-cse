@@ -12,7 +12,9 @@ import {
   collectPageDiagnostics,
   createManualATradObserveOnceConfig,
   DEFAULT_ATRAD_MARKET_WATCH_URL,
+  dedupeMarketWatchRowsByTicker,
   detectATradMarketStateFromVisibleText,
+  extractFullGridMarketWatchRows,
   extractVisibleMarketWatchRows,
   formatObserveOnceSummary,
   ManualATradObserveOnceRuntime,
@@ -101,6 +103,12 @@ describe('manual ATrad observe-once helpers', () => {
     const config = createManualATradObserveOnceConfig(['--allow-medium-confidence']);
 
     expect(config.allowMediumConfidence).toBe(true);
+  });
+
+  it('parses the full grid scan flag from CLI args', () => {
+    const config = createManualATradObserveOnceConfig(['--full-grid-scan']);
+
+    expect(config.fullGridScan).toBe(true);
   });
 
   it('detects explicit ATrad market state from visible text variants', () => {
@@ -358,6 +366,20 @@ describe('manual ATrad observe-once helpers', () => {
       volume: '12500',
       totalTurnover: '687500'
     });
+  });
+
+  it('deduplicates ticker rows by preferring the more complete row and latest equal-quality row', () => {
+    const rows = dedupeMarketWatchRowsByTicker([
+      { Security: 'DUPL.N0000', Last: '10.00' },
+      { Security: 'DUPL.N0000', Last: '10.00', Volume: '1,000', Turnover: '10,000' },
+      { Security: 'KEEP.N0000', Last: '5.00', Volume: '500' },
+      { Security: 'KEEP.N0000', Last: '5.10', Volume: '500' }
+    ]);
+
+    expect(rows).toEqual([
+      { Security: 'DUPL.N0000', Last: '10.00', Volume: '1,000', Turnover: '10,000' },
+      { Security: 'KEEP.N0000', Last: '5.10', Volume: '500' }
+    ]);
   });
 
   it('normalizes a real-shaped MGT Full Watch Equity row with trailing Time', () => {
@@ -1841,6 +1863,75 @@ describe('manual ATrad observe-once helpers', () => {
     expect(lines).toContain('"Time":"10:15:47.383159"');
   });
 
+  it('extracts full grid rows from a simulated Dojo store before scrolling', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [
+          {
+            gridIndex: 0,
+            className: 'dojoxGrid',
+            visibleDomRows: 1,
+            storeRowCount: 3,
+            modelRowCount: undefined,
+            storeKeys: ['_arrayOfAllItems'],
+            modelKeys: [],
+            storeHasMoreRowsThanVisible: true
+          }
+        ],
+        rows: [
+          ['STOR.N0000', 'Store PLC', '1,000', '10.00', '10.10', '500', '10.00', '1,000'],
+          ['MORE.N0000', 'More PLC', '2,000', '20.00', '20.10', '700', '20.00', '2,000']
+        ],
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page);
+
+    expect(scan.scanMode).toBe('store');
+    expect(scan.uniqueTickers).toBe(2);
+    expect(scan.diagnostics.storeDiagnostics[0]?.storeHasMoreRowsThanVisible).toBe(true);
+    expect(scan.rows.map((row) => row.Security)).toEqual(['STOR.N0000', 'MORE.N0000']);
+  });
+
+  it('uses scroll fallback rows and deduplicates repeated tickers', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'scroll',
+        scanSteps: 3,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          ['DUPL.N0000', 'Duplicate PLC', '1,000', '10.00', '10.10', '500', '10.00'],
+          ['DUPL.N0000', 'Duplicate PLC', '1,000', '10.00', '10.10', '500', '10.00', '3,000'],
+          ['NEXT.N0000', 'Next PLC', '2,000', '20.00', '20.10', '700', '20.00', '2,000']
+        ],
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page);
+
+    expect(scan.scanMode).toBe('scroll');
+    expect(scan.scanSteps).toBe(3);
+    expect(scan.duplicateRows).toBe(1);
+    expect(scan.rows).toHaveLength(2);
+    expect(scan.rows[0]?.Volume).toBe('3,000');
+  });
+
+  it('keeps full-grid scrolling bounded in the browser scan script', () => {
+    const source = readFileSync('scripts/manualATradObserveOnce.ts', 'utf8');
+
+    expect(source).toContain('FULL_GRID_SCAN_MAX_STEPS = 12');
+    expect(source).toContain('staleStepLimit');
+    expect(source).not.toMatch(/while\s*\(\s*true\s*\)/);
+  });
+
   it('runs broad debug fallback and header text search when candidate count is zero', async () => {
     const runtime = fakeRuntime({
       storageStateExists: true,
@@ -1942,7 +2033,8 @@ function fakeRuntime({
   pageTitle,
   pageDiagnostics,
   frames,
-  extractionCandidates
+  extractionCandidates,
+  fullGridScan
 }: {
   storageStateExists: boolean;
   calls: string[];
@@ -1951,6 +2043,7 @@ function fakeRuntime({
   pageDiagnostics?: FrameDiagnosticsPayload;
   frames?: FakeFrameConfig[];
   extractionCandidates?: ExtractionCandidatesPayload;
+  fullGridScan?: FullGridScanPayload;
 }): ManualATradObserveOnceRuntime {
   return {
     async storageStateExists() {
@@ -1966,7 +2059,8 @@ function fakeRuntime({
             pageTitle,
             pageDiagnostics,
             frames,
-            extractionCandidates
+            extractionCandidates,
+            fullGridScan
           }),
           async close() {
             calls.push('close');
@@ -1988,7 +2082,8 @@ function fakeRuntime({
               pageTitle,
               pageDiagnostics,
               frames,
-              extractionCandidates
+              extractionCandidates,
+              fullGridScan
             });
           }
         },
@@ -2022,7 +2117,8 @@ function createFakePage({
   pageTitle,
   pageDiagnostics,
   frames,
-  extractionCandidates
+  extractionCandidates,
+  fullGridScan
 }: {
   calls: string[];
   pageUrl?: string;
@@ -2030,6 +2126,7 @@ function createFakePage({
   pageDiagnostics?: FrameDiagnosticsPayload;
   frames?: FakeFrameConfig[];
   extractionCandidates?: ExtractionCandidatesPayload;
+  fullGridScan?: FullGridScanPayload;
 }) {
   const childFrames = (frames ?? []).map((frame, index) =>
     createFakeFrame({
@@ -2069,6 +2166,19 @@ function createFakePage({
 
         calls.push(`frame-evaluate:main:${typeof pageFunction}`);
         if (typeof pageFunction === 'string') {
+          if (pageFunction.includes('storeDiagnostics') && pageFunction.includes('scanMode')) {
+            return (
+              fullGridScan ?? {
+                scanMode: 'visible',
+                scanSteps: 0,
+                dojoGridCount: 0,
+                storeDiagnostics: [],
+                rows: [Object.values(fakeMarketWatchRow)],
+                headerCells: Object.keys(fakeMarketWatchRow)
+              }
+            );
+          }
+
           if (pageFunction.includes('const allowedHeaders =')) {
             return (
               extractionCandidates ?? {
@@ -2113,7 +2223,8 @@ function createFakeSession({
   pageTitle,
   pageDiagnostics,
   frames,
-  extractionCandidates
+  extractionCandidates,
+  fullGridScan
 }: {
   calls: string[];
   pageUrl?: string;
@@ -2121,6 +2232,7 @@ function createFakeSession({
   pageDiagnostics?: FrameDiagnosticsPayload;
   frames?: FakeFrameConfig[];
   extractionCandidates?: ExtractionCandidatesPayload;
+  fullGridScan?: FullGridScanPayload;
 }) {
   return {
     pages() {
@@ -2128,14 +2240,15 @@ function createFakeSession({
     },
     async newPage() {
       calls.push('new-page');
-      return createFakePage({
-        calls,
-        pageUrl,
-        pageTitle,
-        pageDiagnostics,
-        frames,
-        extractionCandidates
-      });
+        return createFakePage({
+          calls,
+          pageUrl,
+          pageTitle,
+          pageDiagnostics,
+          frames,
+          extractionCandidates,
+          fullGridScan
+        });
     }
   };
 }
@@ -2192,6 +2305,25 @@ interface ExtractionCandidatesPayload {
     className: string;
     ancestorTextSnippet: string;
     ancestorTagChain: string;
+  }>;
+}
+
+interface FullGridScanPayload {
+  scanMode: 'store' | 'scroll' | 'visible';
+  scanSteps: number;
+  rows: string[][];
+  headerCells: string[];
+  dojoGridCount: number;
+  storeDiagnostics: Array<{
+    gridIndex: number;
+    widgetId?: string;
+    className: string;
+    visibleDomRows: number;
+    storeRowCount?: number;
+    modelRowCount?: number;
+    storeKeys: string[];
+    modelKeys: string[];
+    storeHasMoreRowsThanVisible: boolean;
   }>;
 }
 

@@ -68,8 +68,11 @@ const PREFERRED_MARKET_WATCH_KEYWORDS = [
 
 const DIAGNOSTIC_VISIBLE_TEXT_LIMIT = 30;
 const TICKER_PATTERN = /\b[A-Z0-9]{2,12}\.[A-Z]\d{4}\b/;
+const FULL_GRID_SCAN_MAX_STEPS = 12;
+const FULL_GRID_SCAN_STALE_STEP_LIMIT = 2;
 
 export type MarketWatchRow = Record<string, string>;
+export type ATradFullGridScanMode = 'store' | 'scroll' | 'visible';
 
 export interface ManualATradObserveOnceConfig {
   baseUrl: string;
@@ -81,6 +84,7 @@ export interface ManualATradObserveOnceConfig {
   debugRows: boolean;
   rawOutput: boolean;
   allowMediumConfidence: boolean;
+  fullGridScan: boolean;
   observationTimeoutMs: number;
   readonlyMode: true;
 }
@@ -241,6 +245,39 @@ export interface MarketWatchExtractionDebug {
     gridSummaries: BroadVisibleGridSummary[];
   };
   headerMatches?: HeaderSearchMatch[];
+  fullGridDiagnostics?: ATradFullGridScanDiagnostics;
+}
+
+export interface ATradDojoStoreDiagnostic {
+  gridIndex: number;
+  widgetId?: string;
+  className: string;
+  visibleDomRows: number;
+  storeRowCount?: number;
+  modelRowCount?: number;
+  storeKeys: string[];
+  modelKeys: string[];
+  storeHasMoreRowsThanVisible: boolean;
+}
+
+export interface ATradFullGridScanDiagnostics {
+  dojoGridCount: number;
+  storeDiagnostics: ATradDojoStoreDiagnostic[];
+  scanMode: ATradFullGridScanMode;
+  scanSteps: number;
+  rawRows: number;
+  uniqueTickers: number;
+  duplicateRows: number;
+}
+
+export interface ATradFullGridScanResult {
+  rows: MarketWatchRow[];
+  scanMode: ATradFullGridScanMode;
+  scanSteps: number;
+  rawRows: number;
+  uniqueTickers: number;
+  duplicateRows: number;
+  diagnostics: ATradFullGridScanDiagnostics;
 }
 
 export interface BroadVisibleTableSummary {
@@ -285,6 +322,7 @@ export interface ManualATradObserveOnceResult {
   rawOutputEnabled?: boolean;
   diagnostics?: ManualATradPageDiagnostics;
   extractionDebug?: MarketWatchExtractionDebug;
+  fullGridScan?: ATradFullGridScanDiagnostics;
 }
 
 export function createManualATradObserveOnceConfig(args: string[] = []): ManualATradObserveOnceConfig {
@@ -298,6 +336,7 @@ export function createManualATradObserveOnceConfig(args: string[] = []): ManualA
     debugRows: args.includes('--debug-rows'),
     rawOutput: args.includes('--raw-output'),
     allowMediumConfidence: args.includes('--allow-medium-confidence'),
+    fullGridScan: args.includes('--full-grid-scan'),
     observationTimeoutMs: parseTimeoutMs(args),
     readonlyMode: true
   };
@@ -557,7 +596,7 @@ function scoreMarketWatchRow(row: MarketWatchRow): number {
   }, 0);
 }
 
-function dedupeDojoMarketWatchRows(rows: MarketWatchRow[]): MarketWatchRow[] {
+export function dedupeMarketWatchRowsByTicker(rows: MarketWatchRow[]): MarketWatchRow[] {
   const deduped = new Map<string, MarketWatchRow>();
 
   for (const row of rows) {
@@ -565,12 +604,32 @@ function dedupeDojoMarketWatchRows(rows: MarketWatchRow[]): MarketWatchRow[] {
     const key = ticker ?? JSON.stringify(row);
     const existing = deduped.get(key);
 
-    if (!existing || scoreMarketWatchRow(row) > scoreMarketWatchRow(existing)) {
+    if (!existing || scoreMarketWatchRow(row) >= scoreMarketWatchRow(existing)) {
       deduped.set(key, row);
     }
   }
 
   return Array.from(deduped.values());
+}
+
+function countDuplicateMarketWatchRows(rows: MarketWatchRow[]): number {
+  const seen = new Set<string>();
+  let duplicateCount = 0;
+
+  for (const row of rows) {
+    const ticker = field(row, 'Security');
+    if (!ticker) {
+      continue;
+    }
+
+    if (seen.has(ticker)) {
+      duplicateCount += 1;
+    } else {
+      seen.add(ticker);
+    }
+  }
+
+  return duplicateCount;
 }
 
 export function assessATradParsedSnapshotQuality(
@@ -1058,7 +1117,8 @@ export async function runManualATradObserveOnce(
       return result;
     }
 
-    const rawRows = await extractVisibleMarketWatchRows(page);
+    const scan = config.fullGridScan ? await extractFullGridMarketWatchRows(page) : undefined;
+    const rawRows = scan?.rows ?? await extractVisibleMarketWatchRows(page);
     const sanitized = sanitizeMarketWatchRows(rawRows, runtime.now());
     const partition = partitionATradSnapshotsByConfidence(
       sanitized.rowResults,
@@ -1070,6 +1130,7 @@ export async function runManualATradObserveOnce(
       message: 'ATrad observe-once read-only snapshot completed.',
       rawRows,
       rawOutputEnabled: config.rawOutput,
+      fullGridScan: scan?.diagnostics,
       ...sanitized,
       ...partition
     };
@@ -1102,8 +1163,51 @@ export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): 
     );
 
   return chosen.kind === 'dojo-grid'
-    ? dedupeDojoMarketWatchRows(parsedRows)
+    ? dedupeMarketWatchRowsByTicker(parsedRows)
     : parsedRows;
+}
+
+export async function extractFullGridMarketWatchRows(
+  page: ManualATradPageLike
+): Promise<ATradFullGridScanResult> {
+  assertATradReadOnlySafety('read Full Watch grid rows using store-first scan');
+
+  const rawScan = await page.evaluate<{
+    scanMode: ATradFullGridScanMode;
+    scanSteps: number;
+    rows: string[][];
+    headerCells: string[];
+    dojoGridCount: number;
+    storeDiagnostics: ATradDojoStoreDiagnostic[];
+  }>(BROWSER_SAFE_FULL_GRID_SCAN_EVALUATION);
+
+  const parsedRows = rawScan.rows
+    .map((cells) => parseMarketWatchCandidateRow('dojo-grid', rawScan.headerCells, cells))
+    .filter((row) =>
+      ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
+        Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
+      )
+    );
+  const rows = dedupeMarketWatchRowsByTicker(parsedRows);
+  const diagnostics: ATradFullGridScanDiagnostics = {
+    dojoGridCount: rawScan.dojoGridCount,
+    storeDiagnostics: rawScan.storeDiagnostics,
+    scanMode: rawScan.scanMode,
+    scanSteps: rawScan.scanSteps,
+    rawRows: parsedRows.length,
+    uniqueTickers: rows.length,
+    duplicateRows: countDuplicateMarketWatchRows(parsedRows)
+  };
+
+  return {
+    rows,
+    scanMode: diagnostics.scanMode,
+    scanSteps: diagnostics.scanSteps,
+    rawRows: diagnostics.rawRows,
+    uniqueTickers: diagnostics.uniqueTickers,
+    duplicateRows: diagnostics.duplicateRows,
+    diagnostics
+  };
 }
 
 export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): string[] {
@@ -1118,6 +1222,15 @@ export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): 
   const lines = [
     'Sentinel-CSE ATrad observe-once read-only summary',
     `Raw rows extracted: ${result.rawRows.length}`,
+    ...(result.fullGridScan
+      ? [
+          `Full grid scan: yes`,
+          `Scan mode: ${result.fullGridScan.scanMode}`,
+          `Unique tickers: ${result.fullGridScan.uniqueTickers}`,
+          `Duplicate rows: ${result.fullGridScan.duplicateRows}`,
+          `Scan steps: ${result.fullGridScan.scanSteps}`
+        ]
+      : []),
     `Accepted snapshots: ${result.accepted.length}`,
     ...buildUsableATradSnapshotSummary({
       usableSnapshots: result.usableSnapshots,
@@ -1154,6 +1267,7 @@ export async function debugMarketWatchRows(
   assertATradReadOnlySafety('inspect read-only market watch row extraction debug');
 
   const extraction = await extractMarketWatchTableCandidates(page);
+  const fullGridScan = await extractFullGridMarketWatchRows(page);
   const chosen = extraction.candidates[extraction.chosenCandidateIndex];
   const dojoCandidates = extraction.dojoCandidates ?? [];
 
@@ -1202,7 +1316,8 @@ export async function debugMarketWatchRows(
           }
         : undefined,
       broadScan: extraction.broadScan,
-      headerMatches: extraction.headerMatches
+      headerMatches: extraction.headerMatches,
+      fullGridDiagnostics: fullGridScan.diagnostics
     }
   };
 }
@@ -1694,6 +1809,23 @@ function formatExtractionDebugSummary(debug: MarketWatchExtractionDebug): string
     });
   }
 
+  if (debug.fullGridDiagnostics) {
+    lines.push('Full grid scan diagnostics:');
+    lines.push(`Dojo grid widgets detected: ${debug.fullGridDiagnostics.dojoGridCount}`);
+    lines.push(`Scan mode: ${debug.fullGridDiagnostics.scanMode}`);
+    lines.push(`Raw rows: ${debug.fullGridDiagnostics.rawRows}`);
+    lines.push(`Unique tickers: ${debug.fullGridDiagnostics.uniqueTickers}`);
+    lines.push(`Duplicate rows: ${debug.fullGridDiagnostics.duplicateRows}`);
+    lines.push(`Scan steps: ${debug.fullGridDiagnostics.scanSteps}`);
+    debug.fullGridDiagnostics.storeDiagnostics.slice(0, 5).forEach((diagnostic) => {
+      lines.push(
+        `Dojo store ${diagnostic.gridIndex}: visibleRows=${diagnostic.visibleDomRows}, storeRows=${diagnostic.storeRowCount ?? 'n/a'}, modelRows=${diagnostic.modelRowCount ?? 'n/a'}, moreThanVisible=${diagnostic.storeHasMoreRowsThanVisible ? 'yes' : 'no'}`
+      );
+      lines.push(`  Store keys: ${diagnostic.storeKeys.join(', ') || 'none'}`);
+      lines.push(`  Model keys: ${diagnostic.modelKeys.join(', ') || 'none'}`);
+    });
+  }
+
   if (!debug.chosenCandidate) {
     lines.push('Chosen table/section score: none');
     if (debug.broadScan) {
@@ -1944,6 +2076,257 @@ function redactSensitiveText(value: string): string {
     .replace(/\b\d{6,}\b/g, '[redacted-number]')
     .trim();
 }
+
+const BROWSER_SAFE_FULL_GRID_SCAN_EVALUATION = `(async () => {
+  const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};
+  const tickerPattern = /\\b[A-Z0-9]{2,12}\\.[A-Z]\\d{4}\\b/;
+  const maxSteps = ${FULL_GRID_SCAN_MAX_STEPS};
+  const staleStepLimit = ${FULL_GRID_SCAN_STALE_STEP_LIMIT};
+
+  function normalize(value) {
+    return String(value || '').replace(/\\s+/g, ' ').trim();
+  }
+
+  function normalizeKey(value) {
+    return normalize(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  function isVisible(element) {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }
+
+  function collectTextChunks(elements) {
+    const chunks = [];
+    elements.forEach((element) => {
+      const text = normalize(element.textContent);
+      if (text && !chunks.includes(text)) {
+        chunks.push(text);
+      }
+    });
+    return chunks;
+  }
+
+  function collectDojoCellChunks(row) {
+    const visibleCells = Array.from(row.querySelectorAll('.dojoxGridCell, td, th, span, div')).filter((element) => isVisible(element));
+    const preferredCells = visibleCells.filter((element) =>
+      element.classList.contains('dojoxGridCell') || element.tagName === 'TD' || element.tagName === 'TH'
+    );
+    return collectTextChunks(preferredCells.length > 0 ? preferredCells : visibleCells);
+  }
+
+  function collectDojoRowsFromGrid(grid) {
+    const rowElements = Array.from(
+      grid.querySelectorAll('.dojoxGridContent [class*="dojoxGridRow"], .dojoxGridRowTable [class*="dojoxGridRow"], [class*="dojoxGridRow"]')
+    ).filter((row) => isVisible(row));
+    const rows = [];
+    rowElements.forEach((row) => {
+      const cells = collectDojoCellChunks(row);
+      const rowText = normalize(row.textContent).toLowerCase();
+      if (
+        cells.length === 0 ||
+        cells.every((cell) => allowedHeaders.includes(cell)) ||
+        (rowText.includes('security') && rowText.includes('bid') && rowText.includes('ask'))
+      ) {
+        return;
+      }
+      rows.push(cells);
+    });
+    return rows;
+  }
+
+  function collectTableRows(root) {
+    const rows = [];
+    Array.from(root.querySelectorAll('tr')).filter(isVisible).forEach((row) => {
+      const cells = Array.from(row.querySelectorAll('td,th')).filter(isVisible).map((cell) => normalize(cell.textContent));
+      if (cells.length > 0 && !cells.every((cell) => allowedHeaders.includes(cell))) {
+        rows.push(cells);
+      }
+    });
+    return rows;
+  }
+
+  function rowScore(row) {
+    return row.reduce((score, cell) => score + (cell ? (/\\d/.test(cell) ? 2 : 1) : 0), 0);
+  }
+
+  function dedupeRows(rows) {
+    const deduped = [];
+    const bestByTicker = new Map();
+    rows.forEach((row) => {
+      const tickerCell = row.find((cell) => tickerPattern.test(cell));
+      const key = tickerCell || JSON.stringify(row);
+      const existingIndex = bestByTicker.get(key);
+      if (existingIndex === undefined) {
+        bestByTicker.set(key, deduped.length);
+        deduped.push(row);
+      } else if (rowScore(row) >= rowScore(deduped[existingIndex])) {
+        deduped[existingIndex] = row;
+      }
+    });
+    return deduped;
+  }
+
+  function getWidgetForGrid(grid) {
+    try {
+      if (window.dijit && window.dijit.registry && typeof window.dijit.registry.byNode === 'function') {
+        return window.dijit.registry.byNode(grid);
+      }
+      if (window.dijit && typeof window.dijit.byNode === 'function') {
+        return window.dijit.byNode(grid);
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  function countLike(value) {
+    if (Array.isArray(value)) return value.length;
+    if (value && typeof value === 'object') {
+      if (Array.isArray(value.items)) return value.items.length;
+      if (Array.isArray(value.data)) return value.data.length;
+      if (Array.isArray(value._arrayOfAllItems)) return value._arrayOfAllItems.length;
+      if (typeof value.rowCount === 'number') return value.rowCount;
+      if (typeof value._rowCount === 'number') return value._rowCount;
+    }
+    return undefined;
+  }
+
+  function rowCollection(value) {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') {
+      if (Array.isArray(value.items)) return value.items;
+      if (Array.isArray(value.data)) return value.data;
+      if (Array.isArray(value._arrayOfAllItems)) return value._arrayOfAllItems;
+    }
+    return [];
+  }
+
+  function primitiveValue(value) {
+    if (Array.isArray(value)) return primitiveValue(value[0]);
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return normalize(value);
+    }
+    return '';
+  }
+
+  function objectToCells(item) {
+    if (!item || typeof item !== 'object') return [];
+    const entries = Object.entries(item);
+    const byKey = new Map(entries.map(([key, value]) => [normalizeKey(key), value]));
+    const cells = allowedHeaders.map((header) => primitiveValue(byKey.get(normalizeKey(header))));
+    if (cells.some((cell) => tickerPattern.test(cell))) {
+      return cells;
+    }
+    return entries.map((entry) => primitiveValue(entry[1])).filter(Boolean);
+  }
+
+  function collectStoreRows(widget) {
+    if (!widget || typeof widget !== 'object') return [];
+    const candidates = [widget.store, widget._store, widget.model && widget.model.store, widget.model && widget.model._store, widget.model].filter(Boolean);
+    const rows = [];
+    candidates.forEach((candidate) => {
+      rowCollection(candidate).forEach((item) => {
+        const cells = objectToCells(item);
+        if (cells.length > 0 && cells.some((cell) => tickerPattern.test(cell))) {
+          rows.push(cells);
+        }
+      });
+    });
+    return dedupeRows(rows);
+  }
+
+  function findScrollContainer(grid) {
+    const candidates = [
+      ...Array.from(grid.querySelectorAll('.dojoxGridScrollbox, .dojoxGridContent, [class*="Scroll"], [class*="scroll"]')),
+      grid,
+      document.scrollingElement,
+      document.documentElement
+    ].filter(Boolean);
+    return candidates.find((element) => element.scrollHeight > element.clientHeight + 10) || document.scrollingElement || document.documentElement;
+  }
+
+  const grids = Array.from(document.querySelectorAll('.dojoxGrid, [class*="dojoxGrid"]')).filter(isVisible);
+  const storeDiagnostics = grids.map((grid, gridIndex) => {
+    const widget = getWidgetForGrid(grid);
+    const store = widget && (widget.store || widget._store || (widget.model && (widget.model.store || widget.model._store)));
+    const model = widget && widget.model;
+    const storeRowCount = countLike(store);
+    const modelRowCount = countLike(model);
+    const visibleDomRows = collectDojoRowsFromGrid(grid).length;
+    return {
+      gridIndex,
+      widgetId: widget && widget.id ? String(widget.id) : undefined,
+      className: normalize(grid.className).slice(0, 120),
+      visibleDomRows,
+      storeRowCount,
+      modelRowCount,
+      storeKeys: store && typeof store === 'object' ? Object.keys(store).slice(0, 12) : [],
+      modelKeys: model && typeof model === 'object' ? Object.keys(model).slice(0, 12) : [],
+      storeHasMoreRowsThanVisible: Math.max(storeRowCount || 0, modelRowCount || 0) > visibleDomRows
+    };
+  });
+
+  for (const grid of grids) {
+    const storeRows = collectStoreRows(getWidgetForGrid(grid));
+    if (storeRows.length > collectDojoRowsFromGrid(grid).length) {
+      return {
+        scanMode: 'store',
+        scanSteps: 0,
+        rows: storeRows,
+        headerCells: allowedHeaders,
+        dojoGridCount: grids.length,
+        storeDiagnostics
+      };
+    }
+  }
+
+  const target = grids[0] || document.body;
+  const container = findScrollContainer(target);
+  const originalScrollTop = container.scrollTop;
+  const rows = [];
+  let previousUniqueCount = 0;
+  let staleSteps = 0;
+  let steps = 0;
+
+  for (let step = 0; step <= maxSteps; step += 1) {
+    rows.push(...(grids[0] ? collectDojoRowsFromGrid(grids[0]) : collectTableRows(document)));
+    const uniqueCount = dedupeRows(rows).length;
+    staleSteps = uniqueCount <= previousUniqueCount ? staleSteps + 1 : 0;
+    previousUniqueCount = uniqueCount;
+    if (step >= maxSteps || staleSteps >= staleStepLimit) {
+      steps = step;
+      break;
+    }
+
+    const before = container.scrollTop;
+    container.scrollTop = Math.min(container.scrollTop + Math.max(container.clientHeight * 0.85, 120), container.scrollHeight);
+    steps = step + 1;
+    if (container.scrollTop <= before || container.scrollTop + container.clientHeight >= container.scrollHeight) {
+      rows.push(...(grids[0] ? collectDojoRowsFromGrid(grids[0]) : collectTableRows(document)));
+      break;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 60));
+  }
+
+  try {
+    container.scrollTop = originalScrollTop;
+  } catch {
+    // Read-only best effort: preserving the operator viewport is useful but not required for extraction.
+  }
+
+  return {
+    scanMode: grids.length > 0 ? 'scroll' : 'visible',
+    scanSteps: steps,
+    rows: dedupeRows(rows),
+    headerCells: allowedHeaders,
+    dojoGridCount: grids.length,
+    storeDiagnostics
+  };
+})()`;
 
 const BROWSER_SAFE_MARKET_WATCH_EXTRACTION_DEBUG_EVALUATION = `(() => {
   const allowedHeaders = ${JSON.stringify(MARKET_WATCH_HEADERS)};

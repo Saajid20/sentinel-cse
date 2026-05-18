@@ -108,6 +108,7 @@ describe('manual ATrad record-session helpers', () => {
       outputPath: 'data/custom/atrad-session-20231114-221320.json',
       allowMediumConfidence: true,
       includeQuarantined: true,
+      fullGridScan: false,
       readinessRetries: 3,
       readinessWaitSeconds: 3,
       maxTicks: 3,
@@ -131,6 +132,13 @@ describe('manual ATrad record-session helpers', () => {
     expect(instructions.join('\n')).toContain('read-only');
     expect(instructions.join('\n')).toContain('data/live-sessions');
     expect(instructions.join('\n')).toContain('Readiness retries: 3');
+    expect(instructions.join('\n')).toContain('Full grid scan: no');
+  });
+
+  it('parses the full grid scan flag', () => {
+    const config = createManualATradRecordSessionConfig(['--full-grid-scan']);
+
+    expect(config.fullGridScan).toBe(true);
   });
 
   it('records only usable snapshots by default while looping for max ticks', async () => {
@@ -271,6 +279,41 @@ describe('manual ATrad record-session helpers', () => {
     );
   });
 
+  it('records full-grid scan diagnostics when enabled', async () => {
+    const runtime = createFakeRuntime({
+      fullGridScan: {
+        scanMode: 'scroll',
+        scanSteps: 4,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          Object.values(highConfidenceRow),
+          Object.values(mediumConfidenceRow),
+          Object.values(rejectedRow),
+          Object.values({ ...highConfidenceRow, Volume: '14,000' })
+        ],
+        headerCells: Object.keys(highConfidenceRow)
+      }
+    });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1', '--full-grid-scan'], runtime.now()),
+      runtime
+    );
+
+    expect(result.session.diagnostics[0]).toMatchObject({
+      fullGridScan: true,
+      scanMode: 'scroll',
+      scanSteps: 4,
+      uniqueTickers: 3,
+      duplicateRows: 1
+    });
+    expect(runtime.calls).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('log:Tick 1: marketState=OPEN, scanMode=scroll, uniqueTickers=3, duplicateRows=1, scanSteps=4, fullGridScan=yes')
+      ])
+    );
+  });
+
   it('allows medium confidence rows when explicitly configured', async () => {
     const runtime = createFakeRuntime();
     const result = await runManualATradRecordSession(
@@ -388,6 +431,7 @@ function createFakeRuntime(options: {
   includePlaceholderRow?: boolean;
   marketText?: string;
   rows?: Array<Record<string, string>>;
+  fullGridScan?: FullGridScanPayload;
 } = {}): ManualATradRecordSessionRuntime & {
   calls: string[];
   writes: Array<{ path: string; contents: string }>;
@@ -414,7 +458,8 @@ function createFakeRuntime(options: {
                 () => { extractionAttempt += 1; },
                 options.includePlaceholderRow === true,
                 options.marketText,
-                options.rows
+                options.rows,
+                options.fullGridScan
               )
             ];
           },
@@ -427,7 +472,8 @@ function createFakeRuntime(options: {
               () => { extractionAttempt += 1; },
               options.includePlaceholderRow === true,
               options.marketText,
-              options.rows
+              options.rows,
+              options.fullGridScan
             );
           }
         },
@@ -467,7 +513,8 @@ function createFakePage(
   incrementExtractionAttempt: () => void,
   includePlaceholderRow: boolean,
   marketText = 'Market: Open',
-  rows?: Array<Record<string, string>>
+  rows?: Array<Record<string, string>>,
+  fullGridScan?: FullGridScanPayload
 ) {
   const headers = Object.keys(highConfidenceRow);
   const asRowCells = (row: Record<string, string>) => headers.map((header) => row[header] ?? '');
@@ -499,6 +546,19 @@ function createFakePage(
 
       if (pageFunction.includes('innerText || document.body.textContent')) {
         return `${marketText} Market Watch Full Watch Equity Security Bid Ask Last Volume`;
+      }
+
+      if (pageFunction.includes('storeDiagnostics') && pageFunction.includes('scanMode')) {
+        return (
+          fullGridScan ?? {
+            scanMode: 'visible',
+            scanSteps: 0,
+            dojoGridCount: 0,
+            storeDiagnostics: [],
+            rows: visibleRows.map(asRowCells),
+            headerCells: headers
+          }
+        );
       }
 
       if (pageFunction.includes('const allowedHeaders =')) {
@@ -561,4 +621,23 @@ function createFakePage(
       };
     }
   };
+}
+
+interface FullGridScanPayload {
+  scanMode: 'store' | 'scroll' | 'visible';
+  scanSteps: number;
+  rows: string[][];
+  headerCells: string[];
+  dojoGridCount: number;
+  storeDiagnostics: Array<{
+    gridIndex: number;
+    widgetId?: string;
+    className: string;
+    visibleDomRows: number;
+    storeRowCount?: number;
+    modelRowCount?: number;
+    storeKeys: string[];
+    modelKeys: string[];
+    storeHasMoreRowsThanVisible: boolean;
+  }>;
 }

@@ -13,6 +13,7 @@ import {
 import {
   collectPageDiagnostics,
   debugMarketWatchRows,
+  extractFullGridMarketWatchRows,
   extractVisibleMarketWatchRows,
   formatObserveOnceSummary,
   partitionATradSnapshotsByConfidence,
@@ -28,6 +29,7 @@ export interface ManualATradLoginAndObserveConfig {
   storageStatePath: string;
   diagnose: boolean;
   debugRows: boolean;
+  fullGridScan: boolean;
   headless: false;
   readonlyMode: true;
 }
@@ -58,6 +60,7 @@ export function createManualATradLoginAndObserveConfig(
     storageStatePath: ATRAD_STORAGE_STATE_PATH,
     diagnose: args.includes('--diagnose'),
     debugRows: args.includes('--debug-rows'),
+    fullGridScan: args.includes('--full-grid-scan'),
     headless: false,
     readonlyMode: true
   };
@@ -113,7 +116,7 @@ export async function runManualATradLoginAndObserve(
       ? await runDiagnostics(observationPage)
       : config.debugRows
         ? await debugMarketWatchRows(observationPage, runtime.now())
-        : await runExtraction(observationPage, runtime.now());
+        : await runExtraction(observationPage, runtime.now(), config.fullGridScan);
 
     for (const line of formatObserveOnceSummary(result)) {
       runtime.log(line);
@@ -162,9 +165,11 @@ async function runDiagnostics(
 
 async function runExtraction(
   page: ManualATradPageLike,
-  timestamp: number
+  timestamp: number,
+  fullGridScan: boolean
 ): Promise<ManualATradObserveOnceResult> {
-  const rawRows = await extractVisibleMarketWatchRows(page);
+  const scan = fullGridScan ? await extractFullGridMarketWatchRows(page) : undefined;
+  const rawRows = scan?.rows ?? await extractVisibleMarketWatchRows(page);
   const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
   const partition = partitionATradSnapshotsByConfidence(
     sanitized.rowResults,
@@ -174,6 +179,7 @@ async function runExtraction(
     ok: true,
     message: 'ATrad same-session read-only snapshot completed.',
     rawRows,
+    fullGridScan: scan?.diagnostics,
     ...sanitized,
     ...partition
   };

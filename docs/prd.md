@@ -181,6 +181,18 @@ The CSE public API probe now applies endpoint-specific normalization when compar
 
 This remains research-only comparison logic. It does not replace ATrad, does not feed public-site data into the Sentinel pipeline, does not send alerts, does not write Supabase records, does not place orders, and does not enable auto-trading.
 
+## Phase 25 CSE-vs-ATrad Cross-Check Report
+
+The CSE public API probe now supports a richer `tradeSummary` cross-check report against a recorded ATrad session. This report classifies each overlapping or missing ticker as `OK`, `WARN`, `CHECK`, `MISSING_IN_CSE`, or `MISSING_IN_ATRAD` based on normalized price, volume, and turnover differences, then highlights the most severe mismatches for operator review.
+
+This is still research-only validation of ATrad parser/data quality against the public CSE website feed. It does not replace ATrad as the primary data source, does not feed public-site data into the Sentinel pipeline, does not send alerts, does not write Supabase records, does not place orders, and does not enable auto-trading.
+
+## Phase 26 ATrad Full Watch Virtual-Grid Coverage
+
+ATrad Full Watch extraction now has an optional full-grid scan mode for virtualized Dojo watch grids. When enabled with `--full-grid-scan`, the read-only extractor first inspects Dojo grid widgets and backing store/model metadata to see whether more rows are available than the visible DOM renders. If store-backed rows are available, it extracts from that data before falling back to bounded read-only scroll scanning.
+
+The scroll fallback only reads the market watch grid/page, merges visible rows across bounded scroll steps, deduplicates by ticker, and restores the scroll position when practical. Recorder diagnostics report scan mode, unique ticker count, duplicate row count, and scan steps when full-grid scanning is enabled. This remains read-only extraction only: no credential automation, order controls, Telegram/Supabase integration, live Sentinel pipeline wiring, order placement, or auto-trading.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

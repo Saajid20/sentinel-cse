@@ -11,10 +11,12 @@ import {
   collectVisibleATradPageText,
   collectPageDiagnostics,
   detectATradMarketStateFromVisibleText,
+  extractFullGridMarketWatchRows,
   extractVisibleMarketWatchRows,
   partitionATradSnapshotsByConfidence,
   sanitizeMarketWatchRows,
   type ATradMarketState,
+  type ATradFullGridScanDiagnostics,
   type ATradParsedRowQualityAssessment,
   type ATradParsedRowQualityStatus,
   type ManualATradPageLike,
@@ -37,6 +39,7 @@ export interface ManualATradRecordSessionConfig {
   outputPath: string;
   allowMediumConfidence: boolean;
   includeQuarantined: boolean;
+  fullGridScan: boolean;
   readinessRetries: number;
   readinessWaitSeconds: number;
   maxTicks?: number;
@@ -62,6 +65,11 @@ export interface ATradSessionTickDiagnostic {
   placeholderRows: number;
   inactiveRows: number;
   zeroVolumeRows: number;
+  fullGridScan?: boolean;
+  scanMode?: ATradFullGridScanDiagnostics['scanMode'];
+  scanSteps?: number;
+  uniqueTickers?: number;
+  duplicateRows?: number;
 }
 
 export interface QuarantinedATradSnapshotDiagnostic {
@@ -130,6 +138,7 @@ interface ATradRecordingTickCapture {
   placeholderRows: number;
   inactiveRows: number;
   zeroVolumeRows: number;
+  scanDiagnostics?: ATradFullGridScanDiagnostics;
   usablePolicy: ATradRecordedSession['confidencePolicy'];
   qualityAssessments: ATradParsedRowQualityAssessment[];
 }
@@ -152,6 +161,7 @@ export function createManualATradRecordSessionConfig(
     outputPath: buildATradRecordSessionOutputPath(now, outputArg),
     allowMediumConfidence: args.includes('--allow-medium-confidence'),
     includeQuarantined: args.includes('--include-quarantined'),
+    fullGridScan: args.includes('--full-grid-scan'),
     readinessRetries: parseNonNegativeIntegerFlag(
       args,
       '--readiness-retries',
@@ -198,6 +208,7 @@ export function formatManualATradRecordSessionInstructions(
     `Interval: ${config.intervalSeconds}s`,
     `Duration: ${config.durationSeconds}s`,
     `Readiness retries: ${config.readinessRetries}`,
+    `Full grid scan: ${config.fullGridScan ? 'yes' : 'no'}`,
     `Confidence policy: ${config.allowMediumConfidence ? 'HIGH_CONFIDENCE + MEDIUM_CONFIDENCE' : 'HIGH_CONFIDENCE only'}`
   ];
 }
@@ -227,11 +238,12 @@ export async function checkATradRecordingReadiness(
 export async function captureATradRecordingTick(
   page: ManualATradPageLike,
   timestamp: number,
-  options: { allowMediumConfidence?: boolean } = {}
+  options: { allowMediumConfidence?: boolean; fullGridScan?: boolean } = {}
 ): Promise<ATradRecordingTickCapture> {
   const visibleText = await collectVisibleATradPageText(page);
   const visibleTextMarketState = detectATradMarketStateFromVisibleText(visibleText);
-  const rawRows = await extractVisibleMarketWatchRows(page);
+  const scan = options.fullGridScan ? await extractFullGridMarketWatchRows(page) : undefined;
+  const rawRows = scan?.rows ?? await extractVisibleMarketWatchRows(page);
   const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
   const partition = partitionATradSnapshotsByConfidence(
     sanitized.rowResults,
@@ -273,6 +285,7 @@ export async function captureATradRecordingTick(
     zeroVolumeRows: sanitized.qualityAssessments.filter((assessment) =>
       assessment.issues.some((issue) => issue.code === 'ZERO_VOLUME_PLACEHOLDER')
     ).length,
+    scanDiagnostics: scan?.diagnostics,
     usablePolicy: partition.usablePolicy,
     qualityAssessments: sanitized.qualityAssessments
   };
@@ -374,7 +387,8 @@ export async function runManualATradRecordSession(
       tickNumber += 1;
       const activePage = getActivePage(resource.session, initialPage);
       const capture = await captureATradRecordingTick(activePage, now, {
-        allowMediumConfidence: config.allowMediumConfidence
+        allowMediumConfidence: config.allowMediumConfidence,
+        fullGridScan: config.fullGridScan
       });
 
       session.totals.ticksAttempted += 1;
@@ -395,7 +409,16 @@ export async function runManualATradRecordSession(
         rejectedSnapshots: capture.rejectedRows.length,
         placeholderRows: capture.placeholderRows,
         inactiveRows: capture.inactiveRows,
-        zeroVolumeRows: capture.zeroVolumeRows
+        zeroVolumeRows: capture.zeroVolumeRows,
+        ...(capture.scanDiagnostics
+          ? {
+              fullGridScan: true,
+              scanMode: capture.scanDiagnostics.scanMode,
+              scanSteps: capture.scanDiagnostics.scanSteps,
+              uniqueTickers: capture.scanDiagnostics.uniqueTickers,
+              duplicateRows: capture.scanDiagnostics.duplicateRows
+            }
+          : {})
       });
 
       if (config.includeQuarantined && session.quarantinedRows) {
@@ -412,8 +435,11 @@ export async function runManualATradRecordSession(
         });
       }
 
+      const scanLog = capture.scanDiagnostics
+        ? `, scanMode=${capture.scanDiagnostics.scanMode}, uniqueTickers=${capture.scanDiagnostics.uniqueTickers}, duplicateRows=${capture.scanDiagnostics.duplicateRows}, scanSteps=${capture.scanDiagnostics.scanSteps}, fullGridScan=yes`
+        : '';
       runtime.log(
-        `Tick ${tickNumber}: marketState=${capture.marketState}, usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}, placeholders=${capture.placeholderRows}`
+        `Tick ${tickNumber}: marketState=${capture.marketState}${scanLog}, usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}, placeholders=${capture.placeholderRows}`
       );
 
       if (config.maxTicks !== undefined && tickNumber >= config.maxTicks) {

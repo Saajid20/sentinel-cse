@@ -36,9 +36,16 @@ describe('manual ATrad login-and-observe script helpers', () => {
       storageStatePath: ATRAD_STORAGE_STATE_PATH,
       diagnose: true,
       debugRows: true,
+      fullGridScan: false,
       headless: false,
       readonlyMode: true
     });
+  });
+
+  it('parses full-grid scan mode', () => {
+    const config = createManualATradLoginAndObserveConfig(['--full-grid-scan']);
+
+    expect(config.fullGridScan).toBe(true);
   });
 
   it('prints manual same-session instructions', () => {
@@ -208,6 +215,17 @@ function createFakePage({
 
       if (pageFunction.includes("querySelectorAll('iframe').length")) {
         return 0;
+      }
+
+      if (pageFunction.includes('storeDiagnostics') && pageFunction.includes('scanMode')) {
+        return {
+          scanMode: 'visible',
+          scanSteps: 0,
+          dojoGridCount: 0,
+          storeDiagnostics: [],
+          rows: [Object.values(fakeMarketWatchRow)],
+          headerCells: Object.keys(fakeMarketWatchRow)
+        };
       }
 
       if ((mode === 'observe' || mode === 'debug') && pageFunction.includes('const allowedHeaders =')) {
