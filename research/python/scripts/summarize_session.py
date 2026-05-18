@@ -5,6 +5,7 @@ import csv
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -200,23 +201,23 @@ def format_terminal_summary(summary: SessionSummary) -> str:
         f"source: {summary.source}",
         f"mode: {summary.mode}",
         f"ticks attempted: {format_optional(summary.ticks_attempted)}",
-        f"total snapshots: {summary.total_snapshots}",
-        f"unique tickers: {summary.unique_tickers}",
+        f"total snapshots: {format_optional(summary.total_snapshots)}",
+        f"unique tickers: {format_optional(summary.unique_tickers)}",
         f"usable/quarantined/rejected: {format_optional(summary.usable_snapshots)}/{format_optional(summary.quarantined_snapshots)}/{format_optional(summary.rejected_snapshots)}",
         "market states:",
-        *[f"- {state}: {summary.market_state_counts[state]}" for state in MARKET_STATES],
+        *[f"- {state}: {format_optional(summary.market_state_counts[state])}" for state in MARKET_STATES],
         "top tickers:",
     ]
-    lines.extend(f"- {ticker}: {count}" for ticker, count in summary.top_tickers)
+    lines.extend(f"- {ticker}: {format_optional(count)}" for ticker, count in summary.top_tickers)
     if not summary.top_tickers:
         lines.append("- none")
 
     lines.append("per-ticker details:")
     for item in summary.ticker_summaries:
         lines.append(
-            f"- {item.ticker}: snapshots={item.snapshot_count}, avgSpread={format_percent(item.average_spread_percent)}, "
-            f"latestLast={format_optional_number(item.latest_last_price)}, latestBidAsk={format_optional_number(item.latest_best_bid)}/{format_optional_number(item.latest_best_ask)}, "
-            f"volume min/max/latest={format_optional_number(item.volume_min)}/{format_optional_number(item.volume_max)}/{format_optional_number(item.volume_latest)}"
+            f"- {item.ticker}: snapshots={format_optional(item.snapshot_count)}, avgSpread={format_percent(item.average_spread_percent)}, "
+            f"latestLast={format_price(item.latest_last_price)}, latestBidAsk={format_price(item.latest_best_bid)}/{format_price(item.latest_best_ask)}, "
+            f"volume min/max/latest={format_count_like(item.volume_min)}/{format_count_like(item.volume_max)}/{format_count_like(item.volume_latest)}"
         )
     if not summary.ticker_summaries:
         lines.append("- none")
@@ -233,15 +234,15 @@ def write_markdown(summary: SessionSummary, path: str | Path) -> None:
         f"- source: `{summary.source}`",
         f"- mode: `{summary.mode}`",
         f"- ticks attempted: `{format_optional(summary.ticks_attempted)}`",
-        f"- total snapshots: `{summary.total_snapshots}`",
-        f"- unique tickers: `{summary.unique_tickers}`",
+        f"- total snapshots: `{format_optional(summary.total_snapshots)}`",
+        f"- unique tickers: `{format_optional(summary.unique_tickers)}`",
         f"- usable/quarantined/rejected: `{format_optional(summary.usable_snapshots)}/{format_optional(summary.quarantined_snapshots)}/{format_optional(summary.rejected_snapshots)}`",
         "",
         "## Market States",
         "",
         "| State | Ticks |",
         "|---|---:|",
-        *[f"| {state} | {summary.market_state_counts[state]} |" for state in MARKET_STATES],
+        *[f"| {state} | {format_optional(summary.market_state_counts[state])} |" for state in MARKET_STATES],
         "",
         "## Tickers",
         "",
@@ -289,10 +290,10 @@ def write_csv(summary: SessionSummary, path: str | Path) -> None:
 
 def markdown_ticker_row(item: TickerSummary) -> str:
     return (
-        f"| {item.ticker} | {item.snapshot_count} | {format_optional_number(item.average_spread_percent)} | "
-        f"{format_optional_number(item.latest_last_price)} | {format_optional_number(item.latest_best_bid)} | "
-        f"{format_optional_number(item.latest_best_ask)} | {format_optional_number(item.volume_min)} | "
-        f"{format_optional_number(item.volume_max)} | {format_optional_number(item.volume_latest)} |"
+        f"| {item.ticker} | {format_optional(item.snapshot_count)} | {format_percent_value(item.average_spread_percent)} | "
+        f"{format_price(item.latest_last_price)} | {format_price(item.latest_best_bid)} | "
+        f"{format_price(item.latest_best_ask)} | {format_count_like(item.volume_min)} | "
+        f"{format_count_like(item.volume_max)} | {format_count_like(item.volume_latest)} |"
     )
 
 
@@ -300,12 +301,59 @@ def format_percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
 
 
+def format_percent_value(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
 def format_optional(value: int | None) -> str:
-    return "n/a" if value is None else str(value)
+    return "n/a" if value is None else f"{value:,}"
+
+
+def format_price(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    decimal_value = Decimal(str(value))
+    if decimal_value == decimal_value.quantize(Decimal("0.01")):
+        return format_decimal(decimal_value, grouping=True)
+    return format_decimal(decimal_value.normalize(), grouping=True)
+
+
+def format_count_like(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    decimal_value = Decimal(str(value))
+    if decimal_value == decimal_value.quantize(Decimal("1")):
+        return format_decimal(decimal_value.quantize(Decimal("1")), grouping=True)
+    return format_decimal(decimal_value.quantize(Decimal("0.0001")).normalize(), grouping=True)
+
+
+def format_number(value: float, max_decimals: int, grouping: bool) -> str:
+    prefix = "," if grouping else ""
+    formatted = format(value, f"{prefix}.{max_decimals}f")
+    if "." not in formatted:
+        return formatted
+    trimmed = formatted.rstrip("0").rstrip(".")
+    return "0" if trimmed in {"", "-0"} else trimmed
+
+
+def format_decimal(value: Decimal, grouping: bool) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if text in {"", "-0"}:
+        return "0"
+    sign = ""
+    if text.startswith("-"):
+        sign = "-"
+        text = text[1:]
+    integer_part, _, fractional_part = text.partition(".")
+    if grouping:
+        integer_part = f"{int(integer_part):,}"
+    return f"{sign}{integer_part}.{fractional_part}" if fractional_part else f"{sign}{integer_part}"
 
 
 def format_optional_number(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.4g}"
+    return "n/a" if value is None else format_number(value, max_decimals=6, grouping=False)
 
 
 def parse_args() -> argparse.Namespace:

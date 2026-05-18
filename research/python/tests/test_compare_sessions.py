@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = PYTHON_ROOT / "scripts"
 SAMPLE_PATH = PYTHON_ROOT / "sample_data" / "sample_session.json"
+TEST_TMP_ROOT = PYTHON_ROOT / ".tmp-test-output"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from compare_sessions import (  # noqa: E402
@@ -36,50 +39,73 @@ def write_variant_session(tmp_path: Path) -> Path:
     return path
 
 
-def test_compares_two_sample_sessions(tmp_path: Path) -> None:
-    variant = write_variant_session(tmp_path)
-
-    compared = compare_sessions([str(SAMPLE_PATH), str(variant)], top=3)
-
-    assert [item.summary.session_id for item in compared] == [
-        "sample-atrad-session-20260508-101500",
-        "sample-atrad-session-variant",
-    ]
-    assert compared[0].summary.total_snapshots == 5
-    assert compared[1].summary.total_snapshots == 3
-    assert compared[0].tickers_with_repeated_observations == 1
-    assert compared[1].duration_seconds == 120
+def make_temp_dir() -> Path:
+    TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    path = TEST_TMP_ROOT / uuid4().hex
+    path.mkdir()
+    return path
 
 
-def test_compare_average_spread_and_quality_notes(tmp_path: Path) -> None:
-    variant = write_variant_session(tmp_path)
+def test_compares_two_sample_sessions() -> None:
+    directory = make_temp_dir()
+    try:
+        variant = write_variant_session(directory)
 
-    compared = compare_sessions([str(variant)], top=3)
+        compared = compare_sessions([str(SAMPLE_PATH), str(variant)], top=3)
 
-    assert compared[0].average_spread_percent == pytest.approx(0.440519, abs=0.000001)
-    assert compared[0].data_quality_notes == ["basic quality checks passed"]
-
-
-def test_compare_writes_markdown_output(tmp_path: Path) -> None:
-    output = tmp_path / "compare.md"
-    compared = compare_sessions([str(SAMPLE_PATH)])
-
-    write_markdown(compared, output)
-
-    text = output.read_text(encoding="utf-8")
-    assert "# Sentinel-CSE Session Comparison" in text
-    assert "sample-atrad-session-20260508-101500" in text
+        assert [item.summary.session_id for item in compared] == [
+            "sample-atrad-session-20260508-101500",
+            "sample-atrad-session-variant",
+        ]
+        assert compared[0].summary.total_snapshots == 5
+        assert compared[1].summary.total_snapshots == 3
+        assert compared[0].tickers_with_repeated_observations == 1
+        assert compared[1].duration_seconds == 120
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
-def test_compare_writes_csv_output(tmp_path: Path) -> None:
-    output = tmp_path / "compare.csv"
-    compared = compare_sessions([str(SAMPLE_PATH)])
+def test_compare_average_spread_and_quality_notes() -> None:
+    directory = make_temp_dir()
+    try:
+        variant = write_variant_session(directory)
 
-    write_csv(compared, output)
+        compared = compare_sessions([str(variant)], top=3)
 
-    rows = list(csv.DictReader(output.open(encoding="utf-8", newline="")))
-    assert rows[0]["session_id"] == "sample-atrad-session-20260508-101500"
-    assert rows[0]["open_ticks"] == "2"
+        assert compared[0].average_spread_percent == pytest.approx(0.440519, abs=0.000001)
+        assert compared[0].data_quality_notes == ["basic quality checks passed"]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_compare_writes_markdown_output() -> None:
+    directory = make_temp_dir()
+    try:
+        output = directory / "compare.md"
+        compared = compare_sessions([str(SAMPLE_PATH)])
+
+        write_markdown(compared, output)
+
+        text = output.read_text(encoding="utf-8")
+        assert "# Sentinel-CSE Session Comparison" in text
+        assert "sample-atrad-session-20260508-101500" in text
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_compare_writes_csv_output() -> None:
+    directory = make_temp_dir()
+    try:
+        output = directory / "compare.csv"
+        compared = compare_sessions([str(SAMPLE_PATH)])
+
+        write_csv(compared, output)
+
+        rows = list(csv.DictReader(output.open(encoding="utf-8", newline="")))
+        assert rows[0]["session_id"] == "sample-atrad-session-20260508-101500"
+        assert rows[0]["open_ticks"] == "2"
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def test_collect_inputs_supports_repeatable_and_comma_separated_values() -> None:
@@ -100,10 +126,14 @@ def test_duration_handles_invalid_or_reversed_dates() -> None:
     assert duration_seconds("2026-05-08T10:17:00.000Z", "2026-05-08T10:15:00.000Z") == 0
 
 
-def test_compare_uses_sample_or_temp_files_only(tmp_path: Path) -> None:
-    variant = write_variant_session(tmp_path)
-    compared = compare_sessions([str(variant)])
-    normalized = str(variant).replace("\\", "/")
+def test_compare_uses_sample_or_temp_files_only() -> None:
+    directory = make_temp_dir()
+    try:
+        variant = write_variant_session(directory)
+        compared = compare_sessions([str(variant)])
+        normalized = str(variant).replace("\\", "/")
 
-    assert compared[0].summary.session_id == "sample-atrad-session-variant"
-    assert "/data/live-sessions/" not in normalized
+        assert compared[0].summary.session_id == "sample-atrad-session-variant"
+        assert "/data/live-sessions/" not in normalized
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
