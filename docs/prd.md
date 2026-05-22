@@ -193,6 +193,22 @@ ATrad Full Watch extraction now has an optional full-grid scan mode for virtuali
 
 The scroll fallback only reads the market watch grid/page, merges visible rows across bounded scroll steps, deduplicates by ticker, and restores the scroll position when practical. Recorder diagnostics report scan mode, unique ticker count, duplicate row count, and scan steps when full-grid scanning is enabled. This remains read-only extraction only: no credential automation, order controls, Telegram/Supabase integration, live Sentinel pipeline wiring, order placement, or auto-trading.
 
+## Phase 26.1 ATrad Full-Grid Quality Fallback
+
+Full-grid scan mode now validates store-first extraction before accepting it. Store rows are parsed, deduplicated by ticker, sanitized, and checked for usable rows, rejection ratio, placeholder ratio, and required numeric fields such as Bid Price, Ask Price, Last, and Volume. A large store scan with zero usable rows or mostly missing numeric fields is marked low quality instead of being trusted blindly.
+
+When a store scan is low quality, extraction falls back to the bounded scroll scan captured during the same read-only pass. If scroll rows are unavailable, it falls back to the visible DOM scan. Diagnostics preserve the rejected store scan counts and compact rejection summaries such as `storeScanRejectedReason` and bounded `topRejectReasons`; debug row mode also shows the first few rejected parsed rows. This remains read-only only: no login automation, credentials, order controls, Telegram/Supabase integration, live Sentinel pipeline execution, order placement, or auto-trading.
+
+## Phase 26.2 ATrad Full-Grid Row Reconstruction
+
+Full-grid scan mode now evaluates multiple read-only extraction candidates instead of trusting broad ticker coverage alone. The extractor inspects Dojo grid view row arrays and can reconstruct complete Full Watch rows when ticker/security cells are split from numeric cells across separate Dojo views. Reconstruction merges aligned view rows by row index, merges same-ticker view rows when tickers appear in multiple views, deduplicates by ticker, and preserves the Full Watch parser column order including Security, Company Name, Bid/Ask, Last, Volume, Turnover, Trades, Price Close, Buy Sentiment, and Time.
+
+When reconstructed rows validate successfully, diagnostics use `scanMode=store_reconstructed`. If raw store rows or reconstructed rows are low quality, full-grid scanning tries the bounded scroll fallback before visible-only fallback, using `store_fallback_scroll` or `store_fallback_visible`. Each candidate reports raw rows, unique tickers, accepted/usable estimates, rejection and placeholder ratios, required numeric coverage, and top rejection reasons. Candidate selection prefers usable rows first, then accepted rows, ticker coverage, and lower rejection ratio; it will not choose a broad zero-usable scan just because it has many tickers.
+
+Recorder diagnostics now include `trainingGradeCandidate=yes/no`. This is only a marker, not a recording gate. A tick is not training-grade if the market is not OPEN, usable rows are zero, ticker coverage is below the configured broad-coverage threshold, rejection ratio is too high, or visible-only coverage is very low.
+
+Phase 26.2 remains read-only extraction only: it does not automate username/password or credentials, does not click Orders or Order Management, does not add order-entry selectors, does not place orders, does not connect Telegram or Supabase, does not run the live Sentinel pipeline, and does not weaken strategy thresholds.
+
 ## Telegram Delivery Boundary
 
 Real Telegram delivery is optional and disabled unless an application explicitly wires a real sender. Future runtime configuration may pass `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` into the sender constructor, but the Telegram package must not read environment variables directly. The mock sender remains the default for tests and local paper-trading workflows.

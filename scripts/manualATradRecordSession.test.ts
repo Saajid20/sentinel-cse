@@ -314,6 +314,49 @@ describe('manual ATrad record-session helpers', () => {
     );
   });
 
+  it('logs fallback scan mode and store rejection diagnostics', async () => {
+    const runtime = createFakeRuntime({
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          ['BAD1.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0'],
+          ['BAD2.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0']
+        ],
+        fallbackRows: [
+          Object.values(highConfidenceRow),
+          Object.values(mediumConfidenceRow)
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 2,
+        headerCells: Object.keys(highConfidenceRow)
+      }
+    });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1', '--full-grid-scan'], runtime.now()),
+      runtime
+    );
+
+    expect(result.session.diagnostics[0]).toMatchObject({
+      fullGridScan: true,
+      scanMode: 'store_fallback_scroll',
+      scanSteps: 2,
+      uniqueTickers: 2,
+      storeScanRejectedReason: 'zero usable rows',
+      trainingGradeCandidate: 'no'
+    });
+    expect(result.session.diagnostics[0]?.topRejectReasons?.length).toBeGreaterThan(0);
+    expect(runtime.calls).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('scanMode=store_fallback_scroll'),
+        expect.stringContaining('storeScanRejectedReason=zero usable rows'),
+        expect.stringContaining('topRejectReasons=')
+      ])
+    );
+  });
+
   it('allows medium confidence rows when explicitly configured', async () => {
     const runtime = createFakeRuntime();
     const result = await runManualATradRecordSession(
@@ -414,6 +457,22 @@ describe('manual ATrad record-session helpers', () => {
     expect(runtime.writes[0]?.path).toBe('data/live-sessions/atrad-session-20231114-221320.json');
     expect(runtime.writes[0]?.contents).toContain('"sessionId": "atrad-session-20231114-221405"');
     expect(runtime.writes[0]?.contents).not.toMatch(/cookie|storageState|session=|token|password|otp/i);
+  });
+
+  it('marks recorder diagnostics as training-grade candidates for open usable broad coverage', async () => {
+    const rows = Array.from({ length: 25 }, (_, index) => ({
+      ...highConfidenceRow,
+      Security: `TG${String(index).padStart(2, '0')}.N0000`,
+      'Company Name': `Training Grade ${index} PLC`
+    }));
+    const runtime = createFakeRuntime({ rows });
+    const result = await runManualATradRecordSession(
+      createManualATradRecordSessionConfig(['--max-ticks', '1'], runtime.now()),
+      runtime
+    );
+
+    expect(result.session.diagnostics[0]?.usableSnapshots).toBe(25);
+    expect(result.session.diagnostics[0]?.trainingGradeCandidate).toBe('yes');
   });
 
   it('does not read credentials, environment variables, or include order action strings', () => {
@@ -624,9 +683,14 @@ function createFakePage(
 }
 
 interface FullGridScanPayload {
-  scanMode: 'store' | 'scroll' | 'visible';
+  scanMode: 'store' | 'store_reconstructed' | 'scroll' | 'visible' | 'store_fallback_scroll' | 'store_fallback_visible';
   scanSteps: number;
   rows: string[][];
+  reconstructedRows?: string[][];
+  viewRows?: string[][][];
+  fallbackRows?: string[][];
+  fallbackScanMode?: 'scroll' | 'visible';
+  fallbackScanSteps?: number;
   headerCells: string[];
   dojoGridCount: number;
   storeDiagnostics: Array<{

@@ -168,7 +168,7 @@ async function runExtraction(
   timestamp: number,
   fullGridScan: boolean
 ): Promise<ManualATradObserveOnceResult> {
-  const scan = fullGridScan ? await extractFullGridMarketWatchRows(page) : undefined;
+  const scan = fullGridScan ? await extractFullGridMarketWatchRows(page, timestamp) : undefined;
   const rawRows = scan?.rows ?? await extractVisibleMarketWatchRows(page);
   const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
   const partition = partitionATradSnapshotsByConfidence(

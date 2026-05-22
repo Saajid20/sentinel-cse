@@ -13,6 +13,8 @@ import {
   detectATradMarketStateFromVisibleText,
   extractFullGridMarketWatchRows,
   extractVisibleMarketWatchRows,
+  formatATradRejectReasonCounts,
+  isATradTrainingGradeCandidate,
   partitionATradSnapshotsByConfidence,
   sanitizeMarketWatchRows,
   type ATradMarketState,
@@ -70,6 +72,9 @@ export interface ATradSessionTickDiagnostic {
   scanSteps?: number;
   uniqueTickers?: number;
   duplicateRows?: number;
+  storeScanRejectedReason?: string;
+  topRejectReasons?: Array<{ code: string; count: number }>;
+  trainingGradeCandidate?: 'yes' | 'no';
 }
 
 export interface QuarantinedATradSnapshotDiagnostic {
@@ -139,6 +144,7 @@ interface ATradRecordingTickCapture {
   inactiveRows: number;
   zeroVolumeRows: number;
   scanDiagnostics?: ATradFullGridScanDiagnostics;
+  trainingGradeCandidate: boolean;
   usablePolicy: ATradRecordedSession['confidencePolicy'];
   qualityAssessments: ATradParsedRowQualityAssessment[];
 }
@@ -242,7 +248,7 @@ export async function captureATradRecordingTick(
 ): Promise<ATradRecordingTickCapture> {
   const visibleText = await collectVisibleATradPageText(page);
   const visibleTextMarketState = detectATradMarketStateFromVisibleText(visibleText);
-  const scan = options.fullGridScan ? await extractFullGridMarketWatchRows(page) : undefined;
+  const scan = options.fullGridScan ? await extractFullGridMarketWatchRows(page, timestamp) : undefined;
   const rawRows = scan?.rows ?? await extractVisibleMarketWatchRows(page);
   const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
   const partition = partitionATradSnapshotsByConfidence(
@@ -265,6 +271,17 @@ export async function captureATradRecordingTick(
         ...partition.usableSnapshots,
         ...partition.quarantinedSnapshots
       ];
+  const rejectionRatio = sanitized.rowResults.length > 0
+    ? partition.rejectedSnapshots.length / sanitized.rowResults.length
+    : 1;
+  const uniqueTickers = scan?.diagnostics.uniqueTickers ?? rawRows.length;
+  const trainingGradeCandidate = isATradTrainingGradeCandidate({
+    marketState,
+    usableRows: usableRows.length,
+    uniqueTickers,
+    rejectionRatio,
+    scanMode: scan?.diagnostics.scanMode
+  });
 
   return {
     timestamp,
@@ -286,6 +303,7 @@ export async function captureATradRecordingTick(
       assessment.issues.some((issue) => issue.code === 'ZERO_VOLUME_PLACEHOLDER')
     ).length,
     scanDiagnostics: scan?.diagnostics,
+    trainingGradeCandidate,
     usablePolicy: partition.usablePolicy,
     qualityAssessments: sanitized.qualityAssessments
   };
@@ -410,13 +428,20 @@ export async function runManualATradRecordSession(
         placeholderRows: capture.placeholderRows,
         inactiveRows: capture.inactiveRows,
         zeroVolumeRows: capture.zeroVolumeRows,
+        trainingGradeCandidate: capture.trainingGradeCandidate ? 'yes' : 'no',
         ...(capture.scanDiagnostics
           ? {
               fullGridScan: true,
               scanMode: capture.scanDiagnostics.scanMode,
               scanSteps: capture.scanDiagnostics.scanSteps,
               uniqueTickers: capture.scanDiagnostics.uniqueTickers,
-              duplicateRows: capture.scanDiagnostics.duplicateRows
+              duplicateRows: capture.scanDiagnostics.duplicateRows,
+              ...(capture.scanDiagnostics.storeScanRejectedReason
+                ? { storeScanRejectedReason: capture.scanDiagnostics.storeScanRejectedReason }
+                : {}),
+              ...(capture.scanDiagnostics.topRejectReasons
+                ? { topRejectReasons: capture.scanDiagnostics.topRejectReasons }
+                : {})
             }
           : {})
       });
@@ -436,7 +461,7 @@ export async function runManualATradRecordSession(
       }
 
       const scanLog = capture.scanDiagnostics
-        ? `, scanMode=${capture.scanDiagnostics.scanMode}, uniqueTickers=${capture.scanDiagnostics.uniqueTickers}, duplicateRows=${capture.scanDiagnostics.duplicateRows}, scanSteps=${capture.scanDiagnostics.scanSteps}, fullGridScan=yes`
+        ? `, scanMode=${capture.scanDiagnostics.scanMode}, uniqueTickers=${capture.scanDiagnostics.uniqueTickers}, duplicateRows=${capture.scanDiagnostics.duplicateRows}, scanSteps=${capture.scanDiagnostics.scanSteps}, fullGridScan=yes${capture.scanDiagnostics.storeScanRejectedReason ? `, storeScanRejectedReason=${capture.scanDiagnostics.storeScanRejectedReason}` : ''}${capture.scanDiagnostics.topRejectReasons && capture.scanDiagnostics.topRejectReasons.length > 0 ? `, topRejectReasons=${formatATradRejectReasonCounts(capture.scanDiagnostics.topRejectReasons)}` : ''}`
         : '';
       runtime.log(
         `Tick ${tickNumber}: marketState=${capture.marketState}${scanLog}, usable=${capture.usableRows.length}, quarantined=${capture.quarantinedRows.length}, rejected=${capture.rejectedRows.length}, placeholders=${capture.placeholderRows}`
