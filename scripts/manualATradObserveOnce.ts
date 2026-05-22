@@ -70,9 +70,17 @@ const DIAGNOSTIC_VISIBLE_TEXT_LIMIT = 30;
 const TICKER_PATTERN = /\b[A-Z0-9]{2,12}\.[A-Z]\d{4}\b/;
 const FULL_GRID_SCAN_MAX_STEPS = 12;
 const FULL_GRID_SCAN_STALE_STEP_LIMIT = 2;
+export const ATRAD_TRAINING_GRADE_MIN_UNIQUE_TICKERS = 25;
+export const ATRAD_TRAINING_GRADE_MAX_REJECTION_RATIO = 0.5;
 
 export type MarketWatchRow = Record<string, string>;
-export type ATradFullGridScanMode = 'store' | 'scroll' | 'visible';
+export type ATradFullGridScanMode =
+  | 'store'
+  | 'store_reconstructed'
+  | 'scroll'
+  | 'visible'
+  | 'store_fallback_scroll'
+  | 'store_fallback_visible';
 
 export interface ManualATradObserveOnceConfig {
   baseUrl: string;
@@ -268,6 +276,105 @@ export interface ATradFullGridScanDiagnostics {
   rawRows: number;
   uniqueTickers: number;
   duplicateRows: number;
+  candidateScans?: ATradFullGridScanCandidateDiagnostics[];
+  chosenScanMode?: ATradFullGridScanMode;
+  fallbackReason?: string;
+  storeQuality?: ATradFullGridScanQualityDiagnostics;
+  storeScanRejectedReason?: string;
+  fallbackScanMode?: 'scroll' | 'visible';
+  scrollDiagnostics?: ATradFullGridScrollDiagnostics;
+  topRejectReasons?: ATradRejectReasonCount[];
+}
+
+export interface ATradRejectReasonCount {
+  code: string;
+  count: number;
+}
+
+export interface ATradRejectedFullGridRowDiagnostic {
+  ticker?: string;
+  row: MarketWatchRow;
+  reasons: string[];
+  sanitizerIssueCodes: string[];
+}
+
+export interface ATradFullGridScanQualityDiagnostics {
+  rawRows: number;
+  parsedRows: number;
+  uniqueTickers: number;
+  acceptedRows: number;
+  usableRows: number;
+  rejectedRows: number;
+  placeholderRows: number;
+  rowsWithRequiredNumericFields: number;
+  rejectionRatio: number;
+  placeholderRatio: number;
+  requiredNumericFieldCoverageRatio: number;
+  lowQuality: boolean;
+  rejectedReason?: string;
+  topRejectReasons: ATradRejectReasonCount[];
+  rejectedRowSamples: ATradRejectedFullGridRowDiagnostic[];
+}
+
+export interface ATradFullGridScanCandidateDiagnostics {
+  scanMode: ATradFullGridScanMode;
+  scanSteps: number;
+  rawRows: number;
+  parsedRows: number;
+  uniqueTickers: number;
+  acceptedEstimate: number;
+  usableEstimate: number;
+  rejectedRows: number;
+  rejectionRatio: number;
+  placeholderRatio: number;
+  requiredNumericCoverage: string;
+  requiredNumericCoverageRatio: number;
+  lowQuality: boolean;
+  rejectedReason?: string;
+  topRejectReasons: ATradRejectReasonCount[];
+}
+
+export interface ATradFullGridScrollStepDiagnostic {
+  step: number;
+  scrollTopBefore: number;
+  scrollTopAfter: number;
+  firstTicker?: string;
+  lastTicker?: string;
+  visibleRowCount: number;
+  uniqueTickerCount: number;
+  newTickerCount: number;
+  firstTickerChanged: boolean;
+  lastTickerChanged: boolean;
+  uniqueTickers: number;
+  newTickers: number;
+}
+
+export interface ATradFullGridScrollTargetDiagnostic {
+  label: string;
+  tagName: string;
+  className: string;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  scrollable: boolean;
+  reason: string;
+}
+
+export interface ATradFullGridScrollDiagnostics {
+  logicalGridRoot?: string;
+  logicalGridRootCandidates?: number;
+  penalizedGridRootCandidates?: number;
+  attemptedTargets?: ATradFullGridScrollTargetDiagnostic[];
+  selectedTarget: string;
+  scrollTopBefore: number;
+  scrollTopAfter: number;
+  restoredScrollTop?: number;
+  scrollHeight: number;
+  clientHeight: number;
+  initialVisibleUniqueTickers: number;
+  uniqueTickersByStep: number[];
+  stopReason: string;
+  stepDiagnostics: ATradFullGridScrollStepDiagnostic[];
 }
 
 export interface ATradFullGridScanResult {
@@ -926,6 +1033,39 @@ export function detectATradMarketStateFromVisibleText(visibleText: string): ATra
   return 'UNKNOWN';
 }
 
+export function isATradTrainingGradeCandidate(input: {
+  marketState: ATradMarketState;
+  usableRows: number;
+  uniqueTickers: number;
+  rejectionRatio: number;
+  scanMode?: ATradFullGridScanMode;
+}): boolean {
+  if (input.marketState !== 'OPEN') {
+    return false;
+  }
+
+  if (input.usableRows <= 0) {
+    return false;
+  }
+
+  if (input.uniqueTickers < ATRAD_TRAINING_GRADE_MIN_UNIQUE_TICKERS) {
+    return false;
+  }
+
+  if (input.rejectionRatio > ATRAD_TRAINING_GRADE_MAX_REJECTION_RATIO) {
+    return false;
+  }
+
+  if (
+    input.scanMode === 'visible' &&
+    input.uniqueTickers < ATRAD_TRAINING_GRADE_MIN_UNIQUE_TICKERS
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 export function sanitizeMarketWatchRows(
   rows: MarketWatchRow[],
   timestamp: number,
@@ -1032,6 +1172,409 @@ export function analyzeMarketWatchRows(
   });
 }
 
+export function reconstructDojoGridRowsFromViews(viewRows: string[][][]): string[][] {
+  const nonEmptyViews = viewRows.filter((rows) => rows.length > 0);
+  if (nonEmptyViews.length < 2) {
+    return [];
+  }
+
+  const reconstructed: string[][] = [];
+  const alignedRowCount = findAlignedDojoViewRowCount(nonEmptyViews);
+
+  if (alignedRowCount > 0) {
+    for (let rowIndex = 0; rowIndex < alignedRowCount; rowIndex += 1) {
+      const row = mergeDojoViewRowCells(nonEmptyViews.map((rows) => rows[rowIndex] ?? []));
+      if (row.length > 0 && row.some((cell) => Boolean(extractCseTicker(cell)))) {
+        reconstructed.push(row);
+      }
+    }
+  }
+
+  const rowsByTicker = new Map<string, string[][]>();
+  for (const rows of nonEmptyViews) {
+    for (const row of rows) {
+      const ticker = row.map(extractCseTicker).find(Boolean);
+      if (!ticker) {
+        continue;
+      }
+      rowsByTicker.set(ticker, [...(rowsByTicker.get(ticker) ?? []), row]);
+    }
+  }
+
+  for (const rows of rowsByTicker.values()) {
+    if (rows.length < 2) {
+      continue;
+    }
+    const row = mergeDojoViewRowCells(rows);
+    if (row.length > 0 && row.some((cell) => Boolean(extractCseTicker(cell)))) {
+      reconstructed.push(row);
+    }
+  }
+
+  return dedupeRawFullGridRows(reconstructed);
+}
+
+function findAlignedDojoViewRowCount(viewRows: string[][][]): number {
+  const rowCounts = viewRows.map((rows) => rows.length);
+  const first = rowCounts[0] ?? 0;
+  return first > 0 && rowCounts.every((count) => count === first) ? first : 0;
+}
+
+function mergeDojoViewRowCells(rows: string[][]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    for (const cell of row) {
+      const normalized = normalizeMarketWatchText(cell);
+      if (!normalized) {
+        continue;
+      }
+      const ticker = extractCseTicker(normalized);
+      const key = ticker ? `ticker:${ticker}` : `cell:${normalized}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(ticker ?? normalized);
+    }
+  }
+
+  return merged;
+}
+
+function dedupeRawFullGridRows(rows: string[][]): string[][] {
+  const deduped = new Map<string, string[]>();
+
+  for (const row of rows) {
+    const ticker = row.map(extractCseTicker).find(Boolean);
+    const key = ticker ?? JSON.stringify(row);
+    const existing = deduped.get(key);
+    if (!existing || rawFullGridRowScore(row) >= rawFullGridRowScore(existing)) {
+      deduped.set(key, row);
+    }
+  }
+
+  return Array.from(deduped.values());
+}
+
+function rawFullGridRowScore(row: string[]): number {
+  return row.reduce((score, cell) => {
+    const normalized = normalizeMarketWatchText(cell);
+    if (!normalized) {
+      return score;
+    }
+    return score + (cleanNumericCellValue(normalized) ? 2 : 1);
+  }, 0);
+}
+
+function parseFullGridCandidateRows(
+  rows: string[][],
+  headers: string[]
+): { parsedRows: MarketWatchRow[]; rows: MarketWatchRow[]; duplicateRows: number } {
+  const parsedRows = rows
+    .map((cells) => parseMarketWatchCandidateRow('dojo-grid', headers, cells))
+    .filter((row) =>
+      ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
+        Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
+      )
+    );
+
+  return {
+    parsedRows,
+    rows: dedupeMarketWatchRowsByTicker(parsedRows),
+    duplicateRows: countDuplicateMarketWatchRows(parsedRows)
+  };
+}
+
+function summarizeRejectReasons(
+  assessments: ATradParsedRowQualityAssessment[],
+  limit = 5
+): ATradRejectReasonCount[] {
+  const counts = new Map<string, number>();
+
+  assessments.forEach((assessment) => {
+    const codes = [
+      ...assessment.sanitizerIssueCodes,
+      ...assessment.issues.map((issue) => issue.code)
+    ];
+
+    if (missingRequiredNumericFields(assessment.row).length > 0) {
+      codes.push('MISSING_NUMERIC_FIELDS');
+    }
+
+    for (const code of new Set(codes)) {
+      counts.set(code, (counts.get(code) ?? 0) + 1);
+    }
+  });
+
+  return Array.from(counts.entries())
+    .sort((left, right) => {
+      const countDiff = right[1] - left[1];
+      if (countDiff !== 0) {
+        return countDiff;
+      }
+
+      if (left[0] === 'MISSING_NUMERIC_FIELDS') {
+        return -1;
+      }
+      if (right[0] === 'MISSING_NUMERIC_FIELDS') {
+        return 1;
+      }
+
+      return left[0].localeCompare(right[0]);
+    })
+    .slice(0, limit)
+    .map(([code, count]) => ({ code, count }));
+}
+
+export function formatATradRejectReasonCounts(reasons: ATradRejectReasonCount[]): string {
+  return reasons.map((reason) => `${reason.code}:${reason.count}`).join(', ');
+}
+
+function missingRequiredNumericFields(row: MarketWatchRow): string[] {
+  return ['Bid Price', 'Ask Price', 'Last', 'Volume'].filter(
+    (fieldName) => parseNumericValue(row[fieldName]) === undefined
+  );
+}
+
+function buildRejectedFullGridRowSamples(
+  assessments: ATradParsedRowQualityAssessment[],
+  limit = 3
+): ATradRejectedFullGridRowDiagnostic[] {
+  return assessments
+    .filter((assessment) => assessment.status === 'REJECTED')
+    .slice(0, limit)
+    .map((assessment) => {
+      const missingFields = missingRequiredNumericFields(assessment.row);
+      return {
+        ticker: assessment.ticker,
+        row: assessment.row,
+        sanitizerIssueCodes: assessment.sanitizerIssueCodes,
+        reasons: [
+          ...assessment.sanitizerIssueCodes,
+          ...assessment.issues.map((issue) => issue.code),
+          ...(missingFields.length > 0 ? [`MISSING_NUMERIC_FIELDS:${missingFields.join('|')}`] : [])
+        ]
+      };
+    });
+}
+
+function validateFullGridScanQuality(
+  rawRowCount: number,
+  rows: MarketWatchRow[],
+  timestamp: number
+): ATradFullGridScanQualityDiagnostics {
+  const sanitized = sanitizeMarketWatchRows(rows, timestamp);
+  const partition = partitionATradSnapshotsByConfidence(
+    sanitized.rowResults,
+    sanitized.qualityAssessments
+  );
+  const topRejectReasons = summarizeRejectReasons(sanitized.qualityAssessments);
+  const placeholderRows = sanitized.qualityAssessments.filter((assessment) =>
+    assessment.issues.some((issue) => issue.code === 'PLACEHOLDER_ROW')
+  ).length;
+  const rowsWithRequiredNumericFields = rows.filter(
+    (row) => missingRequiredNumericFields(row).length === 0
+  ).length;
+  const parsedRows = rows.length;
+  const rejectedRows = sanitized.qualityAssessments.filter(
+    (assessment) => assessment.status === 'REJECTED'
+  ).length;
+  const rejectionRatio = parsedRows > 0 ? rejectedRows / parsedRows : 1;
+  const placeholderRatio = parsedRows > 0 ? placeholderRows / parsedRows : 0;
+  const requiredNumericFieldCoverageRatio =
+    parsedRows > 0 ? rowsWithRequiredNumericFields / parsedRows : 0;
+  const lowQualityReason = determineFullGridLowQualityReason({
+    rawRows: rawRowCount,
+    parsedRows,
+    usableRows: partition.usableSnapshots.length,
+    rejectionRatio,
+    placeholderRatio,
+    requiredNumericFieldCoverageRatio
+  });
+
+  return {
+    rawRows: rawRowCount,
+    parsedRows,
+    uniqueTickers: rows.length,
+    acceptedRows: sanitized.accepted.length,
+    usableRows: partition.usableSnapshots.length,
+    rejectedRows,
+    placeholderRows,
+    rowsWithRequiredNumericFields,
+    rejectionRatio,
+    placeholderRatio,
+    requiredNumericFieldCoverageRatio,
+    lowQuality: lowQualityReason !== undefined,
+    rejectedReason: lowQualityReason,
+    topRejectReasons,
+    rejectedRowSamples: buildRejectedFullGridRowSamples(sanitized.qualityAssessments)
+  };
+}
+
+interface ParsedFullGridScanCandidate {
+  scanMode: ATradFullGridScanMode;
+  scanSteps: number;
+  rawRowCount: number;
+  parsedRows: MarketWatchRow[];
+  rows: MarketWatchRow[];
+  duplicateRows: number;
+}
+
+interface EvaluatedFullGridScanCandidate {
+  candidate: ParsedFullGridScanCandidate;
+  quality: ATradFullGridScanQualityDiagnostics;
+  diagnostics: ATradFullGridScanCandidateDiagnostics;
+}
+
+function buildFullGridScanCandidate(
+  scanMode: ATradFullGridScanMode,
+  rawRows: string[][],
+  headers: string[],
+  scanSteps: number
+): ParsedFullGridScanCandidate {
+  const parsed = parseFullGridCandidateRows(rawRows, headers);
+  return {
+    scanMode,
+    scanSteps,
+    rawRowCount: rawRows.length,
+    ...parsed
+  };
+}
+
+function buildVisibleFullGridScanCandidate(
+  rows: MarketWatchRow[],
+  scanMode: ATradFullGridScanMode = 'store_fallback_visible'
+): ParsedFullGridScanCandidate {
+  return {
+    scanMode,
+    scanSteps: 0,
+    rawRowCount: rows.length,
+    parsedRows: rows,
+    rows: dedupeMarketWatchRowsByTicker(rows),
+    duplicateRows: countDuplicateMarketWatchRows(rows)
+  };
+}
+
+function evaluateFullGridScanCandidate(
+  candidate: ParsedFullGridScanCandidate,
+  timestamp: number
+): EvaluatedFullGridScanCandidate {
+  const quality = validateFullGridScanQuality(candidate.rawRowCount, candidate.rows, timestamp);
+  return {
+    candidate,
+    quality,
+    diagnostics: {
+      scanMode: candidate.scanMode,
+      scanSteps: candidate.scanSteps,
+      rawRows: quality.rawRows,
+      parsedRows: quality.parsedRows,
+      uniqueTickers: quality.uniqueTickers,
+      acceptedEstimate: quality.acceptedRows,
+      usableEstimate: quality.usableRows,
+      rejectedRows: quality.rejectedRows,
+      rejectionRatio: quality.rejectionRatio,
+      placeholderRatio: quality.placeholderRatio,
+      requiredNumericCoverage: `${quality.rowsWithRequiredNumericFields}/${quality.parsedRows}`,
+      requiredNumericCoverageRatio: quality.requiredNumericFieldCoverageRatio,
+      lowQuality: quality.lowQuality,
+      rejectedReason: quality.rejectedReason,
+      topRejectReasons: quality.topRejectReasons
+    }
+  };
+}
+
+function selectBestFullGridScanCandidate(
+  candidates: EvaluatedFullGridScanCandidate[]
+): EvaluatedFullGridScanCandidate {
+  const nonLowQuality = candidates.filter((candidate) => !candidate.quality.lowQuality);
+  if (nonLowQuality.length > 0) {
+    return [...nonLowQuality].sort(compareFullGridScanCandidates)[0] as EvaluatedFullGridScanCandidate;
+  }
+
+  const fallbackCandidates = candidates.filter((candidate) =>
+    candidate.candidate.scanMode === 'store_fallback_scroll' ||
+    candidate.candidate.scanMode === 'store_fallback_visible' ||
+    candidate.candidate.scanMode === 'scroll' ||
+    candidate.candidate.scanMode === 'visible'
+  );
+  if (fallbackCandidates.length > 0) {
+    return [...fallbackCandidates].sort(compareFullGridScanCandidates)[0] as EvaluatedFullGridScanCandidate;
+  }
+
+  return [...candidates].sort(compareFullGridScanCandidates)[0] as EvaluatedFullGridScanCandidate;
+}
+
+function compareFullGridScanCandidates(
+  left: EvaluatedFullGridScanCandidate,
+  right: EvaluatedFullGridScanCandidate
+): number {
+  const usableDiff = right.quality.usableRows - left.quality.usableRows;
+  if (usableDiff !== 0) {
+    return usableDiff;
+  }
+
+  const acceptedDiff = right.quality.acceptedRows - left.quality.acceptedRows;
+  if (acceptedDiff !== 0) {
+    return acceptedDiff;
+  }
+
+  const uniqueDiff = right.quality.uniqueTickers - left.quality.uniqueTickers;
+  if (uniqueDiff !== 0) {
+    return uniqueDiff;
+  }
+
+  return left.quality.rejectionRatio - right.quality.rejectionRatio;
+}
+
+function buildFullGridFallbackReason(
+  selected: EvaluatedFullGridScanCandidate,
+  candidates: EvaluatedFullGridScanCandidate[]
+): string | undefined {
+  if (selected.candidate.scanMode === 'store' || selected.candidate.scanMode === 'store_reconstructed') {
+    return undefined;
+  }
+
+  const storeReason = candidates.find((candidate) => candidate.candidate.scanMode === 'store')
+    ?.quality.rejectedReason;
+  const reconstructedReason = candidates.find((candidate) => candidate.candidate.scanMode === 'store_reconstructed')
+    ?.quality.rejectedReason;
+
+  return storeReason
+    ? `store scan rejected: ${storeReason}`
+    : reconstructedReason
+      ? `reconstructed scan rejected: ${reconstructedReason}`
+      : 'selected fallback scan by quality';
+}
+
+function determineFullGridLowQualityReason(input: {
+  rawRows: number;
+  parsedRows: number;
+  usableRows: number;
+  rejectionRatio: number;
+  placeholderRatio: number;
+  requiredNumericFieldCoverageRatio: number;
+}): string | undefined {
+  if (input.rawRows > 0 && input.usableRows === 0) {
+    return 'zero usable rows';
+  }
+
+  if (input.parsedRows >= 10 && input.rejectionRatio >= 0.9) {
+    return `high rejection ratio ${(input.rejectionRatio * 100).toFixed(0)}%`;
+  }
+
+  if (input.parsedRows >= 10 && input.requiredNumericFieldCoverageRatio < 0.25) {
+    return 'missing required numeric fields for most rows';
+  }
+
+  if (input.parsedRows >= 10 && input.placeholderRatio > 0.5) {
+    return `high placeholder ratio ${(input.placeholderRatio * 100).toFixed(0)}%`;
+  }
+
+  return undefined;
+}
+
 function parseMarketWatchCandidateRow(
   kind: 'table' | 'dojo-grid',
   headers: string[],
@@ -1117,9 +1660,10 @@ export async function runManualATradObserveOnce(
       return result;
     }
 
-    const scan = config.fullGridScan ? await extractFullGridMarketWatchRows(page) : undefined;
+    const timestamp = runtime.now();
+    const scan = config.fullGridScan ? await extractFullGridMarketWatchRows(page, timestamp) : undefined;
     const rawRows = scan?.rows ?? await extractVisibleMarketWatchRows(page);
-    const sanitized = sanitizeMarketWatchRows(rawRows, runtime.now());
+    const sanitized = sanitizeMarketWatchRows(rawRows, timestamp);
     const partition = partitionATradSnapshotsByConfidence(
       sanitized.rowResults,
       sanitized.qualityAssessments,
@@ -1168,7 +1712,8 @@ export async function extractVisibleMarketWatchRows(page: ManualATradPageLike): 
 }
 
 export async function extractFullGridMarketWatchRows(
-  page: ManualATradPageLike
+  page: ManualATradPageLike,
+  timestamp: number = Date.now()
 ): Promise<ATradFullGridScanResult> {
   assertATradReadOnlySafety('read Full Watch grid rows using store-first scan');
 
@@ -1176,31 +1721,104 @@ export async function extractFullGridMarketWatchRows(
     scanMode: ATradFullGridScanMode;
     scanSteps: number;
     rows: string[][];
+    reconstructedRows?: string[][];
+    viewRows?: string[][][];
     headerCells: string[];
     dojoGridCount: number;
     storeDiagnostics: ATradDojoStoreDiagnostic[];
+    fallbackRows?: string[][];
+    fallbackScanMode?: 'scroll' | 'visible';
+    fallbackScanSteps?: number;
+    scrollDiagnostics?: ATradFullGridScrollDiagnostics;
   }>(BROWSER_SAFE_FULL_GRID_SCAN_EVALUATION);
 
-  const parsedRows = rawScan.rows
-    .map((cells) => parseMarketWatchCandidateRow('dojo-grid', rawScan.headerCells, cells))
-    .filter((row) =>
-      ['Security', 'Company Name', 'Last', 'Volume'].some((header) =>
-        Object.prototype.hasOwnProperty.call(row, header) && String(row[header]).length > 0
+  const candidates: ParsedFullGridScanCandidate[] = [];
+  candidates.push(buildFullGridScanCandidate(rawScan.scanMode, rawScan.rows, rawScan.headerCells, rawScan.scanSteps));
+
+  const reconstructedRows = rawScan.reconstructedRows && rawScan.reconstructedRows.length > 0
+    ? rawScan.reconstructedRows
+    : reconstructDojoGridRowsFromViews(rawScan.viewRows ?? []);
+  if (reconstructedRows.length > 0) {
+    candidates.push(
+      buildFullGridScanCandidate('store_reconstructed', reconstructedRows, rawScan.headerCells, 0)
+    );
+  }
+
+  const browserFallbackRows = rawScan.fallbackRows ?? [];
+  let fallbackScanMode: 'scroll' | 'visible' | undefined = rawScan.fallbackScanMode;
+  const scrollExpandedCoverage =
+    fallbackScanMode === 'scroll' &&
+    browserFallbackRows.length > (rawScan.scrollDiagnostics?.initialVisibleUniqueTickers ?? 0);
+  if (browserFallbackRows.length > 0 && (fallbackScanMode !== 'scroll' || scrollExpandedCoverage)) {
+    fallbackScanMode = rawScan.fallbackScanMode ?? 'visible';
+    candidates.push(
+      buildFullGridScanCandidate(
+        fallbackScanMode === 'scroll' ? 'store_fallback_scroll' : 'store_fallback_visible',
+        browserFallbackRows,
+        rawScan.headerCells,
+        rawScan.fallbackScanSteps ?? rawScan.scanSteps
       )
     );
-  const rows = dedupeMarketWatchRowsByTicker(parsedRows);
+  }
+
+  let evaluated = candidates.map((candidate) => evaluateFullGridScanCandidate(candidate, timestamp));
+  const storeCandidatesAreLowQuality = evaluated.some((candidate) =>
+    (candidate.candidate.scanMode === 'store' || candidate.candidate.scanMode === 'store_reconstructed') &&
+    candidate.quality.lowQuality
+  );
+
+  if (
+    storeCandidatesAreLowQuality &&
+    !evaluated.some((candidate) => candidate.candidate.scanMode === 'store_fallback_scroll') &&
+    !evaluated.some((candidate) => candidate.candidate.scanMode === 'store_fallback_visible')
+  ) {
+    const visibleRows = await extractVisibleMarketWatchRows(page);
+    fallbackScanMode = 'visible';
+    evaluated = [
+      ...evaluated,
+      evaluateFullGridScanCandidate(
+        buildVisibleFullGridScanCandidate(visibleRows),
+        timestamp
+      )
+    ];
+  }
+
+  const selected = selectBestFullGridScanCandidate(evaluated);
+  const selectedCandidate = selected.candidate;
+  const storeEvaluation = evaluated.find((candidate) => candidate.candidate.scanMode === 'store');
+  const fallbackReason = buildFullGridFallbackReason(selected, evaluated);
+  const diagnosticTopRejectReasons = selected.quality.topRejectReasons.length > 0
+    ? selected.quality.topRejectReasons
+    : storeEvaluation?.quality.topRejectReasons ?? [];
+
   const diagnostics: ATradFullGridScanDiagnostics = {
     dojoGridCount: rawScan.dojoGridCount,
     storeDiagnostics: rawScan.storeDiagnostics,
-    scanMode: rawScan.scanMode,
-    scanSteps: rawScan.scanSteps,
-    rawRows: parsedRows.length,
-    uniqueTickers: rows.length,
-    duplicateRows: countDuplicateMarketWatchRows(parsedRows)
+    scanMode: selectedCandidate.scanMode,
+    scanSteps: selectedCandidate.scanSteps,
+    rawRows: selectedCandidate.parsedRows.length,
+    uniqueTickers: selectedCandidate.rows.length,
+    duplicateRows: selectedCandidate.duplicateRows,
+    candidateScans: evaluated.map((candidate) => candidate.diagnostics),
+    chosenScanMode: selectedCandidate.scanMode,
+    ...(fallbackReason ? { fallbackReason } : {}),
+    ...(diagnosticTopRejectReasons.length > 0
+      ? { topRejectReasons: diagnosticTopRejectReasons }
+      : {}),
+    ...(storeEvaluation
+      ? {
+          storeQuality: storeEvaluation.quality,
+          ...(storeEvaluation.quality.rejectedReason
+            ? { storeScanRejectedReason: storeEvaluation.quality.rejectedReason }
+            : {})
+        }
+      : {}),
+    ...(rawScan.scrollDiagnostics ? { scrollDiagnostics: rawScan.scrollDiagnostics } : {}),
+    ...(fallbackScanMode ? { fallbackScanMode } : {})
   };
 
   return {
-    rows,
+    rows: selectedCandidate.rows,
     scanMode: diagnostics.scanMode,
     scanSteps: diagnostics.scanSteps,
     rawRows: diagnostics.rawRows,
@@ -1228,7 +1846,25 @@ export function formatObserveOnceSummary(result: ManualATradObserveOnceResult): 
           `Scan mode: ${result.fullGridScan.scanMode}`,
           `Unique tickers: ${result.fullGridScan.uniqueTickers}`,
           `Duplicate rows: ${result.fullGridScan.duplicateRows}`,
-          `Scan steps: ${result.fullGridScan.scanSteps}`
+          `Scan steps: ${result.fullGridScan.scanSteps}`,
+          ...(result.fullGridScan.scrollDiagnostics
+            ? [
+                `Scroll target: ${result.fullGridScan.scrollDiagnostics.selectedTarget}`,
+                `Scroll stop reason: ${result.fullGridScan.scrollDiagnostics.stopReason}`
+              ]
+            : []),
+          ...(result.fullGridScan.candidateScans
+            ? [`Candidate scan modes: ${result.fullGridScan.candidateScans.map((candidate) => candidate.scanMode).join(', ')}`]
+            : []),
+          ...(result.fullGridScan.fallbackReason
+            ? [`fallbackReason=${result.fullGridScan.fallbackReason}`]
+            : []),
+          ...(result.fullGridScan.storeScanRejectedReason
+            ? [`storeScanRejectedReason=${result.fullGridScan.storeScanRejectedReason}`]
+            : []),
+          ...(result.fullGridScan.topRejectReasons && result.fullGridScan.topRejectReasons.length > 0
+            ? [`topRejectReasons=${formatATradRejectReasonCounts(result.fullGridScan.topRejectReasons)}`]
+            : [])
         ]
       : []),
     `Accepted snapshots: ${result.accepted.length}`,
@@ -1267,7 +1903,7 @@ export async function debugMarketWatchRows(
   assertATradReadOnlySafety('inspect read-only market watch row extraction debug');
 
   const extraction = await extractMarketWatchTableCandidates(page);
-  const fullGridScan = await extractFullGridMarketWatchRows(page);
+  const fullGridScan = await extractFullGridMarketWatchRows(page, timestamp);
   const chosen = extraction.candidates[extraction.chosenCandidateIndex];
   const dojoCandidates = extraction.dojoCandidates ?? [];
 
@@ -1817,6 +2453,81 @@ function formatExtractionDebugSummary(debug: MarketWatchExtractionDebug): string
     lines.push(`Unique tickers: ${debug.fullGridDiagnostics.uniqueTickers}`);
     lines.push(`Duplicate rows: ${debug.fullGridDiagnostics.duplicateRows}`);
     lines.push(`Scan steps: ${debug.fullGridDiagnostics.scanSteps}`);
+    if (debug.fullGridDiagnostics.candidateScans && debug.fullGridDiagnostics.candidateScans.length > 0) {
+      lines.push('Candidate scan modes evaluated:');
+      debug.fullGridDiagnostics.candidateScans.forEach((candidate) => {
+        lines.push(
+          `- ${candidate.scanMode}: rawRows=${candidate.rawRows}, uniqueTickers=${candidate.uniqueTickers}, acceptedEstimate=${candidate.acceptedEstimate}, usableEstimate=${candidate.usableEstimate}, rejectionRatio=${candidate.rejectionRatio.toFixed(2)}, placeholderRatio=${candidate.placeholderRatio.toFixed(2)}, requiredNumericCoverage=${candidate.requiredNumericCoverage}, topRejectReasons=${formatATradRejectReasonCounts(candidate.topRejectReasons) || 'none'}`
+        );
+      });
+    }
+    if (debug.fullGridDiagnostics.chosenScanMode) {
+      lines.push(`Chosen scan mode: ${debug.fullGridDiagnostics.chosenScanMode}`);
+    }
+    if (debug.fullGridDiagnostics.fallbackReason) {
+      lines.push(`Fallback reason: ${debug.fullGridDiagnostics.fallbackReason}`);
+    }
+    if (debug.fullGridDiagnostics.storeQuality) {
+      const quality = debug.fullGridDiagnostics.storeQuality;
+      lines.push('Store scan validation:');
+      lines.push(`Store raw rows: ${quality.rawRows}`);
+      lines.push(`Store unique tickers: ${quality.uniqueTickers}`);
+      lines.push(`Store parsed rows: ${quality.parsedRows}`);
+      lines.push(`Store accepted estimate: ${quality.acceptedRows}`);
+      lines.push(`Store usable estimate: ${quality.usableRows}`);
+      lines.push(`Store rejected rows: ${quality.rejectedRows}`);
+      lines.push(`Store required numeric coverage: ${quality.rowsWithRequiredNumericFields}/${quality.parsedRows}`);
+      lines.push(`Store low quality: ${quality.lowQuality ? 'yes' : 'no'}`);
+      if (quality.rejectedReason) {
+        lines.push(`Store scan rejected reason: ${quality.rejectedReason}`);
+      }
+      if (debug.fullGridDiagnostics.fallbackScanMode) {
+        lines.push(`Fallback scan mode: ${debug.fullGridDiagnostics.fallbackScanMode}`);
+      }
+      if (quality.topRejectReasons.length > 0) {
+        lines.push(`Top rejection reasons: ${formatATradRejectReasonCounts(quality.topRejectReasons)}`);
+      }
+      if (quality.rejectedRowSamples.length > 0) {
+        lines.push('First rejected full-grid row samples:');
+        quality.rejectedRowSamples.forEach((sample, index) => {
+          lines.push(`Rejected full-grid row ${index + 1}: ${sample.ticker ?? 'unknown'}`);
+          lines.push(`  Parsed: ${JSON.stringify(sample.row)}`);
+          lines.push(`  Reasons: ${sample.reasons.join(' | ')}`);
+        });
+      }
+    }
+    if (debug.fullGridDiagnostics.scrollDiagnostics) {
+      const scroll = debug.fullGridDiagnostics.scrollDiagnostics;
+      lines.push('Scroll fallback diagnostics:');
+      if (scroll.logicalGridRoot) {
+        lines.push(`Logical grid root: ${scroll.logicalGridRoot}`);
+      }
+      if (scroll.logicalGridRootCandidates !== undefined) {
+        lines.push(
+          `Logical grid root candidates: ${scroll.logicalGridRootCandidates}, penalized=${scroll.penalizedGridRootCandidates ?? 0}`
+        );
+      }
+      if (scroll.attemptedTargets && scroll.attemptedTargets.length > 0) {
+        lines.push('Attempted scroll targets:');
+        scroll.attemptedTargets.forEach((target) => {
+          lines.push(
+            `- ${target.label} [${target.tagName}${target.className ? `.${target.className}` : ''}]: scrollTop=${target.scrollTop}, scrollHeight=${target.scrollHeight}, clientHeight=${target.clientHeight}, scrollable=${target.scrollable ? 'yes' : 'no'}, reason=${target.reason}`
+          );
+        });
+      }
+      lines.push(`Scroll target selected: ${scroll.selectedTarget}`);
+      lines.push(
+        `Scroll metrics: before=${scroll.scrollTopBefore}, after=${scroll.scrollTopAfter}, restored=${scroll.restoredScrollTop ?? 'n/a'}, scrollHeight=${scroll.scrollHeight}, clientHeight=${scroll.clientHeight}`
+      );
+      lines.push(`Initial visible unique tickers: ${scroll.initialVisibleUniqueTickers}`);
+      lines.push(`Unique tickers per step: ${scroll.uniqueTickersByStep.join(', ') || 'none'}`);
+      lines.push(`Scroll stop reason: ${scroll.stopReason}`);
+      scroll.stepDiagnostics.forEach((step) => {
+        lines.push(
+          `Scroll step ${step.step}: before=${step.scrollTopBefore}, after=${step.scrollTopAfter}, firstTicker=${step.firstTicker ?? 'n/a'}, lastTicker=${step.lastTicker ?? 'n/a'}, visibleRows=${step.visibleRowCount}, uniqueTickers=${step.uniqueTickerCount}, newTickers=${step.newTickerCount}, firstChanged=${step.firstTickerChanged ? 'yes' : 'no'}, lastChanged=${step.lastTickerChanged ? 'yes' : 'no'}`
+        );
+      });
+    }
     debug.fullGridDiagnostics.storeDiagnostics.slice(0, 5).forEach((diagnostic) => {
       lines.push(
         `Dojo store ${diagnostic.gridIndex}: visibleRows=${diagnostic.visibleDomRows}, storeRows=${diagnostic.storeRowCount ?? 'n/a'}, modelRows=${diagnostic.modelRowCount ?? 'n/a'}, moreThanVisible=${diagnostic.storeHasMoreRowsThanVisible ? 'yes' : 'no'}`
@@ -2136,6 +2847,66 @@ const BROWSER_SAFE_FULL_GRID_SCAN_EVALUATION = `(async () => {
     return rows;
   }
 
+  function collectDojoViewRows(grid) {
+    const views = Array.from(grid.querySelectorAll('.dojoxGridView, [class*="dojoxGridView"]')).filter(isVisible);
+    return views
+      .map((view) => collectDojoRowsFromGrid(view))
+      .filter((rows) => rows.length > 0);
+  }
+
+  function mergeDojoViewRowCells(rows) {
+    const merged = [];
+    const seen = new Set();
+    rows.forEach((row) => {
+      row.forEach((cell) => {
+        const normalized = normalize(cell);
+        if (!normalized) return;
+        const tickerMatch = normalized.match(tickerPattern);
+        const key = tickerMatch ? 'ticker:' + tickerMatch[0] : 'cell:' + normalized;
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(tickerMatch ? tickerMatch[0] : normalized);
+      });
+    });
+    return merged;
+  }
+
+  function reconstructRowsFromViews(viewRows) {
+    const nonEmptyViews = viewRows.filter((rows) => rows.length > 0);
+    if (nonEmptyViews.length < 2) return [];
+
+    const reconstructed = [];
+    const firstRowCount = nonEmptyViews[0].length;
+    const aligned = firstRowCount > 0 && nonEmptyViews.every((rows) => rows.length === firstRowCount);
+    if (aligned) {
+      for (let rowIndex = 0; rowIndex < firstRowCount; rowIndex += 1) {
+        const row = mergeDojoViewRowCells(nonEmptyViews.map((rows) => rows[rowIndex] || []));
+        if (row.some((cell) => tickerPattern.test(cell))) {
+          reconstructed.push(row);
+        }
+      }
+    }
+
+    const rowsByTicker = new Map();
+    nonEmptyViews.forEach((rows) => {
+      rows.forEach((row) => {
+        const tickerCell = row.find((cell) => tickerPattern.test(cell));
+        if (!tickerCell) return;
+        const ticker = tickerCell.match(tickerPattern)[0];
+        rowsByTicker.set(ticker, [...(rowsByTicker.get(ticker) || []), row]);
+      });
+    });
+    rowsByTicker.forEach((rows) => {
+      if (rows.length < 2) return;
+      const row = mergeDojoViewRowCells(rows);
+      if (row.some((cell) => tickerPattern.test(cell))) {
+        reconstructed.push(row);
+      }
+    });
+
+    return dedupeRows(reconstructed);
+  }
+
   function collectTableRows(root) {
     const rows = [];
     Array.from(root.querySelectorAll('tr')).filter(isVisible).forEach((row) => {
@@ -2239,18 +3010,513 @@ const BROWSER_SAFE_FULL_GRID_SCAN_EVALUATION = `(async () => {
     return dedupeRows(rows);
   }
 
-  function findScrollContainer(grid) {
-    const candidates = [
-      ...Array.from(grid.querySelectorAll('.dojoxGridScrollbox, .dojoxGridContent, [class*="Scroll"], [class*="scroll"]')),
-      grid,
-      document.scrollingElement,
-      document.documentElement
-    ].filter(Boolean);
-    return candidates.find((element) => element.scrollHeight > element.clientHeight + 10) || document.scrollingElement || document.documentElement;
+  function getScrollTop(element) {
+    return typeof element.scrollTop === 'number' ? element.scrollTop : 0;
   }
 
-  const grids = Array.from(document.querySelectorAll('.dojoxGrid, [class*="dojoxGrid"]')).filter(isVisible);
-  const storeDiagnostics = grids.map((grid, gridIndex) => {
+  function getScrollHeight(element) {
+    return typeof element.scrollHeight === 'number' ? element.scrollHeight : 0;
+  }
+
+  function getClientHeight(element) {
+    return typeof element.clientHeight === 'number' ? element.clientHeight : 0;
+  }
+
+  function ownClassName(element) {
+    return normalize(element && typeof element.className === 'string' ? element.className : '');
+  }
+
+  function isHelperGridFragment(element) {
+    const className = ownClassName(element).toLowerCase();
+    return className.includes('dojoxgridrowbar') ||
+      className.includes('dojoxgridnonnormalizedcell') ||
+      className.includes('dojoxgridrowtable') ||
+      className.includes('dojoxgridrowbarinner') ||
+      className.includes('rowbar') ||
+      className.includes('headerbuilder') ||
+      (className.includes('header') && !className.includes('dojoxgridview'));
+  }
+
+  function isScrollableElement(element) {
+    return Boolean(element) && getScrollHeight(element) > getClientHeight(element) + 10;
+  }
+
+  function elementLabel(element, label) {
+    if (!element) return label;
+    const tag = String(element.tagName || 'node').toLowerCase();
+    const id = element.id ? '#' + normalize(element.id).slice(0, 24) : '';
+    const className = normalize(element.className || '')
+      .split(' ')
+      .filter(Boolean)
+      .slice(0, 2)
+      .join('.');
+    return className ? label + ':' + tag + id + '.' + className : label + ':' + tag + id;
+  }
+
+  function collectLogicalRowsFromGrid(grid) {
+    if (!grid) return [];
+    const visibleRows = collectDojoRowsFromGrid(grid);
+    const reconstructedRows = reconstructRowsFromViews(collectDojoViewRows(grid));
+    return dedupeRows(reconstructedRows.concat(visibleRows));
+  }
+
+  function scoreLogicalGridRoot(element, index) {
+    const rect = element.getBoundingClientRect();
+    const logicalRows = collectLogicalRowsFromGrid(element);
+    const rowElements = Array.from(
+      element.querySelectorAll('.dojoxGridContent [class*="dojoxGridRow"], .dojoxGridRowTable [class*="dojoxGridRow"], [class*="dojoxGridRow"]')
+    ).filter(isVisible);
+    const cellCount = element.querySelectorAll('.dojoxGridCell, td, th').length;
+    const tickerRows = logicalRows.filter((row) => row.some((cell) => tickerPattern.test(cell))).length;
+    const viewCount = element.querySelectorAll('.dojoxGridView, [class*="dojoxGridView"]').length;
+    const contentCount = element.querySelectorAll('.dojoxGridContent, .dojoxGridScrollbox, .dojoxGridMasterView, [class*="dojoxGridScroll"]').length;
+    const helperFragment = isHelperGridFragment(element);
+    let score = 0;
+    let penalty = 0;
+
+    score += logicalRows.length * 8;
+    score += tickerRows * 12;
+    score += Math.min(viewCount, 4) * 20;
+    score += Math.min(contentCount, 4) * 12;
+    score += Math.min(rowElements.length, 30);
+    score += Math.min(cellCount, 80) / 4;
+    if (/dojoxgrid/i.test(ownClassName(element))) {
+      score += 20;
+    }
+    if (rect.width >= 240 && rect.height >= 120) {
+      score += 20;
+    } else if (rect.width >= 120 && rect.height >= 40) {
+      score += 8;
+    } else {
+      penalty += 20;
+    }
+    if (logicalRows.length === 0) {
+      penalty += 40;
+    }
+    if (tickerRows === 0) {
+      penalty += 40;
+    }
+    if (rowElements.length <= 1) {
+      penalty += 15;
+    }
+    if (cellCount <= 1) {
+      penalty += 15;
+    }
+    if (helperFragment) {
+      penalty += 160;
+    }
+
+    return {
+      element,
+      index,
+      label: elementLabel(element, 'gridRoot'),
+      className: ownClassName(element),
+      rowCount: logicalRows.length,
+      tickerRows,
+      helperFragment,
+      penalty,
+      score: score - penalty
+    };
+  }
+
+  function collectLogicalGridRoots() {
+    const rawCandidates = Array.from(
+      document.querySelectorAll('.dojoxGrid, .dojoxGridMasterView, .dojoxGridView, .dojoxGridContent, [class*="dojoxGrid"]')
+    ).filter(isVisible);
+    const uniqueCandidates = [];
+    rawCandidates.forEach((element) => {
+      if (!uniqueCandidates.some((candidate) => candidate === element)) {
+        uniqueCandidates.push(element);
+      }
+    });
+    return uniqueCandidates
+      .map((element, index) => scoreLogicalGridRoot(element, index))
+      .sort((left, right) => right.score - left.score);
+  }
+
+  function chooseLogicalGridRoot(candidates) {
+    return candidates.find((candidate) => !candidate.helperFragment && candidate.rowCount > 0 && candidate.tickerRows > 0)
+      || candidates.find((candidate) => candidate.rowCount > 0)
+      || candidates[0]
+      || null;
+  }
+
+  function addScrollTarget(targets, element, label, priority, extractionRoot, allowPageFallback) {
+    if (!element || targets.some((target) => target.element === element)) {
+      return;
+    }
+    targets.push({
+      element,
+      label: elementLabel(element, label),
+      className: ownClassName(element),
+      priority,
+      extractionRoot,
+      allowPageFallback,
+      helperFragment: isHelperGridFragment(element)
+    });
+  }
+
+  function nearestScrollableAncestor(element, stopAt) {
+    let current = element ? element.parentElement : null;
+    while (current && current !== stopAt && current !== document.body) {
+      if (!isHelperGridFragment(current) && isScrollableElement(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function collectScrollTargets(logicalGridRoot) {
+    const targets = [];
+    const root = logicalGridRoot || document.body;
+    const selectors = [
+      ['.dojoxGridScrollbox', 1],
+      ['.dojoxGridMasterView .dojoxGridScrollbox', 2],
+      ['.dojoxGridView .dojoxGridScrollbox', 3],
+      ['.dojoxGridMasterView', 4],
+      ['.dojoxGridView', 4],
+      ['.dojoxGridContent', 4],
+      ['[class*="dojoxGridScroll"]', 4],
+      ['[class*="Scroll"]', 5],
+      ['[class*="scroll"]', 5]
+    ];
+    selectors.forEach(([selector, priority]) => {
+      Array.from(root.querySelectorAll(selector)).forEach((element) =>
+        addScrollTarget(targets, element, selector, priority, logicalGridRoot, false)
+      );
+    });
+
+    const visibleRows = logicalGridRoot
+      ? Array.from(
+          logicalGridRoot.querySelectorAll('.dojoxGridContent [class*="dojoxGridRow"], .dojoxGridRowTable [class*="dojoxGridRow"], [class*="dojoxGridRow"]')
+        ).filter(isVisible)
+      : [];
+    visibleRows.slice(0, 8).forEach((row) => {
+      const ancestor = nearestScrollableAncestor(row, logicalGridRoot);
+      if (ancestor) {
+        addScrollTarget(targets, ancestor, 'nearestScrollableAncestor', 5, logicalGridRoot, false);
+      }
+    });
+
+    if (logicalGridRoot) {
+      addScrollTarget(targets, logicalGridRoot, 'logicalGridRoot', 6, logicalGridRoot, false);
+    }
+    addScrollTarget(targets, document.scrollingElement, 'document.scrollingElement', 7, logicalGridRoot, true);
+    addScrollTarget(targets, document.documentElement, 'document.documentElement', 8, logicalGridRoot, true);
+    addScrollTarget(targets, document.body, 'document.body', 9, logicalGridRoot, true);
+    return targets;
+  }
+
+  function collectRowsForExtractionRoot(extractionRoot) {
+    if (extractionRoot) {
+      const logicalRows = collectLogicalRowsFromGrid(extractionRoot);
+      if (logicalRows.length > 0) {
+        return logicalRows;
+      }
+      const tableRows = collectTableRows(extractionRoot);
+      if (tableRows.length > 0) {
+        return dedupeRows(tableRows);
+      }
+    }
+    return dedupeRows(collectTableRows(document));
+  }
+
+  function extractTickerFromRow(row) {
+    if (!Array.isArray(row)) return undefined;
+    const tickerCell = row.find((cell) => tickerPattern.test(normalize(cell)));
+    const match = tickerCell ? normalize(tickerCell).match(tickerPattern) : null;
+    return match ? match[0] : undefined;
+  }
+
+  function collectVisibleWindowRowsForExtractionRoot(extractionRoot) {
+    if (extractionRoot) {
+      const reconstructedRows = reconstructRowsFromViews(collectDojoViewRows(extractionRoot));
+      if (reconstructedRows.length > 0) {
+        return reconstructedRows;
+      }
+
+      const visibleRows = collectDojoRowsFromGrid(extractionRoot);
+      if (visibleRows.length > 0) {
+        return dedupeRows(visibleRows);
+      }
+
+      const tableRows = collectTableRows(extractionRoot);
+      if (tableRows.length > 0) {
+        return dedupeRows(tableRows);
+      }
+    }
+
+    return dedupeRows(collectTableRows(document));
+  }
+
+  function summarizeVisibleTickerWindow(extractionRoot) {
+    const rows = collectVisibleWindowRowsForExtractionRoot(extractionRoot);
+    const tickers = rows
+      .map((row) => extractTickerFromRow(row))
+      .filter(Boolean);
+    return {
+      rows,
+      visibleRowCount: rows.length,
+      firstTicker: tickers[0],
+      lastTicker: tickers.length > 0 ? tickers[tickers.length - 1] : undefined
+    };
+  }
+
+  function collectSynchronizedScrollElements(targetInfo) {
+    const elements = [targetInfo.element];
+    const root = targetInfo.extractionRoot;
+    const className = ownClassName(targetInfo.element).toLowerCase();
+    if (!root || !className.includes('dojoxgridscrollbox')) {
+      return elements;
+    }
+
+    const baseClientHeight = getClientHeight(targetInfo.element);
+    Array.from(root.querySelectorAll('.dojoxGridScrollbox')).forEach((element) => {
+      if (element === targetInfo.element || isHelperGridFragment(element)) {
+        return;
+      }
+
+      if (Math.abs(getClientHeight(element) - baseClientHeight) > 6) {
+        return;
+      }
+
+      if (!isScrollableElement(element) && getScrollHeight(element) <= getClientHeight(element) + 1) {
+        return;
+      }
+
+      if (!elements.some((candidate) => candidate === element)) {
+        elements.push(element);
+      }
+    });
+
+    return elements;
+  }
+
+  function setScrollTopOnElements(elements, scrollTop) {
+    elements.forEach((element) => {
+      try {
+        element.scrollTop = scrollTop;
+      } catch {
+        // Read-only best effort.
+      }
+    });
+  }
+
+  async function waitForVisibleTickerWindowRefresh(targetInfo, previousWindow, expectedScrollTop) {
+    let windowSummary = summarizeVisibleTickerWindow(targetInfo.extractionRoot);
+    const maxAttempts = 6;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const currentScrollTop = getScrollTop(targetInfo.element);
+      const firstTickerChanged = previousWindow
+        ? windowSummary.firstTicker !== previousWindow.firstTicker
+        : false;
+      const lastTickerChanged = previousWindow
+        ? windowSummary.lastTicker !== previousWindow.lastTicker
+        : false;
+      const visibleRowCountChanged = previousWindow
+        ? windowSummary.visibleRowCount !== previousWindow.visibleRowCount
+        : false;
+      const reachedExpectedScrollTop = Math.abs(currentScrollTop - expectedScrollTop) <= 1;
+
+      if (reachedExpectedScrollTop && (firstTickerChanged || lastTickerChanged || visibleRowCountChanged)) {
+        return {
+          ...windowSummary,
+          firstTickerChanged,
+          lastTickerChanged
+        };
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, attempt < 2 ? 40 : 30));
+      windowSummary = summarizeVisibleTickerWindow(targetInfo.extractionRoot);
+    }
+
+    return {
+      ...windowSummary,
+      firstTickerChanged: previousWindow
+        ? windowSummary.firstTicker !== previousWindow.firstTicker
+        : false,
+      lastTickerChanged: previousWindow
+        ? windowSummary.lastTicker !== previousWindow.lastTicker
+        : false
+    };
+  }
+
+  async function runScrollScan(targetInfo) {
+    const target = targetInfo.element;
+    const label = targetInfo.label;
+    const synchronizedTargets = collectSynchronizedScrollElements(targetInfo);
+    const originalScrollTops = synchronizedTargets.map((element) => getScrollTop(element));
+    const originalScrollTop = getScrollTop(target);
+    const scrollHeight = getScrollHeight(target);
+    const clientHeight = getClientHeight(target);
+    const initialWindow = summarizeVisibleTickerWindow(targetInfo.extractionRoot);
+    const rows = [...initialWindow.rows];
+    const uniqueTickersByStep = [];
+    const stepDiagnostics = [];
+    let previousWindow = initialWindow;
+    let previousUniqueCount = dedupeRows(rows).length;
+    let staleSteps = 0;
+    let steps = 0;
+    let stopReason = isScrollableElement(target) ? 'max steps reached' : 'target not scrollable';
+
+    for (let step = 0; step < maxSteps; step += 1) {
+      const scrollTopBefore = getScrollTop(target);
+      let scrollTopAfter = scrollTopBefore;
+
+      if (!isScrollableElement(target)) {
+        uniqueTickersByStep.push(previousUniqueCount);
+        stepDiagnostics.push({
+          step,
+          scrollTopBefore,
+          scrollTopAfter,
+          firstTicker: previousWindow.firstTicker,
+          lastTicker: previousWindow.lastTicker,
+          visibleRowCount: previousWindow.visibleRowCount,
+          uniqueTickerCount: previousUniqueCount,
+          newTickerCount: 0,
+          firstTickerChanged: false,
+          lastTickerChanged: false,
+          uniqueTickers: previousUniqueCount,
+          newTickers: 0
+        });
+        stopReason = 'target not scrollable';
+        steps = step;
+        break;
+      }
+
+      if (staleSteps >= staleStepLimit) {
+        uniqueTickersByStep.push(previousUniqueCount);
+        stepDiagnostics.push({
+          step,
+          scrollTopBefore,
+          scrollTopAfter,
+          firstTicker: previousWindow.firstTicker,
+          lastTicker: previousWindow.lastTicker,
+          visibleRowCount: previousWindow.visibleRowCount,
+          uniqueTickerCount: previousUniqueCount,
+          newTickerCount: 0,
+          firstTickerChanged: false,
+          lastTickerChanged: false,
+          uniqueTickers: previousUniqueCount,
+          newTickers: 0
+        });
+        stopReason = 'stale step limit reached';
+        steps = step;
+        break;
+      }
+
+      const nextScrollTop = Math.min(
+        scrollTopBefore + Math.max(getClientHeight(target), 160),
+        Math.max(getScrollHeight(target) - getClientHeight(target), 0)
+      );
+      setScrollTopOnElements(synchronizedTargets, nextScrollTop);
+      scrollTopAfter = getScrollTop(target);
+
+      if (scrollTopAfter <= scrollTopBefore) {
+        uniqueTickersByStep.push(previousUniqueCount);
+        stepDiagnostics.push({
+          step,
+          scrollTopBefore,
+          scrollTopAfter,
+          firstTicker: previousWindow.firstTicker,
+          lastTicker: previousWindow.lastTicker,
+          visibleRowCount: previousWindow.visibleRowCount,
+          uniqueTickerCount: previousUniqueCount,
+          newTickerCount: 0,
+          firstTickerChanged: false,
+          lastTickerChanged: false,
+          uniqueTickers: previousUniqueCount,
+          newTickers: 0
+        });
+        stopReason = 'scroll target did not move';
+        steps = step;
+        break;
+      }
+
+      const currentWindow = await waitForVisibleTickerWindowRefresh(targetInfo, previousWindow, nextScrollTop);
+      rows.push(...collectRowsForExtractionRoot(targetInfo.extractionRoot));
+      const uniqueCount = dedupeRows(rows).length;
+      const newTickers = Math.max(uniqueCount - previousUniqueCount, 0);
+      uniqueTickersByStep.push(uniqueCount);
+      stepDiagnostics.push({
+        step,
+        scrollTopBefore,
+        scrollTopAfter,
+        firstTicker: currentWindow.firstTicker,
+        lastTicker: currentWindow.lastTicker,
+        visibleRowCount: currentWindow.visibleRowCount,
+        uniqueTickerCount: uniqueCount,
+        newTickerCount: newTickers,
+        firstTickerChanged: currentWindow.firstTickerChanged,
+        lastTickerChanged: currentWindow.lastTickerChanged,
+        uniqueTickers: uniqueCount,
+        newTickers
+      });
+      staleSteps =
+        uniqueCount <= previousUniqueCount &&
+        !currentWindow.firstTickerChanged &&
+        !currentWindow.lastTickerChanged
+          ? staleSteps + 1
+          : 0;
+      previousUniqueCount = uniqueCount;
+      previousWindow = currentWindow;
+      steps = step + 1;
+
+      if (scrollTopAfter + getClientHeight(target) >= getScrollHeight(target) - 1) {
+        stopReason = 'bottom reached';
+        break;
+      }
+    }
+
+    let restoredScrollTop;
+    try {
+      synchronizedTargets.forEach((element, index) => {
+        const scrollTop = originalScrollTops[index] ?? originalScrollTop;
+        setScrollTopOnElements([element], scrollTop);
+      });
+      restoredScrollTop = getScrollTop(target);
+    } catch {
+      // Read-only best effort: preserving the operator viewport is useful but not required for extraction.
+    }
+
+    const visibleWindowChangedSteps = stepDiagnostics.filter(
+      (step) => step.firstTickerChanged || step.lastTickerChanged
+    ).length;
+
+    return {
+      label,
+      tagName: String(target && target.tagName ? target.tagName : 'node').toLowerCase(),
+      className: ownClassName(target),
+      priority: targetInfo.priority,
+      helperFragment: targetInfo.helperFragment,
+      allowPageFallback: targetInfo.allowPageFallback,
+      rows: dedupeRows(rows),
+      steps,
+      scrollable: isScrollableElement(target),
+      scrollHeight,
+      clientHeight,
+      scrollTopBefore: originalScrollTop,
+      scrollTopAfter: stepDiagnostics.length > 0
+        ? stepDiagnostics[stepDiagnostics.length - 1].scrollTopAfter
+        : originalScrollTop,
+      restoredScrollTop,
+      stopReason,
+      visibleWindowChangedSteps,
+      uniqueTickersByStep,
+      stepDiagnostics
+    };
+  }
+
+  const logicalGridCandidates = collectLogicalGridRoots();
+  const selectedLogicalGridRoot = chooseLogicalGridRoot(logicalGridCandidates);
+  const gridRoots = logicalGridCandidates
+    .filter((candidate) => candidate.rowCount > 0 || candidate.tickerRows > 0 || /dojoxgrid/i.test(candidate.className))
+    .map((candidate) => candidate.element);
+  const viewRows = gridRoots.flatMap((grid) => collectDojoViewRows(grid));
+  const reconstructedRows = reconstructRowsFromViews(viewRows);
+  const storeDiagnostics = gridRoots.map((grid, gridIndex) => {
     const widget = getWidgetForGrid(grid);
     const store = widget && (widget.store || widget._store || (widget.model && (widget.model.store || widget.model._store)));
     const model = widget && widget.model;
@@ -2270,60 +3536,132 @@ const BROWSER_SAFE_FULL_GRID_SCAN_EVALUATION = `(async () => {
     };
   });
 
-  for (const grid of grids) {
-    const storeRows = collectStoreRows(getWidgetForGrid(grid));
-    if (storeRows.length > collectDojoRowsFromGrid(grid).length) {
-      return {
-        scanMode: 'store',
-        scanSteps: 0,
-        rows: storeRows,
-        headerCells: allowedHeaders,
-        dojoGridCount: grids.length,
-        storeDiagnostics
-      };
+  let bestStoreRows = [];
+  for (const grid of gridRoots) {
+    const candidateStoreRows = collectStoreRows(getWidgetForGrid(grid));
+    if (candidateStoreRows.length > collectDojoRowsFromGrid(grid).length) {
+      const existingScore = rowScore(bestStoreRows.flat());
+      const candidateScore = rowScore(candidateStoreRows.flat());
+      if (candidateStoreRows.length > bestStoreRows.length || candidateScore >= existingScore) {
+        bestStoreRows = candidateStoreRows;
+      }
     }
   }
 
-  const target = grids[0] || document.body;
-  const container = findScrollContainer(target);
-  const originalScrollTop = container.scrollTop;
-  const rows = [];
-  let previousUniqueCount = 0;
-  let staleSteps = 0;
-  let steps = 0;
-
-  for (let step = 0; step <= maxSteps; step += 1) {
-    rows.push(...(grids[0] ? collectDojoRowsFromGrid(grids[0]) : collectTableRows(document)));
-    const uniqueCount = dedupeRows(rows).length;
-    staleSteps = uniqueCount <= previousUniqueCount ? staleSteps + 1 : 0;
-    previousUniqueCount = uniqueCount;
-    if (step >= maxSteps || staleSteps >= staleStepLimit) {
-      steps = step;
-      break;
-    }
-
-    const before = container.scrollTop;
-    container.scrollTop = Math.min(container.scrollTop + Math.max(container.clientHeight * 0.85, 120), container.scrollHeight);
-    steps = step + 1;
-    if (container.scrollTop <= before || container.scrollTop + container.clientHeight >= container.scrollHeight) {
-      rows.push(...(grids[0] ? collectDojoRowsFromGrid(grids[0]) : collectTableRows(document)));
-      break;
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, 60));
+  const initialVisibleRows = collectRowsForExtractionRoot(selectedLogicalGridRoot ? selectedLogicalGridRoot.element : null);
+  const initialVisibleUniqueTickers = initialVisibleRows.length;
+  const scrollTargets = collectScrollTargets(selectedLogicalGridRoot ? selectedLogicalGridRoot.element : null);
+  const scrollResults = [];
+  for (const target of scrollTargets) {
+    scrollResults.push(await runScrollScan(target));
   }
 
-  try {
-    container.scrollTop = originalScrollTop;
-  } catch {
-    // Read-only best effort: preserving the operator viewport is useful but not required for extraction.
+  scrollResults.sort((left, right) => {
+    const leftExpanded = left.rows.length > initialVisibleUniqueTickers ? 1 : 0;
+    const rightExpanded = right.rows.length > initialVisibleUniqueTickers ? 1 : 0;
+    const expandedDiff = rightExpanded - leftExpanded;
+    if (expandedDiff !== 0) return expandedDiff;
+    const windowChangeDiff = right.visibleWindowChangedSteps - left.visibleWindowChangedSteps;
+    if (windowChangeDiff !== 0) return windowChangeDiff;
+    const uniqueDiff = right.rows.length - left.rows.length;
+    if (uniqueDiff !== 0) return uniqueDiff;
+    const scrollableDiff = Number(right.scrollable) - Number(left.scrollable);
+    if (scrollableDiff !== 0) return scrollableDiff;
+    const priorityDiff = left.priority - right.priority;
+    if (priorityDiff !== 0) return priorityDiff;
+    const stepDiff = right.steps - left.steps;
+    if (stepDiff !== 0) return stepDiff;
+    return (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight);
+  });
+
+  const bestScrollResult = scrollResults[0] || {
+    label: 'none',
+    rows: initialVisibleRows,
+    steps: 0,
+    scrollable: false,
+    scrollHeight: 0,
+    clientHeight: 0,
+    scrollTopBefore: 0,
+    scrollTopAfter: 0,
+    restoredScrollTop: 0,
+    stopReason: 'no scroll targets detected',
+    visibleWindowChangedSteps: 0,
+    uniqueTickersByStep: [initialVisibleUniqueTickers],
+    stepDiagnostics: []
+  };
+
+  const expandedCoverage = bestScrollResult.rows.length > initialVisibleUniqueTickers;
+  const fallbackScanMode = expandedCoverage ? 'scroll' : 'visible';
+  const fallbackRows = expandedCoverage ? bestScrollResult.rows : initialVisibleRows;
+  const attemptedTargets = scrollResults.map((result) => {
+    let reason = 'rejected lower coverage than ' + bestScrollResult.label;
+    if (result.label === bestScrollResult.label) {
+      reason = 'selected (' + result.rows.length + ' unique tickers, windowChanges=' + result.visibleWindowChangedSteps + ', stop=' + result.stopReason + ')';
+    } else if (result.helperFragment) {
+      reason = 'rejected helper fragment';
+    } else if (!result.scrollable) {
+      reason = 'rejected not scrollable (' + result.stopReason + ')';
+    } else if (result.visibleWindowChangedSteps === 0) {
+      reason = 'rejected visible ticker window unchanged';
+    } else if (result.rows.length <= initialVisibleUniqueTickers) {
+      reason = 'rejected no coverage expansion after scroll';
+    } else if (result.allowPageFallback) {
+      reason = 'rejected page fallback lower coverage than ' + bestScrollResult.label;
+    }
+    return {
+      label: result.label,
+      tagName: result.tagName,
+      className: result.className,
+      scrollTop: result.scrollTopBefore,
+      scrollHeight: result.scrollHeight,
+      clientHeight: result.clientHeight,
+      scrollable: result.scrollable,
+      reason
+    };
+  });
+  const scrollDiagnostics = {
+    logicalGridRoot: selectedLogicalGridRoot ? selectedLogicalGridRoot.label : undefined,
+    logicalGridRootCandidates: logicalGridCandidates.length,
+    penalizedGridRootCandidates: logicalGridCandidates.filter((candidate) => candidate.penalty > 0).length,
+    attemptedTargets,
+    selectedTarget: bestScrollResult.label,
+    scrollTopBefore: bestScrollResult.scrollTopBefore,
+    scrollTopAfter: bestScrollResult.scrollTopAfter,
+    restoredScrollTop: bestScrollResult.restoredScrollTop,
+    scrollHeight: bestScrollResult.scrollHeight,
+    clientHeight: bestScrollResult.clientHeight,
+    initialVisibleUniqueTickers,
+    uniqueTickersByStep: bestScrollResult.uniqueTickersByStep,
+    stopReason: bestScrollResult.stopReason,
+    stepDiagnostics: bestScrollResult.stepDiagnostics
+  };
+
+  if (bestStoreRows.length > 0) {
+    return {
+      scanMode: 'store',
+      scanSteps: 0,
+      rows: bestStoreRows,
+      reconstructedRows,
+      viewRows,
+      fallbackRows,
+      fallbackScanMode,
+      fallbackScanSteps: bestScrollResult.steps,
+      scrollDiagnostics,
+      headerCells: allowedHeaders,
+      dojoGridCount: gridRoots.length,
+      storeDiagnostics
+    };
   }
 
   return {
-    scanMode: grids.length > 0 ? 'scroll' : 'visible',
-    scanSteps: steps,
-    rows: dedupeRows(rows),
+    scanMode: fallbackScanMode,
+    scanSteps: bestScrollResult.steps,
+    rows: fallbackRows,
+    reconstructedRows,
+    viewRows,
+    scrollDiagnostics,
     headerCells: allowedHeaders,
-    dojoGridCount: grids.length,
+    dojoGridCount: gridRoots.length,
     storeDiagnostics
   };
 })()`;

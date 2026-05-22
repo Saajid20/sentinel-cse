@@ -22,7 +22,9 @@ import {
   normalizeATradFullWatchEquityRow,
   partitionATradSnapshotsByConfidence,
   parseDojoWatchGridRow,
+  reconstructDojoGridRowsFromViews,
   isUsableATradSnapshotQuality,
+  isATradTrainingGradeCandidate,
   sanitizeMarketWatchRows,
   runManualATradObserveOnce
 } from './manualATradObserveOnce.js';
@@ -117,6 +119,30 @@ describe('manual ATrad observe-once helpers', () => {
     expect(detectATradMarketStateFromVisibleText('Full Watch - Equity Market :Close')).toBe('CLOSED');
     expect(detectATradMarketStateFromVisibleText('Full Watch - Equity Market: Closed')).toBe('CLOSED');
     expect(detectATradMarketStateFromVisibleText('Full Watch - Equity')).toBe('UNKNOWN');
+  });
+
+  it('marks training-grade candidate false when usable rows are zero', () => {
+    expect(
+      isATradTrainingGradeCandidate({
+        marketState: 'OPEN',
+        usableRows: 0,
+        uniqueTickers: 302,
+        rejectionRatio: 1,
+        scanMode: 'store_reconstructed'
+      })
+    ).toBe(false);
+  });
+
+  it('marks training-grade candidate true for open market usable broad coverage', () => {
+    expect(
+      isATradTrainingGradeCandidate({
+        marketState: 'OPEN',
+        usableRows: 40,
+        uniqueTickers: 80,
+        rejectionRatio: 0.1,
+        scanMode: 'store_reconstructed'
+      })
+    ).toBe(true);
   });
 
   it('returns a helpful result when storage state is missing', async () => {
@@ -1584,6 +1610,7 @@ describe('manual ATrad observe-once helpers', () => {
     expect(result.ok).toBe(true);
     expect(result.rawRows).toEqual([fakeMarketWatchRow]);
     expect(result.accepted).toHaveLength(1);
+    expect(result.fullGridScan).toBeUndefined();
     expect(calls).toEqual(
       expect.arrayContaining([
         'launch-storage',
@@ -1863,6 +1890,92 @@ describe('manual ATrad observe-once helpers', () => {
     expect(lines).toContain('"Time":"10:15:47.383159"');
   });
 
+  it('prints full-grid store validation and rejected row samples in row debug output', async () => {
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          ['BAD1.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0'],
+          ['BAD2.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0']
+        ],
+        fallbackRows: [
+          ['LIVE.N0000', 'Live PLC', '1,000', '10.00', '10.10', '500', '10.05', '1,000']
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 2,
+        scrollDiagnostics: {
+          selectedTarget: '.dojoxGridScrollbox:div',
+          scrollTopBefore: 0,
+          scrollTopAfter: 360,
+          restoredScrollTop: 0,
+          scrollHeight: 1200,
+          clientHeight: 240,
+          initialVisibleUniqueTickers: 25,
+          uniqueTickersByStep: [25, 25],
+          stopReason: 'stale step limit reached',
+          stepDiagnostics: [
+            {
+              step: 0,
+              scrollTopBefore: 0,
+              scrollTopAfter: 180,
+              firstTicker: 'VIS0.N0000',
+              lastTicker: 'VIS24.N0000',
+              visibleRowCount: 25,
+              uniqueTickerCount: 25,
+              newTickerCount: 25,
+              firstTickerChanged: false,
+              lastTickerChanged: false,
+              uniqueTickers: 25,
+              newTickers: 25
+            },
+            {
+              step: 1,
+              scrollTopBefore: 180,
+              scrollTopAfter: 360,
+              firstTicker: 'VIS0.N0000',
+              lastTicker: 'VIS24.N0000',
+              visibleRowCount: 25,
+              uniqueTickerCount: 25,
+              newTickerCount: 0,
+              firstTickerChanged: false,
+              lastTickerChanged: false,
+              uniqueTickers: 25,
+              newTickers: 0
+            }
+          ]
+        },
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--debug-rows', '--full-grid-scan']),
+      runtime
+    );
+    const lines = formatObserveOnceSummary(result).join('\n');
+
+    expect(lines).toContain('Store scan validation:');
+    expect(lines).toContain('Candidate scan modes evaluated:');
+    expect(lines).toContain('- store: rawRows=2');
+    expect(lines).toContain('- store_fallback_visible: rawRows=1');
+    expect(lines).toContain('Chosen scan mode: store_fallback_visible');
+    expect(lines).toContain('Store raw rows: 2');
+    expect(lines).toContain('Store scan rejected reason: zero usable rows');
+    expect(lines).toContain('Fallback scan mode: visible');
+    expect(lines).toContain('Scroll fallback diagnostics:');
+    expect(lines).toContain('Scroll target selected: .dojoxGridScrollbox:div');
+    expect(lines).toContain('Unique tickers per step: 25, 25');
+    expect(lines).toContain('Scroll step 0: before=0, after=180, firstTicker=VIS0.N0000, lastTicker=VIS24.N0000, visibleRows=25, uniqueTickers=25, newTickers=25, firstChanged=no, lastChanged=no');
+    expect(lines).toContain('Top rejection reasons:');
+    expect(lines).toContain('First rejected full-grid row samples:');
+    expect(lines).toContain('Rejected full-grid row 1: BAD1.N0000');
+  });
+
   it('extracts full grid rows from a simulated Dojo store before scrolling', async () => {
     const page = createFakePage({
       calls: [],
@@ -1898,6 +2011,974 @@ describe('manual ATrad observe-once helpers', () => {
     expect(scan.rows.map((row) => row.Security)).toEqual(['STOR.N0000', 'MORE.N0000']);
   });
 
+  it('reconstructs split Dojo grid views by aligned row index', () => {
+    const reconstructed = reconstructDojoGridRowsFromViews([
+      [
+        ['ABAN.N0000'],
+        ['MGT.N0000']
+      ],
+      [
+        ['ABANS PLC', '1,000', '150.00', '151.00', '500', '150.50', '20', '1.00', '0.67', '152.00', '149.00', '150.20', '10,000', '1,502,000.00', '25', '149.50', '55%', '10:15:47.383159'],
+        ['HAYLEYS FABRIC PLC', '11,100', '31.70', '31.90', '6,343', '31.80', '97', '0.40', '1.27', '32.00', '31.40', '31.86', '4,821', '153,588.60', '22', '31.40', '34.15%', '10:15:48.383159']
+      ]
+    ]);
+    const parsed = reconstructed.map((row) =>
+      parseDojoWatchGridRow(Object.keys(fakeMarketWatchRow), row)
+    );
+
+    expect(reconstructed).toHaveLength(2);
+    expect(parsed[0]).toMatchObject({
+      Security: 'ABAN.N0000',
+      Last: '150.50',
+      Volume: '10,000'
+    });
+    expect(parsed[1]).toMatchObject({
+      Security: 'MGT.N0000',
+      Last: '31.80',
+      Volume: '4,821'
+    });
+  });
+
+  it('uses store_reconstructed when reconstructed rows beat a raw store with zero usable rows', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          ['BAD1.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0'],
+          ['BAD2.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0']
+        ],
+        reconstructedRows: [
+          ['GOOD.N0000', 'Good PLC', '1,000', '10.00', '10.10', '500', '10.05', '1,000'],
+          ['LIVE.N0000', 'Live PLC', '2,000', '20.00', '20.10', '600', '20.05', '2,000']
+        ],
+        fallbackRows: [
+          ['FALL.N0000', 'Fallback PLC', '3,000', '30.00', '30.10', '700', '30.05', '3,000']
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 2,
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.scanMode).toBe('store_reconstructed');
+    expect(scan.rows.map((row) => row.Security)).toEqual(['GOOD.N0000', 'LIVE.N0000']);
+    expect(scan.rows[0]).toMatchObject({ Last: '10.05', Volume: '1,000' });
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual(
+      expect.arrayContaining(['store', 'store_reconstructed', 'store_fallback_scroll'])
+    );
+  });
+
+  it('keeps store_fallback_scroll as a candidate and exposes scroll diagnostics when scrolling expands coverage', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: Array.from({ length: 30 }, (_, index) => [
+          `BAD${index}.N0000`,
+          `Broken ${index} PLC`,
+          '-',
+          '-',
+          '-',
+          '-',
+          '-',
+          '0'
+        ]),
+        reconstructedRows: Array.from({ length: 25 }, (_, index) => [
+          `VIS${index}.N0000`,
+          `Visible ${index} PLC`,
+          '1,000',
+          '10.00',
+          '10.10',
+          '500',
+          '10.05',
+          '1,000'
+        ]),
+        fallbackRows: Array.from({ length: 40 }, (_, index) => [
+          `SCR${index}.N0000`,
+          `Scrolled ${index} PLC`,
+          '2,000',
+          '20.00',
+          '20.10',
+          '600',
+          '20.05',
+          '2,000'
+        ]),
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 4,
+        scrollDiagnostics: {
+          selectedTarget: '.dojoxGridScrollbox:div',
+          scrollTopBefore: 0,
+          scrollTopAfter: 960,
+          restoredScrollTop: 0,
+          scrollHeight: 1800,
+          clientHeight: 240,
+          initialVisibleUniqueTickers: 25,
+          uniqueTickersByStep: [25, 30, 35, 40],
+          stopReason: 'bottom reached',
+          stepDiagnostics: [
+            {
+              step: 0,
+              scrollTopBefore: 0,
+              scrollTopAfter: 180,
+              firstTicker: 'SCR0.N0000',
+              lastTicker: 'SCR24.N0000',
+              visibleRowCount: 25,
+              uniqueTickerCount: 25,
+              newTickerCount: 25,
+              firstTickerChanged: true,
+              lastTickerChanged: true,
+              uniqueTickers: 25,
+              newTickers: 25
+            },
+            {
+              step: 1,
+              scrollTopBefore: 180,
+              scrollTopAfter: 420,
+              firstTicker: 'SCR5.N0000',
+              lastTicker: 'SCR29.N0000',
+              visibleRowCount: 25,
+              uniqueTickerCount: 30,
+              newTickerCount: 5,
+              firstTickerChanged: true,
+              lastTickerChanged: true,
+              uniqueTickers: 30,
+              newTickers: 5
+            },
+            {
+              step: 2,
+              scrollTopBefore: 420,
+              scrollTopAfter: 660,
+              firstTicker: 'SCR10.N0000',
+              lastTicker: 'SCR34.N0000',
+              visibleRowCount: 25,
+              uniqueTickerCount: 35,
+              newTickerCount: 5,
+              firstTickerChanged: true,
+              lastTickerChanged: true,
+              uniqueTickers: 35,
+              newTickers: 5
+            },
+            {
+              step: 3,
+              scrollTopBefore: 660,
+              scrollTopAfter: 960,
+              firstTicker: 'SCR15.N0000',
+              lastTicker: 'SCR39.N0000',
+              visibleRowCount: 25,
+              uniqueTickerCount: 40,
+              newTickerCount: 5,
+              firstTickerChanged: true,
+              lastTickerChanged: true,
+              uniqueTickers: 40,
+              newTickers: 5
+            }
+          ]
+        },
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.scanMode).toBe('store_fallback_scroll');
+    expect(scan.uniqueTickers).toBe(40);
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual(
+      expect.arrayContaining(['store', 'store_reconstructed', 'store_fallback_scroll'])
+    );
+    expect(scan.diagnostics.scrollDiagnostics).toMatchObject({
+      selectedTarget: '.dojoxGridScrollbox:div',
+      scrollHeight: 1800,
+      clientHeight: 240,
+      initialVisibleUniqueTickers: 25,
+      stopReason: 'bottom reached',
+      uniqueTickersByStep: [25, 30, 35, 40]
+    });
+  });
+
+  it('rejects rowbar helper targets and chooses store_fallback_scroll when the real scrollbox expands coverage', async () => {
+    const fullGridScan: FullGridScanPayload = {
+      scanMode: 'store',
+      scanSteps: 0,
+      dojoGridCount: 3,
+      storeDiagnostics: [],
+      rows: Array.from({ length: 30 }, (_, index) => [
+        `BAD${index}.N0000`,
+        `Broken ${index} PLC`,
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '0'
+      ]),
+      reconstructedRows: Array.from({ length: 25 }, (_, index) => [
+        `VIS${index}.N0000`,
+        `Visible ${index} PLC`,
+        '1,000',
+        '10.00',
+        '10.10',
+        '500',
+        '10.05',
+        '1,000'
+      ]),
+      fallbackRows: Array.from({ length: 40 }, (_, index) => [
+        `SCR${index}.N0000`,
+        `Scrolled ${index} PLC`,
+        '2,000',
+        '20.00',
+        '20.10',
+        '600',
+        '20.05',
+        '2,000'
+      ]),
+      fallbackScanMode: 'scroll',
+      fallbackScanSteps: 4,
+      scrollDiagnostics: {
+        logicalGridRoot: 'gridRoot:div.dojoxGrid',
+        logicalGridRootCandidates: 3,
+        penalizedGridRootCandidates: 1,
+        attemptedTargets: [
+          {
+            label: 'grid:div.dojoxGridRowbar.dojoxGridNonNormalizedCell',
+            tagName: 'div',
+            className: 'dojoxGridRowbar dojoxGridNonNormalizedCell',
+            scrollTop: 0,
+            scrollHeight: 20,
+            clientHeight: 20,
+            scrollable: false,
+            reason: 'rejected helper fragment'
+          },
+          {
+            label: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+            tagName: 'div',
+            className: 'dojoxGridScrollbox',
+            scrollTop: 0,
+            scrollHeight: 1800,
+            clientHeight: 240,
+            scrollable: true,
+            reason: 'selected (40 unique tickers, windowChanges=4, stop=bottom reached)'
+          }
+        ],
+        selectedTarget: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+        scrollTopBefore: 0,
+        scrollTopAfter: 960,
+        restoredScrollTop: 0,
+        scrollHeight: 1800,
+        clientHeight: 240,
+        initialVisibleUniqueTickers: 25,
+        uniqueTickersByStep: [25, 30, 35, 40],
+        stopReason: 'bottom reached',
+        stepDiagnostics: [
+          {
+            step: 0,
+            scrollTopBefore: 0,
+            scrollTopAfter: 180,
+            firstTicker: 'SCR0.N0000',
+            lastTicker: 'SCR24.N0000',
+            visibleRowCount: 25,
+            uniqueTickerCount: 25,
+            newTickerCount: 25,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 25,
+            newTickers: 25
+          },
+          {
+            step: 1,
+            scrollTopBefore: 180,
+            scrollTopAfter: 420,
+            firstTicker: 'SCR5.N0000',
+            lastTicker: 'SCR29.N0000',
+            visibleRowCount: 25,
+            uniqueTickerCount: 30,
+            newTickerCount: 5,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 30,
+            newTickers: 5
+          },
+          {
+            step: 2,
+            scrollTopBefore: 420,
+            scrollTopAfter: 660,
+            firstTicker: 'SCR10.N0000',
+            lastTicker: 'SCR34.N0000',
+            visibleRowCount: 25,
+            uniqueTickerCount: 35,
+            newTickerCount: 5,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 35,
+            newTickers: 5
+          },
+          {
+            step: 3,
+            scrollTopBefore: 660,
+            scrollTopAfter: 960,
+            firstTicker: 'SCR15.N0000',
+            lastTicker: 'SCR39.N0000',
+            visibleRowCount: 25,
+            uniqueTickerCount: 40,
+            newTickerCount: 5,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 40,
+            newTickers: 5
+          }
+        ]
+      },
+      headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+    };
+    const scan = await extractFullGridMarketWatchRows(createFakePage({ calls: [], fullGridScan }), 1_000);
+    const runtime = fakeRuntime({
+      storageStateExists: true,
+      calls: [],
+      fullGridScan
+    });
+
+    const result = await runManualATradObserveOnce(
+      createManualATradObserveOnceConfig(['--debug-rows', '--full-grid-scan']),
+      runtime
+    );
+    const lines = formatObserveOnceSummary(result).join('\n');
+
+    expect(scan.scanMode).toBe('store_fallback_scroll');
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual(
+      expect.arrayContaining(['store', 'store_reconstructed', 'store_fallback_scroll'])
+    );
+    expect(lines).toContain('Logical grid root: gridRoot:div.dojoxGrid');
+    expect(lines).toContain('Logical grid root candidates: 3, penalized=1');
+    expect(lines).toContain('Attempted scroll targets:');
+    expect(lines).toContain('grid:div.dojoxGridRowbar.dojoxGridNonNormalizedCell [div.dojoxGridRowbar dojoxGridNonNormalizedCell]: scrollTop=0, scrollHeight=20, clientHeight=20, scrollable=no, reason=rejected helper fragment');
+    expect(lines).toContain('Scroll target selected: .dojoxGridScrollbox:div.dojoxGridScrollbox');
+    expect(lines).toContain('Chosen scan mode: store_fallback_scroll');
+  });
+
+  it('uses document scrolling as a final fallback when page scroll expands coverage', async () => {
+    const fullGridScan: FullGridScanPayload = {
+      scanMode: 'store',
+      scanSteps: 0,
+      dojoGridCount: 1,
+      storeDiagnostics: [],
+      rows: Array.from({ length: 30 }, (_, index) => [
+        `BAD${index}.N0000`,
+        `Broken ${index} PLC`,
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '0'
+      ]),
+      reconstructedRows: Array.from({ length: 20 }, (_, index) => [
+        `VIS${index}.N0000`,
+        `Visible ${index} PLC`,
+        '1,000',
+        '10.00',
+        '10.10',
+        '500',
+        '10.05',
+        '1,000'
+      ]),
+      fallbackRows: Array.from({ length: 32 }, (_, index) => [
+        `DOC${index}.N0000`,
+        `Document ${index} PLC`,
+        '2,000',
+        '20.00',
+        '20.10',
+        '600',
+        '20.05',
+        '2,000'
+      ]),
+      fallbackScanMode: 'scroll',
+      fallbackScanSteps: 3,
+      scrollDiagnostics: {
+        logicalGridRoot: 'gridRoot:div.dojoxGrid',
+        logicalGridRootCandidates: 1,
+        penalizedGridRootCandidates: 0,
+        attemptedTargets: [
+          {
+            label: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+            tagName: 'div',
+            className: 'dojoxGridScrollbox',
+            scrollTop: 0,
+            scrollHeight: 240,
+            clientHeight: 240,
+            scrollable: false,
+            reason: 'rejected not scrollable (target not scrollable)'
+          },
+          {
+            label: 'document.scrollingElement:html',
+            tagName: 'html',
+            className: '',
+            scrollTop: 0,
+            scrollHeight: 2600,
+            clientHeight: 900,
+            scrollable: true,
+            reason: 'selected (32 unique tickers, windowChanges=3, stop=bottom reached)'
+          }
+        ],
+        selectedTarget: 'document.scrollingElement:html',
+        scrollTopBefore: 0,
+        scrollTopAfter: 1350,
+        restoredScrollTop: 0,
+        scrollHeight: 2600,
+        clientHeight: 900,
+        initialVisibleUniqueTickers: 20,
+        uniqueTickersByStep: [20, 26, 32],
+        stopReason: 'bottom reached',
+        stepDiagnostics: [
+          {
+            step: 0,
+            scrollTopBefore: 0,
+            scrollTopAfter: 720,
+            firstTicker: 'DOC0.N0000',
+            lastTicker: 'DOC19.N0000',
+            visibleRowCount: 20,
+            uniqueTickerCount: 20,
+            newTickerCount: 20,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 20,
+            newTickers: 20
+          },
+          {
+            step: 1,
+            scrollTopBefore: 720,
+            scrollTopAfter: 1350,
+            firstTicker: 'DOC6.N0000',
+            lastTicker: 'DOC25.N0000',
+            visibleRowCount: 20,
+            uniqueTickerCount: 26,
+            newTickerCount: 6,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 26,
+            newTickers: 6
+          },
+          {
+            step: 2,
+            scrollTopBefore: 1350,
+            scrollTopAfter: 1350,
+            firstTicker: 'DOC12.N0000',
+            lastTicker: 'DOC31.N0000',
+            visibleRowCount: 20,
+            uniqueTickerCount: 32,
+            newTickerCount: 6,
+            firstTickerChanged: true,
+            lastTickerChanged: true,
+            uniqueTickers: 32,
+            newTickers: 6
+          }
+        ]
+      },
+      headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+    };
+
+    const scan = await extractFullGridMarketWatchRows(createFakePage({ calls: [], fullGridScan }), 1_000);
+
+    expect(scan.scanMode).toBe('store_fallback_scroll');
+    expect(scan.uniqueTickers).toBe(32);
+    expect(scan.diagnostics.scrollDiagnostics?.selectedTarget).toBe('document.scrollingElement:html');
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual(
+      expect.arrayContaining(['store', 'store_reconstructed', 'store_fallback_scroll'])
+    );
+  });
+
+  it('falls back when store scan has many rows but zero usable snapshots', async () => {
+    const storeRows = Array.from({ length: 12 }, (_, index) => [
+      `BAD${index}.N0000`,
+      `Broken ${index} PLC`,
+      '-',
+      '-',
+      '-',
+      '-',
+      '-',
+      '0'
+    ]);
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: storeRows,
+        fallbackRows: [
+          ['LIVE.N0000', 'Live PLC', '1,000', '10.00', '10.10', '500', '10.05', '1,000']
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 2,
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.scanMode).toBe('store_fallback_scroll');
+    expect(scan.scanSteps).toBe(2);
+    expect(scan.rows.map((row) => row.Security)).toEqual(['LIVE.N0000']);
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual([
+      'store',
+      'store_fallback_scroll'
+    ]);
+    expect(scan.diagnostics.fallbackReason).toBe('store scan rejected: zero usable rows');
+    expect(scan.diagnostics.storeScanRejectedReason).toBe('zero usable rows');
+    expect(scan.diagnostics.storeQuality?.rawRows).toBe(12);
+    expect(scan.diagnostics.topRejectReasons?.map((reason) => reason.code)).toEqual(
+      expect.arrayContaining(['INVALID_BID_ASK', 'INVALID_LAST_PRICE', 'MISSING_NUMERIC_FIELDS'])
+    );
+  });
+
+  it('uses acceptable store scan rows without fallback', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          ['GOOD.N0000', 'Good PLC', '1,000', '10.00', '10.10', '500', '10.05', '1,000']
+        ],
+        fallbackRows: [
+          ['FALL.N0000', 'Fallback PLC', '2,000', '20.00', '20.10', '600', '20.05', '2,000']
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 1,
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.scanMode).toBe('store');
+    expect(scan.rows.map((row) => row.Security)).toEqual(['GOOD.N0000']);
+    expect(scan.diagnostics.storeQuality?.lowQuality).toBe(false);
+    expect(scan.diagnostics.storeScanRejectedReason).toBeUndefined();
+  });
+
+  it('falls back to visible rows when scroll fallback rows are unavailable', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: [
+          ['BAD1.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0'],
+          ['BAD2.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0']
+        ],
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.scanMode).toBe('store_fallback_visible');
+    expect(scan.rows.map((row) => row.Security)).toEqual(['SAMP.N0000']);
+    expect(scan.diagnostics.fallbackScanMode).toBe('visible');
+  });
+
+  it('does not create a false store_fallback_scroll candidate when helper targets cannot expand coverage', async () => {
+    const scan = await extractFullGridMarketWatchRows(
+      createFakePage({
+        calls: [],
+        fullGridScan: {
+          scanMode: 'store',
+          scanSteps: 0,
+          dojoGridCount: 1,
+          storeDiagnostics: [],
+          rows: [
+            ['BAD1.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0'],
+            ['BAD2.N0000', 'Broken PLC', '-', '-', '-', '-', '-', '0']
+          ],
+          fallbackRows: Array.from({ length: 25 }, (_, index) => [
+            `VIS${index}.N0000`,
+            `Visible ${index} PLC`,
+            '1,000',
+            '10.00',
+            '10.10',
+            '500',
+            '10.05',
+            '1,000'
+          ]),
+          fallbackScanMode: 'scroll',
+          fallbackScanSteps: 0,
+          scrollDiagnostics: {
+            logicalGridRoot: 'gridRoot:div.dojoxGrid',
+            logicalGridRootCandidates: 2,
+            penalizedGridRootCandidates: 1,
+            attemptedTargets: [
+              {
+                label: 'grid:div.dojoxGridRowbar.dojoxGridNonNormalizedCell',
+                tagName: 'div',
+                className: 'dojoxGridRowbar dojoxGridNonNormalizedCell',
+                scrollTop: 0,
+                scrollHeight: 20,
+                clientHeight: 20,
+                scrollable: false,
+                reason: 'rejected helper fragment'
+              }
+            ],
+            selectedTarget: 'grid:div.dojoxGridRowbar.dojoxGridNonNormalizedCell',
+            scrollTopBefore: 0,
+            scrollTopAfter: 0,
+            restoredScrollTop: 0,
+            scrollHeight: 20,
+            clientHeight: 20,
+            initialVisibleUniqueTickers: 25,
+            uniqueTickersByStep: [25],
+            stopReason: 'target not scrollable',
+            stepDiagnostics: [
+              {
+                step: 0,
+                scrollTopBefore: 0,
+                scrollTopAfter: 0,
+                firstTicker: 'VIS0.N0000',
+                lastTicker: 'VIS24.N0000',
+                visibleRowCount: 25,
+                uniqueTickerCount: 25,
+                newTickerCount: 25,
+                firstTickerChanged: false,
+                lastTickerChanged: false,
+                uniqueTickers: 25,
+                newTickers: 25
+              }
+            ]
+          },
+          headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+        }
+      }),
+      1_000
+    );
+
+    expect(scan.scanMode).toBe('store_fallback_visible');
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual([
+      'store',
+      'store_fallback_visible'
+    ]);
+    expect(scan.diagnostics.scrollDiagnostics?.selectedTarget).toBe('grid:div.dojoxGridRowbar.dojoxGridNonNormalizedCell');
+    expect(scan.diagnostics.scrollDiagnostics?.stopReason).toBe('target not scrollable');
+  });
+
+  it('reports no scroll expansion when scrollTop changes but the visible ticker window stays unchanged', async () => {
+    const scan = await extractFullGridMarketWatchRows(
+      createFakePage({
+        calls: [],
+        fullGridScan: {
+          scanMode: 'store',
+          scanSteps: 0,
+          dojoGridCount: 1,
+          storeDiagnostics: [],
+          rows: Array.from({ length: 30 }, (_, index) => [
+            `BAD${index}.N0000`,
+            `Broken ${index} PLC`,
+            '-',
+            '-',
+            '-',
+            '-',
+            '-',
+            '0'
+          ]),
+          fallbackRows: Array.from({ length: 101 }, (_, index) => [
+            `VIS${index}.N0000`,
+            `Visible ${index} PLC`,
+            '1,000',
+            '10.00',
+            '10.10',
+            '500',
+            '10.05',
+            '1,000'
+          ]),
+          fallbackScanMode: 'scroll',
+          fallbackScanSteps: 3,
+          scrollDiagnostics: {
+            logicalGridRoot: 'gridRoot:div#watchgrid.dojoxGrid.watchgrid',
+            logicalGridRootCandidates: 1591,
+            penalizedGridRootCandidates: 1584,
+            attemptedTargets: [
+              {
+                label: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+                tagName: 'div',
+                className: 'dojoxGridScrollbox',
+                scrollTop: 100,
+                scrollHeight: 32617,
+                clientHeight: 415,
+                scrollable: true,
+                reason: 'selected (101 unique tickers, windowChanges=0, stop=stale step limit reached)'
+              }
+            ],
+            selectedTarget: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+            scrollTopBefore: 100,
+            scrollTopAfter: 805.5999755859375,
+            restoredScrollTop: 100,
+            scrollHeight: 32617,
+            clientHeight: 415,
+            initialVisibleUniqueTickers: 101,
+            uniqueTickersByStep: [101, 101, 101],
+            stopReason: 'stale step limit reached',
+            stepDiagnostics: [
+              {
+                step: 0,
+                scrollTopBefore: 100,
+                scrollTopAfter: 455.2,
+                firstTicker: 'VIS0.N0000',
+                lastTicker: 'VIS100.N0000',
+                visibleRowCount: 101,
+                uniqueTickerCount: 101,
+                newTickerCount: 101,
+                firstTickerChanged: false,
+                lastTickerChanged: false,
+                uniqueTickers: 101,
+                newTickers: 101
+              },
+              {
+                step: 1,
+                scrollTopBefore: 455.2,
+                scrollTopAfter: 805.5999755859375,
+                firstTicker: 'VIS0.N0000',
+                lastTicker: 'VIS100.N0000',
+                visibleRowCount: 101,
+                uniqueTickerCount: 101,
+                newTickerCount: 0,
+                firstTickerChanged: false,
+                lastTickerChanged: false,
+                uniqueTickers: 101,
+                newTickers: 0
+              },
+              {
+                step: 2,
+                scrollTopBefore: 805.5999755859375,
+                scrollTopAfter: 805.5999755859375,
+                firstTicker: 'VIS0.N0000',
+                lastTicker: 'VIS100.N0000',
+                visibleRowCount: 101,
+                uniqueTickerCount: 101,
+                newTickerCount: 0,
+                firstTickerChanged: false,
+                lastTickerChanged: false,
+                uniqueTickers: 101,
+                newTickers: 0
+              }
+            ]
+          },
+          headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+        }
+      }),
+      1_000
+    );
+
+    expect(scan.scanMode).toBe('store_fallback_visible');
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual([
+      'store',
+      'store_fallback_visible'
+    ]);
+    expect(scan.diagnostics.fallbackScanMode).toBe('visible');
+    expect(scan.diagnostics.scrollDiagnostics?.uniqueTickersByStep).toEqual([101, 101, 101]);
+    expect(scan.diagnostics.scrollDiagnostics?.stepDiagnostics.every((step) => !step.firstTickerChanged && !step.lastTickerChanged)).toBe(true);
+  });
+
+  it('produces store_fallback_scroll after scroll refresh changes the visible ticker window', async () => {
+    const scan = await extractFullGridMarketWatchRows(
+      createFakePage({
+        calls: [],
+        fullGridScan: {
+          scanMode: 'store',
+          scanSteps: 0,
+          dojoGridCount: 1,
+          storeDiagnostics: [],
+          rows: Array.from({ length: 30 }, (_, index) => [
+            `BAD${index}.N0000`,
+            `Broken ${index} PLC`,
+            '-',
+            '-',
+            '-',
+            '-',
+            '-',
+            '0'
+          ]),
+          fallbackRows: Array.from({ length: 120 }, (_, index) => [
+            `SCR${index}.N0000`,
+            `Scrolled ${index} PLC`,
+            '2,000',
+            '20.00',
+            '20.10',
+            '600',
+            '20.05',
+            '2,000'
+          ]),
+          fallbackScanMode: 'scroll',
+          fallbackScanSteps: 3,
+          scrollDiagnostics: {
+            logicalGridRoot: 'gridRoot:div#watchgrid.dojoxGrid.watchgrid',
+            logicalGridRootCandidates: 4,
+            penalizedGridRootCandidates: 1,
+            attemptedTargets: [
+              {
+                label: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+                tagName: 'div',
+                className: 'dojoxGridScrollbox',
+                scrollTop: 100,
+                scrollHeight: 32617,
+                clientHeight: 415,
+                scrollable: true,
+                reason: 'selected (120 unique tickers, windowChanges=3, stop=bottom reached)'
+              }
+            ],
+            selectedTarget: '.dojoxGridScrollbox:div.dojoxGridScrollbox',
+            scrollTopBefore: 100,
+            scrollTopAfter: 1350,
+            restoredScrollTop: 100,
+            scrollHeight: 32617,
+            clientHeight: 415,
+            initialVisibleUniqueTickers: 101,
+            uniqueTickersByStep: [101, 110, 120],
+            stopReason: 'bottom reached',
+            stepDiagnostics: [
+              {
+                step: 0,
+                scrollTopBefore: 100,
+                scrollTopAfter: 515,
+                firstTicker: 'SCR9.N0000',
+                lastTicker: 'SCR109.N0000',
+                visibleRowCount: 101,
+                uniqueTickerCount: 101,
+                newTickerCount: 101,
+                firstTickerChanged: true,
+                lastTickerChanged: true,
+                uniqueTickers: 101,
+                newTickers: 101
+              },
+              {
+                step: 1,
+                scrollTopBefore: 515,
+                scrollTopAfter: 930,
+                firstTicker: 'SCR19.N0000',
+                lastTicker: 'SCR119.N0000',
+                visibleRowCount: 101,
+                uniqueTickerCount: 110,
+                newTickerCount: 9,
+                firstTickerChanged: true,
+                lastTickerChanged: true,
+                uniqueTickers: 110,
+                newTickers: 9
+              },
+              {
+                step: 2,
+                scrollTopBefore: 930,
+                scrollTopAfter: 1350,
+                firstTicker: 'SCR29.N0000',
+                lastTicker: 'SCR119.N0000',
+                visibleRowCount: 91,
+                uniqueTickerCount: 120,
+                newTickerCount: 10,
+                firstTickerChanged: true,
+                lastTickerChanged: false,
+                uniqueTickers: 120,
+                newTickers: 10
+              }
+            ]
+          },
+          headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+        }
+      }),
+      1_000
+    );
+
+    expect(scan.scanMode).toBe('store_fallback_scroll');
+    expect(scan.diagnostics.candidateScans?.map((candidate) => candidate.scanMode)).toEqual(
+      expect.arrayContaining(['store', 'store_fallback_scroll'])
+    );
+    expect(scan.diagnostics.scrollDiagnostics?.stepDiagnostics[0]).toMatchObject({
+      firstTicker: 'SCR9.N0000',
+      lastTicker: 'SCR109.N0000',
+      firstTickerChanged: true,
+      lastTickerChanged: true
+    });
+    expect(scan.diagnostics.scrollDiagnostics?.stepDiagnostics[2]).toMatchObject({
+      uniqueTickerCount: 120,
+      newTickerCount: 10
+    });
+  });
+
+  it('keeps rejection reason summaries bounded', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: Array.from({ length: 20 }, (_, index) => [
+          `BD${index}.N0000`,
+          'Broken PLC',
+          '-',
+          '-',
+          '-',
+          '-',
+          '-',
+          'bad'
+        ]),
+        fallbackRows: [
+          ['LIVE.N0000', 'Live PLC', '1,000', '10.00', '10.10', '500', '10.05', '1,000']
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 1,
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.diagnostics.topRejectReasons?.length).toBeLessThanOrEqual(5);
+    expect(scan.diagnostics.storeQuality?.rejectedRowSamples).toHaveLength(3);
+  });
+
+  it('chooses usable fallback rows over high-coverage unusable store rows', async () => {
+    const page = createFakePage({
+      calls: [],
+      fullGridScan: {
+        scanMode: 'store',
+        scanSteps: 0,
+        dojoGridCount: 1,
+        storeDiagnostics: [],
+        rows: Array.from({ length: 30 }, (_, index) => [
+          `BAD${index}.N0000`,
+          `Broken ${index} PLC`,
+          '-',
+          '-',
+          '-',
+          '-',
+          '-',
+          '0'
+        ]),
+        fallbackRows: [
+          ['ONE.N0000', 'One Good PLC', '1,000', '10.00', '10.10', '500', '10.05', '1,000']
+        ],
+        fallbackScanMode: 'scroll',
+        fallbackScanSteps: 1,
+        headerCells: ['Security', 'Company Name', 'Bid Qty', 'Bid Price', 'Ask Price', 'Ask Qty', 'Last', 'Volume']
+      }
+    });
+
+    const scan = await extractFullGridMarketWatchRows(page, 1_000);
+
+    expect(scan.scanMode).toBe('store_fallback_scroll');
+    expect(scan.uniqueTickers).toBe(1);
+    expect(scan.rows[0]?.Security).toBe('ONE.N0000');
+  });
+
   it('uses scroll fallback rows and deduplicates repeated tickers', async () => {
     const page = createFakePage({
       calls: [],
@@ -1930,6 +3011,25 @@ describe('manual ATrad observe-once helpers', () => {
     expect(source).toContain('FULL_GRID_SCAN_MAX_STEPS = 12');
     expect(source).toContain('staleStepLimit');
     expect(source).not.toMatch(/while\s*\(\s*true\s*\)/);
+  });
+
+  it('probes multiple safe scroll targets in the browser scan script', () => {
+    const source = readFileSync('scripts/manualATradObserveOnce.ts', 'utf8');
+
+    expect(source).toContain('.dojoxGridScrollbox');
+    expect(source).toContain('document.scrollingElement');
+    expect(source).toContain('document.documentElement');
+    expect(source).toContain('document.body');
+    expect(source).toContain('selectedTarget');
+    expect(source).toContain('uniqueTickersByStep');
+    expect(source).toContain('waitForVisibleTickerWindowRefresh');
+    expect(source).toContain('firstTickerChanged');
+    expect(source).toContain('lastTickerChanged');
+    expect(source).toContain('collectSynchronizedScrollElements');
+    expect(source).toContain('rejected visible ticker window unchanged');
+    expect(source).toContain("className.includes('dojoxgridrowbar')");
+    expect(source).toContain("className.includes('dojoxgridnonnormalizedcell')");
+    expect(source).not.toContain('collectDojoRowsFromGrid(grids[0])');
   });
 
   it('runs broad debug fallback and header text search when candidate count is zero', async () => {
@@ -2309,9 +3409,52 @@ interface ExtractionCandidatesPayload {
 }
 
 interface FullGridScanPayload {
-  scanMode: 'store' | 'scroll' | 'visible';
+  scanMode: 'store' | 'store_reconstructed' | 'scroll' | 'visible' | 'store_fallback_scroll' | 'store_fallback_visible';
   scanSteps: number;
   rows: string[][];
+  reconstructedRows?: string[][];
+  viewRows?: string[][][];
+  fallbackRows?: string[][];
+  fallbackScanMode?: 'scroll' | 'visible';
+  fallbackScanSteps?: number;
+  scrollDiagnostics?: {
+    logicalGridRoot?: string;
+    logicalGridRootCandidates?: number;
+    penalizedGridRootCandidates?: number;
+    attemptedTargets?: Array<{
+      label: string;
+      tagName: string;
+      className: string;
+      scrollTop: number;
+      scrollHeight: number;
+      clientHeight: number;
+      scrollable: boolean;
+      reason: string;
+    }>;
+    selectedTarget: string;
+    scrollTopBefore: number;
+    scrollTopAfter: number;
+    restoredScrollTop?: number;
+    scrollHeight: number;
+    clientHeight: number;
+    initialVisibleUniqueTickers: number;
+    uniqueTickersByStep: number[];
+    stopReason: string;
+    stepDiagnostics: Array<{
+      step: number;
+      scrollTopBefore: number;
+      scrollTopAfter: number;
+      firstTicker?: string;
+      lastTicker?: string;
+      visibleRowCount: number;
+      uniqueTickerCount: number;
+      newTickerCount: number;
+      firstTickerChanged: boolean;
+      lastTickerChanged: boolean;
+      uniqueTickers: number;
+      newTickers: number;
+    }>;
+  };
   headerCells: string[];
   dojoGridCount: number;
   storeDiagnostics: Array<{
