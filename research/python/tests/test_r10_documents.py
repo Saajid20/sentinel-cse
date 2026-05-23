@@ -162,3 +162,182 @@ def test_local_document_store_clear_removes_only_jsonl_file(tmp_path: Path) -> N
 
     assert not (parent / "documents.jsonl").exists()
     assert parent.exists()
+
+
+def test_local_document_store_exists_returns_true_for_stored_document_id(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    store.append(make_document())
+
+    assert store.exists("doc-001") is True
+
+
+def test_local_document_store_exists_returns_false_for_missing_document_id(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    store.append(make_document())
+
+    assert store.exists("doc-999") is False
+
+
+def test_local_document_store_exists_rejects_empty_document_id(tmp_path: Path) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+
+    with pytest.raises(ValueError, match="document_id must not be empty"):
+        store.exists("   ")
+
+
+def test_local_document_store_load_by_id_returns_matching_document(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    document = make_document()
+    store.append(document)
+
+    assert store.load_by_id("  doc-001  ") == document
+
+
+def test_local_document_store_load_by_id_returns_none_for_missing_document(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    store.append(make_document())
+
+    assert store.load_by_id("doc-999") is None
+
+
+def test_local_document_store_load_by_id_rejects_empty_document_id(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+
+    with pytest.raises(ValueError, match="document_id must not be empty"):
+        store.load_by_id(" ")
+
+
+def test_local_document_store_upsert_inserts_new_document(tmp_path: Path) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    document = make_document()
+
+    store.upsert(document)
+
+    assert store.load_all() == [document]
+
+
+def test_local_document_store_upsert_replaces_existing_document_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    original = make_document()
+    replacement = make_document(title="Updated title", raw_text="Updated raw text.")
+    store.append(original)
+
+    store.upsert(replacement)
+    loaded = store.load_all()
+
+    assert loaded == [replacement]
+    assert len(loaded) == 1
+
+
+def test_local_document_store_upsert_replacement_preserves_original_position(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    first = make_document(document_id="doc-001", title="First")
+    second = make_document(document_id="doc-002", title="Second")
+    replacement = make_document(document_id="doc-001", title="First updated")
+    store.append_many([first, second])
+
+    store.upsert(replacement)
+
+    assert [document.document_id for document in store.load_all()] == ["doc-001", "doc-002"]
+    assert store.load_all()[0].title == "First updated"
+
+
+def test_local_document_store_upsert_many_inserts_multiple_documents(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    documents = [
+        make_document(document_id="doc-001"),
+        make_document(document_id="doc-002", title="Second"),
+    ]
+
+    store.upsert_many(documents)
+
+    assert store.load_all() == documents
+
+
+def test_local_document_store_upsert_many_duplicate_input_last_one_wins(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    first = make_document(document_id="doc-001", title="First version")
+    last = make_document(document_id="doc-001", title="Last version")
+
+    store.upsert_many([first, last])
+
+    loaded = store.load_all()
+    assert loaded == [last]
+
+
+def test_local_document_store_upsert_many_does_not_duplicate_existing_document_ids(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    existing = make_document(document_id="doc-001", title="Existing")
+    updated_existing = make_document(document_id="doc-001", title="Updated existing")
+    new_document = make_document(document_id="doc-002", title="New document")
+    store.append(existing)
+
+    store.upsert_many([updated_existing, new_document])
+
+    loaded = store.load_all()
+    assert [document.document_id for document in loaded] == ["doc-001", "doc-002"]
+    assert loaded[0].title == "Updated existing"
+    assert loaded[1].title == "New document"
+
+
+def test_local_document_store_upsert_raises_value_error_for_invalid_existing_jsonl(
+    tmp_path: Path,
+) -> None:
+    store_path = tmp_path / "documents.jsonl"
+    store_path.write_text("{not-json}\n", encoding="utf-8")
+    store = LocalDocumentStore(store_path)
+
+    with pytest.raises(ValueError, match="Invalid JSON in document store at line 1"):
+        store.upsert(make_document())
+
+
+def test_local_document_store_append_remains_append_only_and_can_create_duplicates(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    first = make_document(document_id="doc-001", title="First version")
+    duplicate = make_document(document_id="doc-001", title="Duplicate version")
+
+    store.append(first)
+    store.append(duplicate)
+
+    loaded = store.load_all()
+    assert len(loaded) == 2
+    assert [document.title for document in loaded] == ["First version", "Duplicate version"]
+
+
+def test_local_document_store_load_all_still_works_after_upsert_operations(
+    tmp_path: Path,
+) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    store.upsert(make_document(document_id="doc-001", title="First"))
+    store.upsert_many(
+        [
+            make_document(document_id="doc-002", title="Second"),
+            make_document(document_id="doc-001", title="First updated"),
+        ]
+    )
+
+    loaded = store.load_all()
+    assert [document.document_id for document in loaded] == ["doc-001", "doc-002"]
+    assert [document.title for document in loaded] == ["First updated", "Second"]

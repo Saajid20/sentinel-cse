@@ -156,6 +156,33 @@ def test_ingest_documents_rejects_list_with_non_source_document_and_stores_nothi
     assert store.load_all() == []
 
 
+def test_ingest_documents_mode_upsert_stores_without_duplicates(tmp_path: Path) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    store.append(make_document(document_id="doc-001", title="Original"))
+    source = StaticDocumentSource(
+        [
+            make_document(document_id="doc-001", title="Updated"),
+            make_document(document_id="doc-002", title="New"),
+        ]
+    )
+
+    result = ingest_documents(source, store, mode="upsert")
+
+    assert result.fetched_count == 2
+    assert result.stored_count == 2
+    loaded = store.load_all()
+    assert [document.document_id for document in loaded] == ["doc-001", "doc-002"]
+    assert [document.title for document in loaded] == ["Updated", "New"]
+
+
+def test_ingest_documents_invalid_mode_raises_clear_error(tmp_path: Path) -> None:
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+    source = StaticDocumentSource([make_document()])
+
+    with pytest.raises(ValueError, match="mode must be 'append' or 'upsert'"):
+        ingest_documents(source, store, mode="replace")  # type: ignore[arg-type]
+
+
 def test_ingestion_result_strips_empty_document_ids_and_errors() -> None:
     result = IngestionResult(
         source_name=" static ",

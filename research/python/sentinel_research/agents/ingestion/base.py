@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator, field_validator
 
@@ -47,8 +48,11 @@ def ingest_documents(
     source: DocumentSource,
     store: LocalDocumentStore,
     source_name: str | None = None,
+    mode: Literal["append", "upsert"] = "append",
 ) -> IngestionResult:
     resolved_source_name = source_name or getattr(source, "name", type(source).__name__)
+    if mode not in {"append", "upsert"}:
+        raise ValueError("mode must be 'append' or 'upsert'")
 
     try:
         fetched_documents = source.fetch()
@@ -94,7 +98,10 @@ def ingest_documents(
             skipped_count=0,
         )
 
-    store.append_many(fetched_documents)
+    if mode == "append":
+        store.append_many(fetched_documents)
+    else:
+        store.upsert_many(fetched_documents)
     return IngestionResult(
         source_name=resolved_source_name,
         fetched_count=len(fetched_documents),
