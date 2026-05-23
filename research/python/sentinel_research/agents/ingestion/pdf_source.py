@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
-import re
+import importlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,15 +10,6 @@ from typing import Callable
 from sentinel_research.agents.documents import SourceDocument, build_normalized_text
 from sentinel_research.agents.ingestion.base import DocumentSource
 from sentinel_research.agents.schemas import SourceType
-
-_PDF_PAGE_RE = re.compile(rb"/Type\s*/Page\b")
-_PDF_TJ_RE = re.compile(rb"\((?P<text>(?:\\.|[^\\)])*)\)\s*Tj")
-_PDF_TJ_ARRAY_RE = re.compile(rb"\[(?P<items>.*?)\]\s*TJ", re.DOTALL)
-_PDF_LITERAL_RE = re.compile(rb"\((?P<text>(?:\\.|[^\\)])*)\)")
-
-_HAS_PYPDF = importlib.util.find_spec("pypdf") is not None
-if _HAS_PYPDF:
-    from pypdf import PdfReader  # type: ignore[import-not-found]
 
 
 class PdfExtractionError(Exception):
@@ -44,82 +34,29 @@ def _read_pdf_bytes(path: Path) -> bytes:
     return data
 
 
-def _decode_pdf_literal(value: bytes) -> str:
-    chars: list[str] = []
-    index = 0
-    while index < len(value):
-        byte = value[index]
-        if byte != 0x5C:
-            chars.append(chr(byte))
-            index += 1
-            continue
-
-        index += 1
-        if index >= len(value):
-            chars.append("\\")
-            break
-
-        escaped = value[index]
-        escape_map = {
-            ord("n"): "\n",
-            ord("r"): "\r",
-            ord("t"): "\t",
-            ord("b"): "\b",
-            ord("f"): "\f",
-            ord("("): "(",
-            ord(")"): ")",
-            ord("\\"): "\\",
-        }
-        if escaped in escape_map:
-            chars.append(escape_map[escaped])
-            index += 1
-            continue
-
-        if 48 <= escaped <= 55:
-            octal_digits = bytes([escaped])
-            index += 1
-            for _ in range(2):
-                if index < len(value) and 48 <= value[index] <= 55:
-                    octal_digits += bytes([value[index]])
-                    index += 1
-                else:
-                    break
-            chars.append(chr(int(octal_digits, 8)))
-            continue
-
-        chars.append(chr(escaped))
-        index += 1
-
-    return "".join(chars)
-
-
-def _extract_text_with_basic_parser(data: bytes) -> tuple[str, int | None]:
-    text_parts: list[str] = []
-
-    for match in _PDF_TJ_RE.finditer(data):
-        text_parts.append(_decode_pdf_literal(match.group("text")))
-
-    for match in _PDF_TJ_ARRAY_RE.finditer(data):
-        items = match.group("items")
-        for literal_match in _PDF_LITERAL_RE.finditer(items):
-            text_parts.append(_decode_pdf_literal(literal_match.group("text")))
-
-    page_count = len(_PDF_PAGE_RE.findall(data)) or None
-    return "\n".join(part for part in text_parts if part.strip()), page_count
+def _import_pypdf_reader():
+    try:
+        return importlib.import_module("pypdf").PdfReader
+    except ModuleNotFoundError as error:
+        raise PdfExtractionError(
+            "pypdf is required for local PDF ingestion. Install a compatible version from "
+            "research/python/requirements.txt."
+        ) from error
 
 
 def _extract_pdf_text(path: Path) -> tuple[str, int | None]:
-    data = _read_pdf_bytes(path)
+    _read_pdf_bytes(path)
+    reader_class = _import_pypdf_reader()
 
-    if _HAS_PYPDF:
-        try:
-            reader = PdfReader(path)
+    try:
+        with path.open("rb") as handle:
+            reader = reader_class(handle)
             page_texts = [page.extract_text() or "" for page in reader.pages]
-        except Exception as error:  # pragma: no cover
-            raise PdfExtractionError(f"Failed to extract PDF text from {path}: {error}") from error
-        return "\n".join(text for text in page_texts if text.strip()), len(reader.pages)
+            page_count = len(reader.pages)
+    except Exception as error:
+        raise PdfExtractionError(f"Failed to extract PDF text from {path}: {error}") from error
 
-    return _extract_text_with_basic_parser(data)
+    return "\n".join(text for text in page_texts if text.strip()), page_count
 
 
 def _build_pdf_document(

@@ -18,6 +18,7 @@ from sentinel_research.agents.ingestion import (  # noqa: E402
     PdfFileDocumentSource,
     ingest_documents,
 )
+from sentinel_research.agents.ingestion import pdf_source as pdf_source_module  # noqa: E402
 from sentinel_research.agents.schemas import SourceType  # noqa: E402
 
 
@@ -35,6 +36,48 @@ def tmp_path() -> Path:
 
 def _pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+class _FakePdfPage:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def extract_text(self) -> str:
+        return self._text
+
+
+def _make_fake_pdf_reader(
+    *,
+    page_texts_by_name: dict[str, list[str]] | None = None,
+    error: Exception | None = None,
+):
+    class FakePdfReader:
+        def __init__(self, handle) -> None:
+            if error is not None:
+                raise error
+            texts = (page_texts_by_name or {}).get(Path(handle.name).name, [Path(handle.name).stem])
+            self.pages = [_FakePdfPage(text) for text in texts]
+
+    return FakePdfReader
+
+
+@pytest.fixture
+def patch_pypdf_reader(monkeypatch):
+    def _patch(
+        *,
+        page_texts_by_name: dict[str, list[str]] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        monkeypatch.setattr(
+            pdf_source_module,
+            "_import_pypdf_reader",
+            lambda: _make_fake_pdf_reader(
+                page_texts_by_name=page_texts_by_name,
+                error=error,
+            ),
+        )
+
+    return _patch
 
 
 def write_simple_pdf(path: Path, text: str) -> None:
@@ -73,9 +116,11 @@ def write_simple_pdf(path: Path, text: str) -> None:
 
 def test_pdf_file_document_source_loads_local_pdf_into_source_document(
     tmp_path: Path,
+    patch_pypdf_reader,
 ) -> None:
     pdf_path = tmp_path / "notice.pdf"
     write_simple_pdf(pdf_path, "CBSL policy update")
+    patch_pypdf_reader(page_texts_by_name={"notice.pdf": ["CBSL policy update"]})
 
     source = PdfFileDocumentSource(pdf_path)
     documents = source.fetch()
@@ -105,18 +150,37 @@ def test_pdf_file_document_source_raises_for_non_pdf_extension(tmp_path: Path) -
 
 def test_pdf_file_document_source_raises_for_empty_unextractable_pdf_text(
     tmp_path: Path,
+    patch_pypdf_reader,
 ) -> None:
     pdf_path = tmp_path / "empty.pdf"
     write_simple_pdf(pdf_path, "   ")
+    patch_pypdf_reader(page_texts_by_name={"empty.pdf": ["   ", "\n"]})
     source = PdfFileDocumentSource(pdf_path)
 
     with pytest.raises(PdfExtractionError, match="No extractable PDF text found"):
         source.fetch()
 
 
-def test_pdf_file_document_source_uses_provided_metadata_fields(tmp_path: Path) -> None:
+def test_pdf_file_document_source_wraps_pypdf_extraction_errors(
+    tmp_path: Path,
+    patch_pypdf_reader,
+) -> None:
+    pdf_path = tmp_path / "broken.pdf"
+    write_simple_pdf(pdf_path, "ignored")
+    patch_pypdf_reader(error=RuntimeError("boom"))
+    source = PdfFileDocumentSource(pdf_path)
+
+    with pytest.raises(PdfExtractionError, match="Failed to extract PDF text from .*broken.pdf: boom"):
+        source.fetch()
+
+
+def test_pdf_file_document_source_uses_provided_metadata_fields(
+    tmp_path: Path,
+    patch_pypdf_reader,
+) -> None:
     pdf_path = tmp_path / "notice.pdf"
     write_simple_pdf(pdf_path, "Dividend update")
+    patch_pypdf_reader(page_texts_by_name={"notice.pdf": ["Dividend update"]})
     published_at = datetime(2026, 5, 24, 9, 0, tzinfo=timezone.utc)
     source = PdfFileDocumentSource(
         pdf_path,
@@ -139,9 +203,11 @@ def test_pdf_file_document_source_uses_provided_metadata_fields(tmp_path: Path) 
 
 def test_pdf_file_document_source_uses_injected_now_for_retrieved_at(
     tmp_path: Path,
+    patch_pypdf_reader,
 ) -> None:
     pdf_path = tmp_path / "notice.pdf"
     write_simple_pdf(pdf_path, "CBSL policy update")
+    patch_pypdf_reader(page_texts_by_name={"notice.pdf": ["CBSL policy update"]})
     fixed_now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
     source = PdfFileDocumentSource(pdf_path, now=lambda: fixed_now)
 
@@ -150,22 +216,28 @@ def test_pdf_file_document_source_uses_injected_now_for_retrieved_at(
 
 def test_pdf_file_document_source_metadata_includes_file_information(
     tmp_path: Path,
+    patch_pypdf_reader,
 ) -> None:
     pdf_path = tmp_path / "notice.pdf"
     write_simple_pdf(pdf_path, "CBSL policy update")
+    patch_pypdf_reader(page_texts_by_name={"notice.pdf": ["Page 1", "Page 2"]})
     source = PdfFileDocumentSource(pdf_path, metadata={"priority": 1})
     document = source.fetch()[0]
 
     assert document.metadata["file_path"] == str(pdf_path.resolve())
     assert document.metadata["file_name"] == "notice.pdf"
     assert document.metadata["ingestion_source"] == "pdf_file"
-    assert document.metadata["page_count"] == 1
+    assert document.metadata["page_count"] == 2
     assert document.metadata["priority"] == 1
 
 
-def test_pdf_file_document_source_document_id_is_deterministic(tmp_path: Path) -> None:
+def test_pdf_file_document_source_document_id_is_deterministic(
+    tmp_path: Path,
+    patch_pypdf_reader,
+) -> None:
     pdf_path = tmp_path / "notice.pdf"
     write_simple_pdf(pdf_path, "CBSL policy update")
+    patch_pypdf_reader(page_texts_by_name={"notice.pdf": ["CBSL policy update"]})
     source = PdfFileDocumentSource(pdf_path)
 
     first = source.fetch()[0].document_id
@@ -174,9 +246,18 @@ def test_pdf_file_document_source_document_id_is_deterministic(tmp_path: Path) -
     assert first == second
 
 
-def test_directory_pdf_document_source_loads_pdfs_in_sorted_order(tmp_path: Path) -> None:
+def test_directory_pdf_document_source_loads_pdfs_in_sorted_order(
+    tmp_path: Path,
+    patch_pypdf_reader,
+) -> None:
     write_simple_pdf(tmp_path / "b.pdf", "Second")
     write_simple_pdf(tmp_path / "a.pdf", "First")
+    patch_pypdf_reader(
+        page_texts_by_name={
+            "a.pdf": ["First"],
+            "b.pdf": ["Second"],
+        }
+    )
 
     source = DirectoryPdfDocumentSource(tmp_path)
     documents = source.fetch()
@@ -204,9 +285,16 @@ def test_directory_pdf_document_source_raises_file_not_found_for_missing_directo
 
 def test_directory_pdf_document_source_can_be_used_with_ingest_documents_upsert(
     tmp_path: Path,
+    patch_pypdf_reader,
 ) -> None:
     write_simple_pdf(tmp_path / "a.pdf", "First PDF")
     write_simple_pdf(tmp_path / "b.pdf", "Second PDF")
+    patch_pypdf_reader(
+        page_texts_by_name={
+            "a.pdf": ["First PDF"],
+            "b.pdf": ["Second PDF"],
+        }
+    )
     source = DirectoryPdfDocumentSource(
         tmp_path,
         source_type=SourceType.NEWS,
@@ -223,3 +311,23 @@ def test_directory_pdf_document_source_can_be_used_with_ingest_documents_upsert(
     assert second_result.stored_count == 2
     assert len(loaded) == 2
     assert [document.title for document in loaded] == ["a", "b"]
+
+
+def test_pdf_file_document_source_can_be_used_with_ingest_documents_upsert(
+    tmp_path: Path,
+    patch_pypdf_reader,
+) -> None:
+    pdf_path = tmp_path / "notice.pdf"
+    write_simple_pdf(pdf_path, "PDF content")
+    patch_pypdf_reader(page_texts_by_name={"notice.pdf": ["PDF content"]})
+    source = PdfFileDocumentSource(pdf_path, source_type=SourceType.CBSL)
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+
+    first_result = ingest_documents(source, store, mode="upsert")
+    second_result = ingest_documents(source, store, mode="upsert")
+    loaded = store.load_all()
+
+    assert first_result.stored_count == 1
+    assert second_result.stored_count == 1
+    assert len(loaded) == 1
+    assert loaded[0].raw_text == "PDF content"
