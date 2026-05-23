@@ -34,6 +34,8 @@ python -m pip install -r research/python/requirements.txt
 
 The first version uses the Python standard library for analysis. `pytest` is included for tests.
 
+The news analyst agent adds a single external dependency: the official `openai` Python SDK, used against DeepSeek by overriding the API base URL.
+
 ## Probe Commands
 
 ```powershell
@@ -94,6 +96,19 @@ Optional report outputs:
 ```powershell
 python research/python/scripts/compare_sessions.py --input research/python/sample_data/sample_session.json --input research/python/sample_data/sample_session.json --output-md research/python/reports/compare.md --output-csv research/python/reports/compare.csv
 ```
+
+## R10 News Analyst Agent
+
+The current R10 news analyst lives under `research/python/sentinel_research/agents/` and separates schema validation, provider calls, and orchestration.
+
+Manual runtime smoke test only:
+
+```powershell
+$env:DEEPSEEK_API_KEY="your-key"
+python research/python/scripts/test_r10_agent.py
+```
+
+This smoke test is for manual execution only after setting `DEEPSEEK_API_KEY`. It is not run by `pytest` or CI.
 
 ## Reports
 

@@ -14,6 +14,27 @@ _REQUIRED_FIELDS = (
     "manual_review_required, confidence, valid_until, staleness_risk, "
     "reason_codes, short_summary, sources"
 )
+_ENUM_CONTRACT = (
+    "ENUM CONTRACT:\n"
+    "- analysis_scope: MARKET, SECTOR, TICKER\n"
+    "- macro_risk_level: LOW, MEDIUM, HIGH\n"
+    "- sentiment: BULLISH, BEARISH, NEUTRAL, MIXED\n"
+    "- signal_policy: SUPPORT, BLOCK, MANUAL_REVIEW, NO_EFFECT\n"
+    "- staleness_risk: LOW, MEDIUM, HIGH\n"
+    "- source_type: CBSL, CSE_DISCLOSURE, NEWS, DAILY_FT, OTHER"
+)
+_EXAMPLE_JSON = (
+    '{"schema_version":"r10_news_analyst_v1","analysis_scope":"MARKET",'
+    '"ticker":null,"sector":null,"macro_risk_level":"MEDIUM",'
+    '"sentiment":"NEUTRAL","catalyst_tags":["MACRO"],"affected_tickers":[],'
+    '"affected_sectors":["BANKING"],"signal_policy":"NO_EFFECT",'
+    '"manual_review_required":false,"confidence":0.6,'
+    '"valid_until":"2026-01-01T00:00:00Z","staleness_risk":"MEDIUM",'
+    '"reason_codes":["INFO_ONLY"],'
+    '"short_summary":"Macro update with limited immediate market impact.",'
+    '"sources":[{"source_type":"CBSL","title":"Example source","url":null,'
+    '"published_at":null,"retrieved_at":"2026-01-01T00:00:00Z"}]}'
+)
 
 
 def _json_prompt_value(value: Any) -> str:
@@ -114,12 +135,19 @@ class ContextAgent:
             'Use schema_version "r10_news_analyst_v1".\n'
             "R10 is context/risk only. Do not output buy/sell/hold/target price/"
             "order instructions.\n"
-            "signal_policy must be one of SUPPORT, BLOCK, MANUAL_REVIEW, NO_EFFECT.\n"
             "Every output must include the provided sources. Do not invent sources, "
             "URLs, or published_at values.\n"
             "If evidence is weak or unclear, use MANUAL_REVIEW.\n"
             "If the document has no meaningful market impact, use NO_EFFECT.\n"
+            "Do not use synonyms.\n"
+            "Do not use POSITIVE or NEGATIVE for sentiment.\n"
+            'Do not use "CSE News Analysis" for analysis_scope.\n'
+            "Use MARKET when analyzing market/macro-wide text.\n"
+            "Use SECTOR only when a specific sector is the primary scope.\n"
+            "Use TICKER only when a specific ticker is the primary scope.\n"
+            f"{_ENUM_CONTRACT}\n"
             f"Required JSON fields: {_REQUIRED_FIELDS}.\n"
+            f"Example JSON: {_EXAMPLE_JSON}\n"
             f"Provided sources JSON: {sources_json}"
         )
 
@@ -127,6 +155,13 @@ class ContextAgent:
     def _build_repair_prompt(cls, sources: list[dict], validation_error: str) -> str:
         return (
             f"{cls._build_prompt(sources)}\n"
-            "Your previous response failed validation. Return corrected JSON only.\n"
+            "Your previous response failed validation.\n"
+            "Return the same schema again as JSON only.\n"
+            "Replace invalid enum values with exact allowed enum values.\n"
+            'Do not use synonyms like POSITIVE, NEGATIVE, CSE News Analysis, BUY, '
+            "SELL, HOLD.\n"
+            "Do not change or invent sources.\n"
+            "Do not wrap JSON in markdown fences.\n"
+            f"{_ENUM_CONTRACT}\n"
             f"Validation error: {validation_error}"
         )

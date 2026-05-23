@@ -72,6 +72,10 @@ def test_valid_provider_json_returns_cse_news_analysis() -> None:
     assert result.schema_version == "r10_news_analyst_v1"
     assert result.sources[0].title == "Daily FT market wrap"
     assert "Return JSON only." in provider.calls[0]["prompt"]
+    assert "ENUM CONTRACT:" in provider.calls[0]["prompt"]
+    assert "analysis_scope: MARKET, SECTOR, TICKER" in provider.calls[0]["prompt"]
+    assert "sentiment: BULLISH, BEARISH, NEUTRAL, MIXED" in provider.calls[0]["prompt"]
+    assert '"analysis_scope":"MARKET"' in provider.calls[0]["prompt"]
     assert "\"title\":\"Daily FT market wrap\"" in provider.calls[0]["prompt"]
 
 
@@ -93,6 +97,9 @@ def test_invalid_json_first_response_then_valid_repair_response_succeeds() -> No
 
     assert isinstance(result, CseNewsAnalysis)
     assert "Validation error:" in provider.calls[1]["prompt"]
+    assert "ENUM CONTRACT:" in provider.calls[1]["prompt"]
+    assert "Replace invalid enum values with exact allowed enum values." in provider.calls[1]["prompt"]
+    assert "POSITIVE, NEGATIVE, CSE News Analysis, BUY, SELL, HOLD" in provider.calls[1]["prompt"]
 
 
 def test_invalid_json_twice_raises_r10_analysis_error() -> None:
@@ -113,6 +120,19 @@ def test_schema_invalid_json_first_response_then_valid_repair_response_succeeds(
 
     assert isinstance(result, CseNewsAnalysis)
     assert "confidence" in provider.calls[1]["prompt"]
+
+
+def test_repair_prompt_warns_against_positive_and_cse_news_analysis() -> None:
+    bad_payload = make_valid_payload()
+    bad_payload["analysis_scope"] = "CSE News Analysis"
+    provider = FakeProvider([json.dumps(bad_payload), json.dumps(make_valid_payload())])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert "CSE News Analysis" in provider.calls[1]["prompt"]
+    assert "POSITIVE" in provider.calls[1]["prompt"]
 
 
 def test_empty_document_raises_value_error() -> None:
