@@ -32,9 +32,15 @@ def tmp_path() -> Path:
 
 
 class FakeResponse:
-    def __init__(self, body: str, status: int = 200) -> None:
+    def __init__(
+        self,
+        body: str,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._body = body.encode("utf-8")
         self.status = status
+        self.headers = headers or {}
 
     def read(self) -> bytes:
         return self._body
@@ -136,6 +142,33 @@ def test_fetch_raises_cbsl_fetch_error_for_non_200_response() -> None:
         source.fetch()
 
 
+def test_pdf_url_raises_cbsl_fetch_error() -> None:
+    source = CbslUrlDocumentSource(["https://cbsl.gov.lk/files/report.pdf"])
+
+    with pytest.raises(CbslFetchError, match="PDF extraction is not supported yet"):
+        source.fetch()
+
+
+def test_pdf_url_with_uppercase_extension_and_query_string_raises_cbsl_fetch_error() -> None:
+    source = CbslUrlDocumentSource(["https://cbsl.gov.lk/files/report.PDF?download=1"])
+
+    with pytest.raises(CbslFetchError, match="PDF extraction is not supported yet"):
+        source.fetch()
+
+
+def test_application_pdf_content_type_raises_cbsl_fetch_error() -> None:
+    def fake_http_get(url: str, **_: object) -> FakeResponse:
+        return FakeResponse(
+            "%PDF-1.7 fake",
+            headers={"Content-Type": "application/pdf"},
+        )
+
+    source = CbslUrlDocumentSource(["https://cbsl.gov.lk/files/report"], http_get=fake_http_get)
+
+    with pytest.raises(CbslFetchError, match="PDF extraction is not supported yet"):
+        source.fetch()
+
+
 def test_multiple_urls_return_multiple_source_documents_in_input_order() -> None:
     def fake_http_get(url: str, **_: object) -> FakeResponse:
         title = "First" if url.endswith("/1") else "Second"
@@ -191,3 +224,19 @@ def test_cbsl_url_document_source_can_be_used_with_ingest_documents_upsert(
     assert second_result.stored_count == 1
     assert len(loaded) == 1
     assert loaded[0].source_type.value == "CBSL"
+
+
+def test_ingest_documents_with_pdf_source_returns_error_and_stores_nothing(
+    tmp_path: Path,
+) -> None:
+    source = CbslUrlDocumentSource(["https://cbsl.gov.lk/files/report.pdf"])
+    store = LocalDocumentStore(tmp_path / "documents.jsonl")
+
+    result = ingest_documents(source, store, mode="upsert")
+
+    assert result.fetched_count == 0
+    assert result.stored_count == 0
+    assert result.errors == [
+        "PDF extraction is not supported yet for CBSL URL: https://cbsl.gov.lk/files/report.pdf"
+    ]
+    assert store.load_all() == []

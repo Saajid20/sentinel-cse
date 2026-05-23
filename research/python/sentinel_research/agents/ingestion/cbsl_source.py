@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Callable, Any
@@ -94,6 +95,27 @@ def _extract_html_content(html: str) -> tuple[str, str]:
     return title, raw_text
 
 
+def _is_pdf_url(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(".pdf")
+
+
+def _response_content_type(response: object) -> str | None:
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        get_content_type = getattr(headers, "get_content_type", None)
+        if callable(get_content_type):
+            return str(get_content_type()).lower()
+        get = getattr(headers, "get", None)
+        if callable(get):
+            value = get("Content-Type")
+            if value is not None:
+                return str(value).lower()
+    content_type = getattr(response, "content_type", None)
+    if content_type is not None:
+        return str(content_type).lower()
+    return None
+
+
 class CbslUrlDocumentSource(DocumentSource):
     def __init__(
         self,
@@ -121,6 +143,9 @@ class CbslUrlDocumentSource(DocumentSource):
         return documents
 
     def _fetch_one(self, url: str) -> SourceDocument:
+        if _is_pdf_url(url):
+            raise CbslFetchError(f"PDF extraction is not supported yet for CBSL URL: {url}")
+
         try:
             response = self._http_get(
                 url,
@@ -133,6 +158,9 @@ class CbslUrlDocumentSource(DocumentSource):
         status = getattr(response, "status", getattr(response, "status_code", 200))
         if status != 200:
             raise CbslFetchError(f"Failed to fetch CBSL URL {url}: HTTP {status}")
+        content_type = _response_content_type(response)
+        if content_type is not None and "application/pdf" in content_type:
+            raise CbslFetchError(f"PDF extraction is not supported yet for CBSL URL: {url}")
 
         html = self._decode_response_content(response, url)
         title, raw_text = _extract_html_content(html)
