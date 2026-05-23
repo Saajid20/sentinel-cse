@@ -117,7 +117,7 @@ def main() -> int:
         query = DocumentQuery(
             keywords=["CBSL", "rate cut", "banking"],
             sectors=["BANKING"],
-            limit=2,
+            limit=1,
         )
         analysis = analyzer.analyze(query)
 
