@@ -23,6 +23,37 @@ def _json_prompt_value(value: Any) -> str:
     return str(value)
 
 
+def _normalize_source_type(value: Any) -> str:
+    return str(getattr(value, "value", value)).strip()
+
+
+def _normalize_source_title(value: Any) -> str:
+    return str(value).strip()
+
+
+def _normalize_source_url(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _source_identity(source: Any) -> tuple[str, str, str | None]:
+    if hasattr(source, "source_type"):
+        source_type = getattr(source, "source_type")
+        title = getattr(source, "title")
+        url = getattr(source, "url", None)
+    else:
+        source_type = source["source_type"]
+        title = source["title"]
+        url = source.get("url")
+    return (
+        _normalize_source_type(source_type),
+        _normalize_source_title(title),
+        _normalize_source_url(url),
+    )
+
+
 class R10AnalysisError(Exception):
     """Raised when R10 analysis output remains invalid after one repair retry."""
 
@@ -41,7 +72,7 @@ class ContextAgent:
         raw_output = self._provider.analyze_context(document=document, prompt=prompt)
 
         try:
-            return CseNewsAnalysis.model_validate_json(raw_output)
+            analysis = CseNewsAnalysis.model_validate_json(raw_output)
         except ValidationError as first_error:
             repair_prompt = self._build_repair_prompt(sources, str(first_error))
             repaired_output = self._provider.analyze_context(
@@ -49,12 +80,26 @@ class ContextAgent:
                 prompt=repair_prompt,
             )
             try:
-                return CseNewsAnalysis.model_validate_json(repaired_output)
+                analysis = CseNewsAnalysis.model_validate_json(repaired_output)
             except ValidationError as repair_error:
                 raise R10AnalysisError(
                     "LLM output failed CseNewsAnalysis validation after one repair retry. "
                     f"first_error={first_error} repair_error={repair_error}"
                 ) from repair_error
+        self._assert_sources_match(analysis, sources)
+        return analysis
+
+    @staticmethod
+    def _assert_sources_match(analysis: CseNewsAnalysis, sources: list[dict]) -> None:
+        allowed_sources = {_source_identity(source) for source in sources}
+        unexpected_sources = [
+            source for source in analysis.sources if _source_identity(source) not in allowed_sources
+        ]
+        if unexpected_sources:
+            raise R10AnalysisError(
+                "LLM output contained source entries not present in the provided input sources. "
+                f"unexpected_sources={unexpected_sources!r}"
+            )
 
     @staticmethod
     def _build_prompt(sources: list[dict]) -> str:

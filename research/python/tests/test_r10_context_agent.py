@@ -75,6 +75,16 @@ def test_valid_provider_json_returns_cse_news_analysis() -> None:
     assert "\"title\":\"Daily FT market wrap\"" in provider.calls[0]["prompt"]
 
 
+def test_valid_output_with_matching_source_passes() -> None:
+    provider = FakeProvider([json.dumps(make_valid_payload())])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert len(result.sources) == 1
+
+
 def test_invalid_json_first_response_then_valid_repair_response_succeeds() -> None:
     provider = FakeProvider(["not-json", json.dumps(make_valid_payload())])
     agent = ContextAgent(provider)
@@ -151,3 +161,45 @@ def test_unsafe_buy_sell_language_from_provider_is_rejected_and_triggers_repair(
     assert isinstance(result, CseNewsAnalysis)
     assert len(provider.calls) == 2
     assert "short_summary" in provider.calls[1]["prompt"]
+
+
+def test_output_with_invented_url_raises_r10_analysis_error() -> None:
+    bad_payload = make_valid_payload()
+    bad_payload["sources"] = [{**make_sources()[0], "url": "https://example.com/invented"}]
+    provider = FakeProvider([json.dumps(bad_payload)])
+    agent = ContextAgent(provider)
+
+    with pytest.raises(R10AnalysisError, match="not present in the provided input sources"):
+        agent.process_document(DOCUMENT, make_sources())
+
+
+def test_output_with_invented_title_raises_r10_analysis_error() -> None:
+    bad_payload = make_valid_payload()
+    bad_payload["sources"] = [{**make_sources()[0], "title": "Invented title"}]
+    provider = FakeProvider([json.dumps(bad_payload)])
+    agent = ContextAgent(provider)
+
+    with pytest.raises(R10AnalysisError, match="not present in the provided input sources"):
+        agent.process_document(DOCUMENT, make_sources())
+
+
+def test_output_with_invented_source_type_raises_r10_analysis_error() -> None:
+    bad_payload = make_valid_payload()
+    bad_payload["sources"] = [{**make_sources()[0], "source_type": "OTHER"}]
+    provider = FakeProvider([json.dumps(bad_payload)])
+    agent = ContextAgent(provider)
+
+    with pytest.raises(R10AnalysisError, match="not present in the provided input sources"):
+        agent.process_document(DOCUMENT, make_sources())
+
+
+def test_none_url_and_empty_string_url_are_treated_as_equivalent() -> None:
+    input_sources = [{**make_sources()[0], "url": ""}]
+    payload = make_valid_payload()
+    payload["sources"] = [{**make_sources()[0], "url": None}]
+    provider = FakeProvider([json.dumps(payload)])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, input_sources)
+
+    assert isinstance(result, CseNewsAnalysis)
