@@ -20,6 +20,7 @@ FIXTURE_PATH = (
 )
 
 _UNSAFE_PATTERN = re.compile(r"\b(?:buy|sell|hold|order)\b", re.IGNORECASE)
+_FORBIDDEN_EXPECTED_VALUES = {"BUY", "SELL", "HOLD", "LONG", "SHORT", "ORDER", "TARGET_PRICE"}
 
 
 def test_mock_documents_fixture_exists() -> None:
@@ -42,21 +43,63 @@ def test_each_case_has_required_fields() -> None:
         "document",
         "expected",
     }
-    required_expected_keys = {
-        "analysis_scope",
-        "macro_risk_level",
-        "sentiment",
-        "signal_policy",
-        "must_include_catalyst_tags",
-        "must_include_affected_sectors",
-        "manual_review_required",
-    }
 
     cases = load_mock_documents()
 
     for case in cases:
         assert required_case_keys.issubset(case)
-        assert required_expected_keys.issubset(case["expected"])
+        assert isinstance(case["expected"], dict)
+
+
+def test_each_expected_block_has_exact_or_tolerant_keys() -> None:
+    cases = load_mock_documents()
+
+    for case in cases:
+        expected = case["expected"]
+        assert "analysis_scope" in expected or "analysis_scope_any_of" in expected
+        assert "macro_risk_level" in expected or "macro_risk_level_any_of" in expected
+        assert "sentiment" in expected or "sentiment_any_of" in expected
+        assert "signal_policy" in expected or "signal_policy_any_of" in expected
+        assert "manual_review_required" in expected or "manual_review_required_any_of" in expected
+        assert (
+            "must_include_catalyst_tags" in expected
+            or "catalyst_tag_any_of_groups" in expected
+        )
+
+
+def test_tolerant_expectation_fields_are_non_empty_when_present() -> None:
+    cases = load_mock_documents()
+
+    for case in cases:
+        expected = case["expected"]
+        for key in (
+            "analysis_scope_any_of",
+            "macro_risk_level_any_of",
+            "sentiment_any_of",
+            "signal_policy_any_of",
+            "manual_review_required_any_of",
+        ):
+            if key in expected:
+                assert isinstance(expected[key], list)
+                assert expected[key]
+
+        for key in ("catalyst_tag_any_of_groups", "affected_sector_any_of_groups"):
+            if key in expected:
+                assert isinstance(expected[key], list)
+                for group in expected[key]:
+                    assert isinstance(group, list)
+                    assert group
+
+
+def _walk_expected_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_expected_strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_expected_strings(item)
 
 
 def test_mock_documents_do_not_include_recommendation_language() -> None:
@@ -64,3 +107,11 @@ def test_mock_documents_do_not_include_recommendation_language() -> None:
 
     for case in cases:
         assert _UNSAFE_PATTERN.search(case["document"]) is None
+
+
+def test_expected_values_do_not_include_forbidden_trading_terms() -> None:
+    cases = load_mock_documents()
+
+    for case in cases:
+        for value in _walk_expected_strings(case["expected"]):
+            assert value.upper() not in _FORBIDDEN_EXPECTED_VALUES

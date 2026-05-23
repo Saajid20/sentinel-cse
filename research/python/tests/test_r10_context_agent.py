@@ -40,8 +40,8 @@ def make_sources() -> list[dict[str, str]]:
     ]
 
 
-def make_valid_payload() -> dict[str, object]:
-    return {
+def make_valid_payload(**overrides: object) -> dict[str, object]:
+    payload = {
         "schema_version": "r10_news_analyst_v1",
         "analysis_scope": "MARKET",
         "ticker": None,
@@ -51,15 +51,17 @@ def make_valid_payload() -> dict[str, object]:
         "catalyst_tags": ["MACRO"],
         "affected_tickers": [],
         "affected_sectors": ["BANKING"],
-        "signal_policy": "NO_EFFECT",
-        "manual_review_required": False,
+        "signal_policy": "MANUAL_REVIEW",
+        "manual_review_required": True,
         "confidence": 0.61,
         "valid_until": "2026-05-24T00:00:00Z",
         "staleness_risk": "MEDIUM",
         "reason_codes": ["INFO_ONLY"],
-        "short_summary": "The document signals macro pressure but no direct trading action.",
+        "short_summary": "The document signals macro pressure and should be reviewed.",
         "sources": make_sources(),
     }
+    payload.update(overrides)
+    return payload
 
 
 def test_valid_provider_json_returns_cse_news_analysis() -> None:
@@ -223,3 +225,133 @@ def test_none_url_and_empty_string_url_are_treated_as_equivalent() -> None:
     result = agent.process_document(DOCUMENT, input_sources)
 
     assert isinstance(result, CseNewsAnalysis)
+
+
+def test_no_effect_with_medium_macro_risk_triggers_repair_and_succeeds() -> None:
+    inconsistent_payload = make_valid_payload(
+        macro_risk_level="MEDIUM",
+        affected_sectors=[],
+        signal_policy="NO_EFFECT",
+        manual_review_required=False,
+    )
+    repaired_payload = make_valid_payload(
+        macro_risk_level="MEDIUM",
+        affected_sectors=[],
+        signal_policy="MANUAL_REVIEW",
+        manual_review_required=True,
+    )
+    provider = FakeProvider([json.dumps(inconsistent_payload), json.dumps(repaired_payload)])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert result.signal_policy.value == "MANUAL_REVIEW"
+    assert len(provider.calls) == 2
+
+
+def test_no_effect_with_high_macro_risk_triggers_repair() -> None:
+    inconsistent_payload = make_valid_payload(
+        macro_risk_level="HIGH",
+        affected_sectors=[],
+        signal_policy="NO_EFFECT",
+        manual_review_required=False,
+    )
+    repaired_payload = make_valid_payload(
+        macro_risk_level="HIGH",
+        affected_sectors=[],
+        signal_policy="MANUAL_REVIEW",
+        manual_review_required=True,
+    )
+    provider = FakeProvider([json.dumps(inconsistent_payload), json.dumps(repaired_payload)])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert len(provider.calls) == 2
+
+
+def test_no_effect_with_non_empty_affected_sectors_triggers_repair() -> None:
+    inconsistent_payload = make_valid_payload(
+        macro_risk_level="LOW",
+        affected_sectors=["BANKING"],
+        signal_policy="NO_EFFECT",
+        manual_review_required=False,
+    )
+    repaired_payload = make_valid_payload(
+        macro_risk_level="LOW",
+        affected_sectors=["BANKING"],
+        signal_policy="MANUAL_REVIEW",
+        manual_review_required=True,
+    )
+    provider = FakeProvider([json.dumps(inconsistent_payload), json.dumps(repaired_payload)])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert len(provider.calls) == 2
+
+
+def test_no_effect_with_low_risk_and_no_affected_entities_passes() -> None:
+    payload = make_valid_payload(
+        macro_risk_level="LOW",
+        affected_tickers=[],
+        affected_sectors=[],
+        signal_policy="NO_EFFECT",
+        manual_review_required=False,
+        short_summary="The document is informational with no material market impact.",
+    )
+    provider = FakeProvider([json.dumps(payload)])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert result.signal_policy.value == "NO_EFFECT"
+    assert len(provider.calls) == 1
+
+
+def test_inconsistent_no_effect_after_repair_raises_r10_analysis_error() -> None:
+    inconsistent_payload = make_valid_payload(
+        macro_risk_level="MEDIUM",
+        affected_sectors=[],
+        signal_policy="NO_EFFECT",
+        manual_review_required=False,
+    )
+    provider = FakeProvider([json.dumps(inconsistent_payload), json.dumps(inconsistent_payload)])
+    agent = ContextAgent(provider)
+
+    with pytest.raises(R10AnalysisError, match="after one repair retry"):
+        agent.process_document(DOCUMENT, make_sources())
+
+
+def test_policy_consistency_repair_prompt_includes_error_message() -> None:
+    inconsistent_payload = make_valid_payload(
+        macro_risk_level="MEDIUM",
+        affected_sectors=[],
+        signal_policy="NO_EFFECT",
+        manual_review_required=False,
+    )
+    repaired_payload = make_valid_payload(
+        macro_risk_level="MEDIUM",
+        affected_sectors=[],
+        signal_policy="MANUAL_REVIEW",
+        manual_review_required=True,
+    )
+    provider = FakeProvider([json.dumps(inconsistent_payload), json.dumps(repaired_payload)])
+    agent = ContextAgent(provider)
+
+    result = agent.process_document(DOCUMENT, make_sources())
+
+    assert isinstance(result, CseNewsAnalysis)
+    assert (
+        "signal_policy NO_EFFECT is inconsistent with macro_risk_level"
+        in provider.calls[1]["prompt"]
+    )
+    assert (
+        "Use MANUAL_REVIEW, SUPPORT, or BLOCK when the document has material "
+        "market/sector/ticker impact."
+        in provider.calls[1]["prompt"]
+    )

@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from sentinel_research.agents.providers.base import BaseLLMProvider
-from sentinel_research.agents.schemas import CseNewsAnalysis
+from sentinel_research.agents.schemas import CseNewsAnalysis, MacroRiskLevel, SignalPolicy
 
 _REQUIRED_FIELDS = (
     "schema_version, analysis_scope, ticker, sector, macro_risk_level, sentiment, "
@@ -79,6 +79,10 @@ class R10AnalysisError(Exception):
     """Raised when R10 analysis output remains invalid after one repair retry."""
 
 
+class R10OutputConsistencyError(ValueError):
+    """Raised when validated R10 output violates deterministic policy rules."""
+
+
 class ContextAgent:
     def __init__(self, provider: BaseLLMProvider) -> None:
         self._provider = provider
@@ -93,22 +97,47 @@ class ContextAgent:
         raw_output = self._provider.analyze_context(document=document, prompt=prompt)
 
         try:
-            analysis = CseNewsAnalysis.model_validate_json(raw_output)
-        except ValidationError as first_error:
+            analysis = self._validate_analysis_output(raw_output)
+        except (ValidationError, R10OutputConsistencyError) as first_error:
             repair_prompt = self._build_repair_prompt(sources, str(first_error))
             repaired_output = self._provider.analyze_context(
                 document=document,
                 prompt=repair_prompt,
             )
             try:
-                analysis = CseNewsAnalysis.model_validate_json(repaired_output)
-            except ValidationError as repair_error:
+                analysis = self._validate_analysis_output(repaired_output)
+            except (ValidationError, R10OutputConsistencyError) as repair_error:
                 raise R10AnalysisError(
                     "LLM output failed CseNewsAnalysis validation after one repair retry. "
                     f"first_error={first_error} repair_error={repair_error}"
                 ) from repair_error
         self._assert_sources_match(analysis, sources)
         return analysis
+
+    @classmethod
+    def _validate_analysis_output(cls, raw_output: str) -> CseNewsAnalysis:
+        analysis = CseNewsAnalysis.model_validate_json(raw_output)
+        cls._validate_policy_consistency(analysis)
+        return analysis
+
+    @staticmethod
+    def _validate_policy_consistency(analysis: CseNewsAnalysis) -> None:
+        if analysis.signal_policy != SignalPolicy.NO_EFFECT:
+            return
+
+        inconsistency_reasons: list[str] = []
+        if analysis.macro_risk_level in {MacroRiskLevel.MEDIUM, MacroRiskLevel.HIGH}:
+            inconsistency_reasons.append("macro_risk_level MEDIUM/HIGH")
+        if analysis.affected_tickers or analysis.affected_sectors:
+            inconsistency_reasons.append("non-empty affected_tickers/affected_sectors")
+
+        if inconsistency_reasons:
+            reasons_text = " or ".join(inconsistency_reasons)
+            raise R10OutputConsistencyError(
+                "signal_policy NO_EFFECT is inconsistent with "
+                f"{reasons_text}. Use MANUAL_REVIEW, SUPPORT, or BLOCK when the "
+                "document has material market/sector/ticker impact."
+            )
 
     @staticmethod
     def _assert_sources_match(analysis: CseNewsAnalysis, sources: list[dict]) -> None:

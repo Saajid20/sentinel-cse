@@ -17,37 +17,86 @@ def _subset_missing(required_values: list[str], actual_values: list[str]) -> lis
     return [value for value in required_values if value.strip() not in actual_set]
 
 
+def _matches_any_alias_groups(alias_groups: list[list[str]], actual_values: list[str]) -> list[list[str]]:
+    actual_set = {value.strip() for value in actual_values}
+    return [group for group in alias_groups if not any(alias.strip() in actual_set for alias in group)]
+
+
+def _actual_scalar_value(value):
+    return getattr(value, "value", value)
+
+
+def _compare_scalar(
+    expected: dict,
+    exact_key: str,
+    any_of_key: str,
+    actual_value,
+    failures: list[str],
+) -> None:
+    actual_text = _actual_scalar_value(actual_value)
+    if any_of_key in expected:
+        allowed_values = expected[any_of_key]
+        if actual_text not in allowed_values:
+            failures.append(f"{exact_key} expected one of {allowed_values!r} got {actual_text!r}")
+        return
+    if actual_text != expected[exact_key]:
+        failures.append(f"{exact_key} expected {expected[exact_key]!r} got {actual_text!r}")
+
+
 def _compare_case(case: dict, analysis) -> list[str]:
     expected = case["expected"]
     failures: list[str] = []
 
-    for field_name in (
-        "analysis_scope",
-        "macro_risk_level",
-        "sentiment",
-        "signal_policy",
+    for field_name in ("analysis_scope", "macro_risk_level", "sentiment", "signal_policy"):
+        _compare_scalar(
+            expected,
+            field_name,
+            f"{field_name}_any_of",
+            getattr(analysis, field_name),
+            failures,
+        )
+
+    _compare_scalar(
+        expected,
         "manual_review_required",
-    ):
-        actual_value = getattr(analysis, field_name)
-        actual_text = getattr(actual_value, "value", actual_value)
-        if actual_text != expected[field_name]:
+        "manual_review_required_any_of",
+        analysis.manual_review_required,
+        failures,
+    )
+
+    if "catalyst_tag_any_of_groups" in expected:
+        missing_tag_groups = _matches_any_alias_groups(
+            expected["catalyst_tag_any_of_groups"],
+            analysis.catalyst_tags,
+        )
+        for group in missing_tag_groups:
             failures.append(
-                f"{field_name} expected {expected[field_name]!r} got {actual_text!r}"
+                f"expected catalyst concept aliases {group!r} but got actual tags {analysis.catalyst_tags!r}"
             )
+    else:
+        missing_tags = _subset_missing(
+            expected.get("must_include_catalyst_tags", []),
+            analysis.catalyst_tags,
+        )
+        if missing_tags:
+            failures.append(f"missing catalyst_tags {missing_tags}")
 
-    missing_tags = _subset_missing(
-        expected["must_include_catalyst_tags"],
-        analysis.catalyst_tags,
-    )
-    if missing_tags:
-        failures.append(f"missing catalyst_tags {missing_tags}")
-
-    missing_sectors = _subset_missing(
-        expected["must_include_affected_sectors"],
-        analysis.affected_sectors,
-    )
-    if missing_sectors:
-        failures.append(f"missing affected_sectors {missing_sectors}")
+    if "affected_sector_any_of_groups" in expected:
+        missing_sector_groups = _matches_any_alias_groups(
+            expected["affected_sector_any_of_groups"],
+            analysis.affected_sectors,
+        )
+        for group in missing_sector_groups:
+            failures.append(
+                f"expected sector concept aliases {group!r} but got actual sectors {analysis.affected_sectors!r}"
+            )
+    else:
+        missing_sectors = _subset_missing(
+            expected.get("must_include_affected_sectors", []),
+            analysis.affected_sectors,
+        )
+        if missing_sectors:
+            failures.append(f"missing affected_sectors {missing_sectors}")
 
     return failures
 
