@@ -16,6 +16,11 @@ from sentinel_research.agents.ingestion.file_source import (
     ManualFileIngestionError,
     TextFileDocumentSource,
 )
+from sentinel_research.agents.ingestion.pdf_source import (
+    DirectoryPdfDocumentSource,
+    PdfExtractionError,
+    PdfFileDocumentSource,
+)
 from sentinel_research.agents.ingestion.static_source import StaticDocumentSource
 
 __all__ = [
@@ -23,10 +28,13 @@ __all__ = [
     "CbslFetchError",
     "CbslUrlDocumentSource",
     "DirectoryJsonDocumentSource",
+    "DirectoryPdfDocumentSource",
     "DirectoryTextDocumentSource",
     "IngestionResult",
     "JsonFileDocumentSource",
     "ManualFileIngestionError",
+    "PdfExtractionError",
+    "PdfFileDocumentSource",
     "StaticDocumentSource",
     "TextFileDocumentSource",
     "ingest_documents",
