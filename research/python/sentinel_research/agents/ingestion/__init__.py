@@ -11,6 +11,11 @@ from sentinel_research.agents.ingestion.json_file_source import (
     DirectoryJsonDocumentSource,
     JsonFileDocumentSource,
 )
+from sentinel_research.agents.ingestion.file_source import (
+    DirectoryTextDocumentSource,
+    ManualFileIngestionError,
+    TextFileDocumentSource,
+)
 from sentinel_research.agents.ingestion.static_source import StaticDocumentSource
 
 __all__ = [
@@ -18,8 +23,11 @@ __all__ = [
     "CbslFetchError",
     "CbslUrlDocumentSource",
     "DirectoryJsonDocumentSource",
+    "DirectoryTextDocumentSource",
     "IngestionResult",
     "JsonFileDocumentSource",
+    "ManualFileIngestionError",
     "StaticDocumentSource",
+    "TextFileDocumentSource",
     "ingest_documents",
 ]
