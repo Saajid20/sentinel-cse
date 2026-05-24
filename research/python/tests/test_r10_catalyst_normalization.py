@@ -48,10 +48,32 @@ def test_shareholder_and_takeover_aliases_normalize_to_shareholder_activity() ->
     assert normalize_catalyst_tag("rule 36") == "SHAREHOLDER_ACTIVITY"
 
 
+def test_shareholder_stake_aliases_normalize_to_shareholder_activity() -> None:
+    aliases = [
+        "INSIDER_BUYING",
+        "INSIDER_ACQUISITION",
+        "SUBSTANTIAL_SHAREHOLDER",
+        "SUBSTANTIAL_HOLDING",
+        "STAKE_INCREASE",
+        "STAKE_ACQUISITION",
+        "STAKE_PURCHASE",
+        "SHARE_ACQUISITION",
+    ]
+
+    for alias in aliases:
+        assert normalize_catalyst_tag(alias) == "SHAREHOLDER_ACTIVITY"
+
+
 def test_normalize_catalyst_tags_deduplicates_while_preserving_order() -> None:
     assert normalize_catalyst_tags(
         ["results", "cash dividend", "results", "earnings"]
     ) == ["EARNINGS", "DIVIDEND"]
+
+
+def test_normalize_catalyst_tags_collapses_shareholder_aliases_to_one_tag() -> None:
+    assert normalize_catalyst_tags(["INSIDER_BUYING", "SHAREHOLDER_CHANGE"]) == [
+        "SHAREHOLDER_ACTIVITY"
+    ]
 
 
 def test_normalize_catalyst_tags_drops_unknown_when_known_tags_exist() -> None:
