@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -27,10 +28,12 @@ class FakeResponse:
 
 def make_client(
     *,
+    max_retries: int = 1,
     http_get=None,
     http_post=None,
 ) -> CseApiClient:
     return CseApiClient(
+        max_retries=max_retries,
         http_get=http_get,
         http_post=http_post,
     )
@@ -81,6 +84,13 @@ def test_list_securities_parses_sample_response() -> None:
     assert calls == [
         {
             "url": "https://www.cse.lk/api/allSecurityCode",
+            "headers": {
+                "User-Agent": "Sentinel-CSE-R10/0.1",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://www.cse.lk",
+                "Referer": "https://www.cse.lk/",
+                "Connection": "close",
+            },
             "timeout": 20.0,
             "user_agent": "Sentinel-CSE-R10/0.1",
         }
@@ -131,11 +141,82 @@ def test_get_announcements_by_company_sends_symbol_and_date_window_and_parses_on
         {
             "url": "https://www.cse.lk/api/getAnnouncementByCompany",
             "data": b"symbol=JKH.N0000&fromDate=2024-02-08&toDate=2024-02-08",
-            "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+            "headers": {
+                "User-Agent": "Sentinel-CSE-R10/0.1",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://www.cse.lk",
+                "Referer": "https://www.cse.lk/",
+                "Connection": "close",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            },
             "timeout": 20.0,
             "user_agent": "Sentinel-CSE-R10/0.1",
         }
     ]
+
+
+def test_post_sends_origin_and_referer_headers() -> None:
+    captured_headers: list[dict[str, str]] = []
+
+    def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
+        captured_headers.append(kwargs["headers"])
+        return FakeResponse(json.dumps({"reqCompanyAnnouncement": []}))
+
+    make_client(http_post=fake_http_post).get_announcements_by_company(
+        "JKH.N0000",
+        "2024-02-08",
+        "2024-02-08",
+    )
+
+    assert captured_headers == [
+        {
+            "User-Agent": "Sentinel-CSE-R10/0.1",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.cse.lk",
+            "Referer": "https://www.cse.lk/",
+            "Connection": "close",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+    ]
+
+
+def test_transient_url_error_retries_once_and_then_succeeds() -> None:
+    attempts = 0
+
+    def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.URLError("temporary ssl eof")
+        return FakeResponse(json.dumps({"reqCompanyAnnouncement": []}))
+
+    result = make_client(max_retries=1, http_post=fake_http_post).get_announcements_by_company(
+        "JKH.N0000",
+        "2024-02-08",
+        "2024-02-08",
+    )
+
+    assert result == []
+    assert attempts == 2
+
+
+def test_transient_url_error_after_retries_raises_cse_api_error_with_attempt_count() -> None:
+    attempts = 0
+
+    def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
+        nonlocal attempts
+        attempts += 1
+        raise urllib.error.URLError("temporary ssl eof")
+
+    client = make_client(max_retries=1, http_post=fake_http_post)
+
+    with pytest.raises(
+        CseApiError,
+        match=r"POST /getAnnouncementByCompany request failed after 2 attempt\(s\):",
+    ):
+        client.get_announcements_by_company("JKH.N0000", "2024-02-08", "2024-02-08")
+
+    assert attempts == 2
 
 
 def test_get_announcements_by_company_returns_empty_list_for_empty_response() -> None:

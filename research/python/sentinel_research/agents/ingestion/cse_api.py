@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable
@@ -142,8 +144,16 @@ class CseAnnouncementDetail(BaseModel):
         return stripped or None
 
 
-def _default_http_get(url: str, *, timeout: float, user_agent: str) -> object:
-    request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+def _default_http_get(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: float,
+    user_agent: str,
+) -> object:
+    request_headers = dict(headers)
+    request_headers.setdefault("User-Agent", user_agent)
+    request = urllib.request.Request(url, headers=request_headers)
     return urllib.request.urlopen(request, timeout=timeout)
 
 
@@ -155,7 +165,8 @@ def _default_http_post(
     timeout: float,
     user_agent: str,
 ) -> object:
-    request_headers = {"User-Agent": user_agent, **headers}
+    request_headers = dict(headers)
+    request_headers.setdefault("User-Agent", user_agent)
     request = urllib.request.Request(url, data=data, headers=request_headers, method="POST")
     return urllib.request.urlopen(request, timeout=timeout)
 
@@ -197,12 +208,14 @@ class CseApiClient:
         base_url: str = _CSE_API_BASE_URL,
         timeout: float = 20.0,
         user_agent: str = "Sentinel-CSE-R10/0.1",
+        max_retries: int = 1,
         http_get: Callable[..., object] | None = None,
         http_post: Callable[..., object] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._user_agent = user_agent
+        self._max_retries = max_retries
         self._http_get = http_get or _default_http_get
         self._http_post = http_post or _default_http_post
 
@@ -332,24 +345,28 @@ class CseApiClient:
         form_payload: dict[str, str] | None = None,
     ) -> object:
         url = self._base_url + endpoint
+        headers = self._build_headers(method)
         try:
             if method == "GET":
-                response = self._http_get(
-                    url,
-                    timeout=self._timeout,
-                    user_agent=self._user_agent,
+                response = self._request_with_retries(
+                    self._http_get,
+                    method=method,
+                    endpoint=endpoint,
+                    url=url,
+                    headers=headers,
                 )
             else:
                 encoded_payload = urllib.parse.urlencode(form_payload or {}).encode("utf-8")
-                response = self._http_post(
-                    url,
+                response = self._request_with_retries(
+                    self._http_post,
+                    method=method,
+                    endpoint=endpoint,
+                    url=url,
+                    headers=headers,
                     data=encoded_payload,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=self._timeout,
-                    user_agent=self._user_agent,
                 )
-        except Exception as error:
-            raise CseApiError(f"{method} {endpoint} request failed: {error}") from error
+        except urllib.error.HTTPError as error:
+            raise CseApiError(f"{method} {endpoint} returned HTTP {error.code}") from error
 
         status = _response_status(response)
         if status != 200:
@@ -360,3 +377,47 @@ class CseApiClient:
         except json.JSONDecodeError as error:
             raise CseApiError(f"{method} {endpoint} returned invalid JSON: {error}") from error
 
+    def _build_headers(self, method: str) -> dict[str, str]:
+        headers = {
+            "User-Agent": self._user_agent,
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.cse.lk",
+            "Referer": "https://www.cse.lk/",
+            "Connection": "close",
+        }
+        if method == "POST":
+            headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+        return headers
+
+    def _request_with_retries(
+        self,
+        request_fn: Callable[..., object],
+        *,
+        method: str,
+        endpoint: str,
+        url: str,
+        headers: dict[str, str],
+        data: bytes | None = None,
+    ) -> object:
+        attempts = self._max_retries + 1
+        last_error: Exception | None = None
+        for attempt_index in range(attempts):
+            try:
+                request_kwargs = {
+                    "headers": headers,
+                    "timeout": self._timeout,
+                    "user_agent": self._user_agent,
+                }
+                if data is not None:
+                    request_kwargs["data"] = data
+                return request_fn(url, **request_kwargs)
+            except urllib.error.HTTPError:
+                raise
+            except (urllib.error.URLError, ssl.SSLError, TimeoutError, ConnectionResetError) as error:
+                last_error = error
+                if attempt_index >= self._max_retries:
+                    break
+
+        raise CseApiError(
+            f"{method} {endpoint} request failed after {attempts} attempt(s): {last_error}"
+        ) from last_error
