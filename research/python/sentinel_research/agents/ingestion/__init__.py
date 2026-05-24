@@ -7,6 +7,15 @@ from sentinel_research.agents.ingestion.cbsl_source import (
     CbslFetchError,
     CbslUrlDocumentSource,
 )
+from sentinel_research.agents.ingestion.cse_api import (
+    CseAnnouncementDetail,
+    CseAnnouncementDocument,
+    CseAnnouncementSummary,
+    CseApiClient,
+    CseApiError,
+    CseSecurity,
+    normalize_cse_document_url,
+)
 from sentinel_research.agents.ingestion.json_file_source import (
     DirectoryJsonDocumentSource,
     JsonFileDocumentSource,
@@ -27,6 +36,12 @@ __all__ = [
     "DocumentSource",
     "CbslFetchError",
     "CbslUrlDocumentSource",
+    "CseAnnouncementDetail",
+    "CseAnnouncementDocument",
+    "CseAnnouncementSummary",
+    "CseApiClient",
+    "CseApiError",
+    "CseSecurity",
     "DirectoryJsonDocumentSource",
     "DirectoryPdfDocumentSource",
     "DirectoryTextDocumentSource",
@@ -38,4 +53,5 @@ __all__ = [
     "StaticDocumentSource",
     "TextFileDocumentSource",
     "ingest_documents",
+    "normalize_cse_document_url",
 ]
