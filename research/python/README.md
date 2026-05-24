@@ -101,6 +101,12 @@ python research/python/scripts/compare_sessions.py --input research/python/sampl
 
 The current R10 news analyst lives under `research/python/sentinel_research/agents/` and separates schema validation, provider calls, and orchestration.
 
+R10 is now closed as:
+
+`R10 Foundation + Controlled CBSL/CSE Ingestion + Offline Policy Simulation`
+
+See `research/python/docs/r10_closeout.md` for the final closeout summary, confirmed source boundary, manual runtime paths, safety constraints, and known limitations.
+
 Manual runtime smoke test only:
 
 ```powershell
