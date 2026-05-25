@@ -172,6 +172,7 @@ R11 must not place orders, recommend trading actions, modify strategy thresholds
 - R11.3A table extraction bakeoff design is now started/completed in `research/python/docs/r11_table_extraction_bakeoff.md`.
 - R11.3B `pypdf` baseline extraction adapter is now started/completed under `research/python/sentinel_research/agents/r11/extraction/`.
 - R11.3E deterministic statement page locator is now started/completed under `research/python/sentinel_research/agents/r11/extraction/statement_locator.py`.
+- R11.3F prototype `pypdf` financial row parser is now started/completed under `research/python/sentinel_research/agents/r11/extraction/pypdf_row_parser.py`.
 - R11.0A Architecture document
 - R11.0B Existing tools/datasets evaluation matrix
 - R11.1 Schema foundation

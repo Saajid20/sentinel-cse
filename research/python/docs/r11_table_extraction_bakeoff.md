@@ -136,6 +136,8 @@ R11.3B is now started/completed with the initial `pypdf` baseline adapter under 
 
 R11.3E is now started/completed with a deterministic statement page locator for `pypdf` baseline outputs under `research/python/sentinel_research/agents/r11/extraction/statement_locator.py`.
 
+R11.3F is now started/completed with a prototype `pypdf` financial row parser under `research/python/sentinel_research/agents/r11/extraction/pypdf_row_parser.py`.
+
 ## 13. Safety Boundary
 
 - no trading recommendations
