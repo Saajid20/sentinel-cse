@@ -126,6 +126,8 @@ See `research/python/docs/r11_tools_datasets_matrix.md` for the R11 tools and da
 
 The initial R11.1 schema foundation now lives under `research/python/sentinel_research/agents/r11/`.
 
+The initial R11.2 calculation toolbox now lives under `research/python/sentinel_research/agents/r11/tools/`.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.

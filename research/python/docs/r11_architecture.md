@@ -164,6 +164,7 @@ R11 must not place orders, recommend trading actions, modify strategy thresholds
 ## Implementation Roadmap
 
 - R11.1 schema foundation is now started/completed with the initial strict Pydantic dossier, table, metric, scorecard, red-flag, audit, and source-trace models under `research/python/sentinel_research/agents/r11/`.
+- R11.2 calculation toolbox is now started/completed with deterministic pure-Python ratio, growth, margin, leverage, impairment, rounding, and direction helpers under `research/python/sentinel_research/agents/r11/tools/`.
 - R11.0A Architecture document
 - R11.0B Existing tools/datasets evaluation matrix
 - R11.1 Schema foundation
