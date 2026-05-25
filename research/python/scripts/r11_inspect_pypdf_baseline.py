@@ -9,11 +9,13 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PYTHON_ROOT))
 
 from sentinel_research.agents.r11.extraction import (  # noqa: E402
+    ParsedFinancialRow,
     PypdfBaselineExtractor,
     R11ExtractionError,
     StatementPageMatch,
     classify_statement_page,
     locate_statement_pages,
+    parse_financial_rows_from_table,
 )
 from sentinel_research.agents.r11.schemas import ExtractedFinancialTable  # noqa: E402
 
@@ -108,6 +110,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-json",
         action="store_true",
         help="Print full JSON for each shown ExtractedFinancialTable.",
+    )
+    parser.add_argument(
+        "--show-parsed-rows",
+        action="store_true",
+        help="Print parsed financial rows for each shown page/table.",
+    )
+    parser.add_argument(
+        "--max-parsed-rows",
+        type=_positive_int("max_parsed_rows"),
+        default=30,
+        help="Maximum parsed financial rows to print per shown page/table.",
+    )
+    parser.add_argument(
+        "--show-parsed-json",
+        action="store_true",
+        help="Print full JSON for each displayed parsed financial row.",
     )
     parser.add_argument(
         "--hide-statement-classification",
@@ -270,6 +288,9 @@ def _print_table_preview(
     show_matches: bool,
     context_lines: int,
     hide_statement_classification: bool,
+    show_parsed_rows: bool,
+    max_parsed_rows: int,
+    show_parsed_json: bool,
 ) -> None:
     print()
     print(f"table_id: {table.table_id}")
@@ -294,9 +315,24 @@ def _print_table_preview(
                 print(f" {prefix} {row['line_number']}: {row['text']}")
             print(" ---")
 
+    if show_parsed_rows:
+        parsed_rows = parse_financial_rows_from_table(
+            table,
+            statement_type=statement_match.statement_type if statement_match is not None else None,
+        )
+        print(f"parsed financial rows: {len(parsed_rows)}")
+        for parsed_row in parsed_rows[:max_parsed_rows]:
+            _print_parsed_row(parsed_row, show_parsed_json=show_parsed_json)
+
     if show_json:
         print("json:")
         print(table.model_dump_json(indent=2))
+
+
+def _print_parsed_row(parsed_row: ParsedFinancialRow, *, show_parsed_json: bool) -> None:
+    print(f"  line {parsed_row.line_number}: {parsed_row.label} -> {parsed_row.values}")
+    if show_parsed_json:
+        print(parsed_row.model_dump_json(indent=2))
 
 
 def _write_output_json(path: Path, tables: list[ExtractedFinancialTable]) -> None:
@@ -353,6 +389,9 @@ def main(argv: list[str] | None = None) -> int:
                 show_matches=args.show_matches,
                 context_lines=args.context_lines,
                 hide_statement_classification=args.hide_statement_classification,
+                show_parsed_rows=args.show_parsed_rows,
+                max_parsed_rows=args.max_parsed_rows,
+                show_parsed_json=args.show_parsed_json,
             )
 
         if args.output_json:
