@@ -18,6 +18,7 @@ from sentinel_research.agents.r11.extraction import (  # noqa: E402
     parse_financial_rows_from_table,
 )
 from sentinel_research.agents.r11.schemas import ExtractedFinancialTable  # noqa: E402
+from sentinel_research.agents.r11.tables import normalize_parsed_financial_rows  # noqa: E402
 
 
 def _validate_positive_int(value: int | str, name: str) -> int:
@@ -126,6 +127,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-parsed-json",
         action="store_true",
         help="Print full JSON for each displayed parsed financial row.",
+    )
+    parser.add_argument(
+        "--show-normalized-rows",
+        action="store_true",
+        help="Print normalized financial line items for each shown page/table.",
+    )
+    parser.add_argument(
+        "--max-normalized-rows",
+        type=_positive_int("max_normalized_rows"),
+        default=30,
+        help="Maximum normalized financial rows to print per shown page/table.",
+    )
+    parser.add_argument(
+        "--show-normalized-json",
+        action="store_true",
+        help="Print full JSON for each displayed normalized financial line item.",
     )
     parser.add_argument(
         "--hide-statement-classification",
@@ -291,6 +308,9 @@ def _print_table_preview(
     show_parsed_rows: bool,
     max_parsed_rows: int,
     show_parsed_json: bool,
+    show_normalized_rows: bool,
+    max_normalized_rows: int,
+    show_normalized_json: bool,
 ) -> None:
     print()
     print(f"table_id: {table.table_id}")
@@ -315,14 +335,26 @@ def _print_table_preview(
                 print(f" {prefix} {row['line_number']}: {row['text']}")
             print(" ---")
 
-    if show_parsed_rows:
+    parsed_rows: list[ParsedFinancialRow] = []
+    if show_parsed_rows or show_normalized_rows:
         parsed_rows = parse_financial_rows_from_table(
             table,
             statement_type=statement_match.statement_type if statement_match is not None else None,
         )
+
+    if show_parsed_rows:
         print(f"parsed financial rows: {len(parsed_rows)}")
         for parsed_row in parsed_rows[:max_parsed_rows]:
             _print_parsed_row(parsed_row, show_parsed_json=show_parsed_json)
+
+    if show_normalized_rows:
+        normalized_rows = normalize_parsed_financial_rows(parsed_rows)
+        print(f"normalized financial rows: {len(normalized_rows)}")
+        for normalized_row in normalized_rows[:max_normalized_rows]:
+            _print_normalized_row(
+                normalized_row,
+                show_normalized_json=show_normalized_json,
+            )
 
     if show_json:
         print("json:")
@@ -333,6 +365,15 @@ def _print_parsed_row(parsed_row: ParsedFinancialRow, *, show_parsed_json: bool)
     print(f"  line {parsed_row.line_number}: {parsed_row.label} -> {parsed_row.values}")
     if show_parsed_json:
         print(parsed_row.model_dump_json(indent=2))
+
+
+def _print_normalized_row(normalized_row, *, show_normalized_json: bool) -> None:
+    print(
+        f"  {normalized_row.canonical_name} <= {normalized_row.original_label} "
+        f"| values={normalized_row.period_values}"
+    )
+    if show_normalized_json:
+        print(normalized_row.model_dump_json(indent=2))
 
 
 def _write_output_json(path: Path, tables: list[ExtractedFinancialTable]) -> None:
@@ -392,6 +433,9 @@ def main(argv: list[str] | None = None) -> int:
                 show_parsed_rows=args.show_parsed_rows,
                 max_parsed_rows=args.max_parsed_rows,
                 show_parsed_json=args.show_parsed_json,
+                show_normalized_rows=args.show_normalized_rows,
+                max_normalized_rows=args.max_normalized_rows,
+                show_normalized_json=args.show_normalized_json,
             )
 
         if args.output_json:
