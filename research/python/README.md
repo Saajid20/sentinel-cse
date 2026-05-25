@@ -140,6 +140,8 @@ The initial R11.3F prototype `pypdf` financial row parser now lives under `resea
 
 The initial R11.4A line-item normalization foundation now lives under `research/python/sentinel_research/agents/r11/tables/`.
 
+The initial R11.4C column/period mapping and numeric string parsing foundation now lives under `research/python/sentinel_research/agents/r11/tables/value_mapper.py`.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.

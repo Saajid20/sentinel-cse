@@ -8,6 +8,17 @@ from sentinel_research.agents.r11.tables.line_item_mapper import (
     normalize_parsed_financial_rows,
     snake_case_name,
 )
+from sentinel_research.agents.r11.tables.value_mapper import (
+    COMB_SIX_COLUMN_MAP,
+    MappedLineItemValues,
+    ParsedFinancialValue,
+    R11ValueMappingError,
+    get_required_numeric,
+    map_comb_six_column_items,
+    map_comb_six_column_values,
+    parse_financial_value,
+    parse_period_values,
+)
 
 __all__ = [
     "NormalizedLineItemMapping",
@@ -18,4 +29,13 @@ __all__ = [
     "map_line_item_label",
     "normalize_parsed_financial_row",
     "normalize_parsed_financial_rows",
+    "R11ValueMappingError",
+    "ParsedFinancialValue",
+    "MappedLineItemValues",
+    "COMB_SIX_COLUMN_MAP",
+    "parse_financial_value",
+    "parse_period_values",
+    "map_comb_six_column_values",
+    "map_comb_six_column_items",
+    "get_required_numeric",
 ]
