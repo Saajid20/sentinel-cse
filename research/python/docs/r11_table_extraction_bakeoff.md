@@ -134,6 +134,8 @@ That step should remain local, deterministic, and fixture-based. It should not a
 
 R11.3B is now started/completed with the initial `pypdf` baseline adapter under `research/python/sentinel_research/agents/r11/extraction/`.
 
+R11.3E is now started/completed with a deterministic statement page locator for `pypdf` baseline outputs under `research/python/sentinel_research/agents/r11/extraction/statement_locator.py`.
+
 ## 13. Safety Boundary
 
 - no trading recommendations

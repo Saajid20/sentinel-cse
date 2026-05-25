@@ -134,6 +134,8 @@ The initial R11.2 calculation toolbox now lives under `research/python/sentinel_
 
 The initial R11.3B `pypdf` baseline extraction adapter now lives under `research/python/sentinel_research/agents/r11/extraction/`.
 
+The initial R11.3E statement page locator now lives under `research/python/sentinel_research/agents/r11/extraction/statement_locator.py`.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.
