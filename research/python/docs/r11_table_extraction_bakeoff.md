@@ -132,6 +132,8 @@ R11.3B should implement a `pypdf` baseline extraction adapter or local fixture i
 
 That step should remain local, deterministic, and fixture-based. It should not add OCR dependencies or API calls.
 
+R11.3B is now started/completed with the initial `pypdf` baseline adapter under `research/python/sentinel_research/agents/r11/extraction/`.
+
 ## 13. Safety Boundary
 
 - no trading recommendations
