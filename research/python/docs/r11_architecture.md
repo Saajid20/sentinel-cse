@@ -150,6 +150,8 @@ These are not live Sentinel-CSE sources. They may inform evaluation design, metr
 
 See `research/python/docs/r11_tools_datasets_matrix.md` for the R11.0B tools and datasets evaluation matrix.
 
+See `research/python/docs/r11_teaching_from_finance_resources.md` for the R11.0C teaching strategy from external finance resources.
+
 ## Safety Boundary
 
 Forbidden behavior:

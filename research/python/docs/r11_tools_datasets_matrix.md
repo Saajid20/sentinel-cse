@@ -8,6 +8,8 @@ This document does not expand the Sentinel-CSE live source boundary. R11 live ev
 
 These resources are evaluation aids, design references, parser candidates, benchmark inputs, or formula references. They are not live Sentinel-CSE sources.
 
+See `research/python/docs/r11_teaching_from_finance_resources.md` for the R11.0C teaching strategy that explains how these resources inform R11 without expanding the production evidence boundary.
+
 ## 2. Evaluation Categories
 
 - Financial reasoning datasets: benchmark datasets for numerical reasoning, table-and-text reasoning, and long-document financial QA.
