@@ -124,6 +124,8 @@ See `research/python/docs/r11_architecture.md` for the R11 architecture document
 
 See `research/python/docs/r11_tools_datasets_matrix.md` for the R11 tools and datasets evaluation matrix.
 
+See `research/python/docs/r11_table_extraction_bakeoff.md` for the R11 table extraction bakeoff design.
+
 The initial R11.1 schema foundation now lives under `research/python/sentinel_research/agents/r11/`.
 
 The initial R11.2 calculation toolbox now lives under `research/python/sentinel_research/agents/r11/tools/`.
