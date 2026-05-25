@@ -138,6 +138,8 @@ The initial R11.3E statement page locator now lives under `research/python/senti
 
 The initial R11.3F prototype `pypdf` financial row parser now lives under `research/python/sentinel_research/agents/r11/extraction/pypdf_row_parser.py`.
 
+The initial R11.4A line-item normalization foundation now lives under `research/python/sentinel_research/agents/r11/tables/`.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.
