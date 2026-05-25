@@ -79,42 +79,49 @@ def classify_statement_page(table: ExtractedFinancialTable) -> StatementPageMatc
     confidence = R11ConfidenceLevel.LOW
     notes: str | None = None
 
-    if "INCOME STATEMENT" in normalized_text:
-        matched_markers.append("INCOME STATEMENT")
-    if "PROFIT OR LOSS" in normalized_text:
-        matched_markers.append("PROFIT OR LOSS")
-    if matched_markers:
+    has_income_statement_title = "INCOME STATEMENT" in normalized_text
+    has_profit_or_loss_statement_title = (
+        "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME" in normalized_text
+    )
+    has_financial_position_title = "STATEMENT OF FINANCIAL POSITION" in normalized_text
+    has_assets = "ASSETS" in normalized_text
+    has_liabilities = "LIABILITIES" in normalized_text
+    has_total_assets = "TOTAL ASSETS" in normalized_text
+    has_total_liabilities = "TOTAL LIABILITIES" in normalized_text
+    has_balance_sheet_structure = has_assets and has_liabilities
+    has_strong_balance_sheet_markers = has_financial_position_title or (
+        has_balance_sheet_structure and (has_total_assets or has_total_liabilities)
+    )
+
+    if has_profit_or_loss_statement_title:
         statement_type = FinancialStatementType.INCOME_STATEMENT
-        if (
-            "GROSS INCOME" in normalized_text
-            or "PROFIT FOR THE PERIOD" in normalized_text
-        ):
+        confidence = R11ConfidenceLevel.HIGH
+        matched_markers.append("STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME")
+    elif has_income_statement_title:
+        statement_type = FinancialStatementType.INCOME_STATEMENT
+        matched_markers.append("INCOME STATEMENT")
+        if "GROSS INCOME" in normalized_text or "PROFIT FOR THE PERIOD" in normalized_text:
             confidence = R11ConfidenceLevel.HIGH
-            if "GROSS INCOME" in normalized_text:
-                matched_markers.append("GROSS INCOME")
-            if "PROFIT FOR THE PERIOD" in normalized_text:
-                matched_markers.append("PROFIT FOR THE PERIOD")
         else:
             confidence = R11ConfidenceLevel.MEDIUM
-    elif "STATEMENT OF FINANCIAL POSITION" in normalized_text or (
-        "ASSETS" in normalized_text and "LIABILITIES" in normalized_text
-    ):
+        if "GROSS INCOME" in normalized_text:
+            matched_markers.append("GROSS INCOME")
+        if "PROFIT FOR THE PERIOD" in normalized_text:
+            matched_markers.append("PROFIT FOR THE PERIOD")
+    elif has_strong_balance_sheet_markers or has_balance_sheet_structure:
         statement_type = FinancialStatementType.BALANCE_SHEET
-        if "STATEMENT OF FINANCIAL POSITION" in normalized_text:
+        if has_financial_position_title:
             matched_markers.append("STATEMENT OF FINANCIAL POSITION")
-        if "ASSETS" in normalized_text:
+        if has_assets:
             matched_markers.append("ASSETS")
-        if "LIABILITIES" in normalized_text:
+        if has_liabilities:
             matched_markers.append("LIABILITIES")
-        if (
-            "TOTAL ASSETS" in normalized_text
-            or "TOTAL LIABILITIES" in normalized_text
-        ):
+        if has_total_assets:
+            matched_markers.append("TOTAL ASSETS")
+        if has_total_liabilities:
+            matched_markers.append("TOTAL LIABILITIES")
+        if has_strong_balance_sheet_markers:
             confidence = R11ConfidenceLevel.HIGH
-            if "TOTAL ASSETS" in normalized_text:
-                matched_markers.append("TOTAL ASSETS")
-            if "TOTAL LIABILITIES" in normalized_text:
-                matched_markers.append("TOTAL LIABILITIES")
         else:
             confidence = R11ConfidenceLevel.MEDIUM
     elif "STATEMENT OF CHANGES IN EQUITY" in normalized_text:

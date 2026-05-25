@@ -71,6 +71,26 @@ def test_classify_profit_loss_comprehensive_income_page_as_income_statement() ->
     match = classify_statement_page(table)
 
     assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence is R11ConfidenceLevel.HIGH
+
+
+def test_balance_sheet_markers_override_generic_profit_or_loss_line_item_text() -> None:
+    table = _make_table(
+        7,
+        [
+            "STATEMENT OF FINANCIAL POSITION",
+            "ASSETS",
+            "LIABILITIES",
+            "Total Assets",
+            "Total Liabilities",
+            "Financial assets recognised through profit or loss",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.BALANCE_SHEET
+    assert match.confidence is R11ConfidenceLevel.HIGH
 
 
 def test_classify_financial_position_page_as_balance_sheet_high_confidence() -> None:
