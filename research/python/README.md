@@ -116,6 +116,12 @@ python research/python/scripts/test_r10_agent.py
 
 This smoke test is for manual execution only after setting `DEEPSEEK_API_KEY`. It is not run by `pytest` or CI.
 
+## R11 Institutional Financial Analyst Layer
+
+R11 is planned/starting as the Institutional Financial Analyst layer. It builds on R10-verified official CBSL/CSE documents and metadata, with R10 supplying the source boundary for future financial table extraction, accounting normalization, deterministic calculations, and strict analyst dossiers.
+
+See `research/python/docs/r11_architecture.md` for the R11 architecture document.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.
