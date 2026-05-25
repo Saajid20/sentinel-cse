@@ -122,6 +122,8 @@ R11 is planned/starting as the Institutional Financial Analyst layer. It builds 
 
 See `research/python/docs/r11_architecture.md` for the R11 architecture document.
 
+See `research/python/docs/r11_tools_datasets_matrix.md` for the R11 tools and datasets evaluation matrix.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.

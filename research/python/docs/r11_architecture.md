@@ -146,6 +146,8 @@ Evaluation and reference resources:
 
 These are not live Sentinel-CSE sources. They may inform evaluation design, metric definitions, prompt structure, data modeling, or benchmark methodology, but they do not expand the production source boundary.
 
+See `research/python/docs/r11_tools_datasets_matrix.md` for the R11.0B tools and datasets evaluation matrix.
+
 ## Safety Boundary
 
 Forbidden behavior:
