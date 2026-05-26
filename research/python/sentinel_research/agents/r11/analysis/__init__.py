@@ -1,3 +1,10 @@
+from sentinel_research.agents.r11.analysis.dossier_builder import (
+    DeterministicDossierBuildInput,
+    R11DossierBuildError,
+    build_deterministic_r11_dossier,
+    collect_red_flags_from_scorecard,
+    collect_source_traces_from_metrics,
+)
 from sentinel_research.agents.r11.analysis.metric_aggregator import (
     AggregatedMetricResult,
     MetricOccurrence,
@@ -26,6 +33,11 @@ from sentinel_research.agents.r11.analysis.metric_builder import (
 )
 
 __all__ = [
+    "R11DossierBuildError",
+    "DeterministicDossierBuildInput",
+    "collect_source_traces_from_metrics",
+    "collect_red_flags_from_scorecard",
+    "build_deterministic_r11_dossier",
     "R11MetricAggregationError",
     "MetricOccurrence",
     "AggregatedMetricResult",
