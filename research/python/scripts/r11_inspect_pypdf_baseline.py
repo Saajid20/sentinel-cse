@@ -24,6 +24,9 @@ from sentinel_research.agents.r11.analysis.metric_aggregator import (  # noqa: E
 from sentinel_research.agents.r11.analysis.metric_builder import (  # noqa: E402
     build_growth_metrics_for_items,
 )
+from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E402
+    build_fundamental_scorecard_from_aggregated_metrics,
+)
 from sentinel_research.agents.r11.schemas import ExtractedFinancialTable  # noqa: E402
 from sentinel_research.agents.r11.tables import (  # noqa: E402
     map_comb_six_column_items,
@@ -207,6 +210,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--show-aggregated-json",
         action="store_true",
         help="Print full JSON for each displayed aggregated verified metric result.",
+    )
+    parser.add_argument(
+        "--show-scorecard",
+        action="store_true",
+        help="Print the deterministic FundamentalScorecard built from aggregated verified metrics.",
+    )
+    parser.add_argument(
+        "--show-scorecard-json",
+        action="store_true",
+        help="Print full JSON for the displayed deterministic scorecard build result.",
     )
     parser.add_argument(
         "--hide-statement-classification",
@@ -580,6 +593,54 @@ def _print_aggregated_metrics_section(
         )
 
 
+def _print_scorecard_section(
+    scorecard_result,
+    *,
+    show_scorecard_json: bool,
+) -> None:
+    balance_sheet_risk = scorecard_result.scorecard.balance_sheet_risk
+    capital_strength = scorecard_result.scorecard.capital_strength
+    accounting_risk = scorecard_result.scorecard.accounting_risk
+
+    print()
+    print("fundamental scorecard:")
+    print(f"  earnings_quality={scorecard_result.scorecard.earnings_quality.value}")
+    print(f"  revenue_trend={scorecard_result.scorecard.revenue_trend.value}")
+    print(f"  margin_trend={scorecard_result.scorecard.margin_trend.value}")
+    print(
+        "  balance_sheet_risk="
+        f"{None if balance_sheet_risk is None else balance_sheet_risk.value}"
+    )
+    print(f"  cash_flow_quality={scorecard_result.scorecard.cash_flow_quality.value}")
+    print(
+        "  capital_strength="
+        f"{None if capital_strength is None else capital_strength.value}"
+    )
+    print(
+        "  accounting_risk="
+        f"{None if accounting_risk is None else accounting_risk.value}"
+    )
+    print(
+        "  manual_review_required="
+        f"{scorecard_result.scorecard.manual_review_required}"
+    )
+    print(
+        "  metric_names_used="
+        f"{len(scorecard_result.metric_names_used)} {scorecard_result.metric_names_used}"
+    )
+    print(
+        "  missing_expected_metrics="
+        f"{scorecard_result.missing_expected_metrics}"
+    )
+    print(
+        "  manual_review_reasons="
+        f"{scorecard_result.manual_review_reasons}"
+    )
+    print(f"  summary={scorecard_result.scorecard.summary}")
+    if show_scorecard_json:
+        print(scorecard_result.model_dump_json(indent=2))
+
+
 def _write_output_json(path: Path, tables: list[ExtractedFinancialTable]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [table.model_dump(mode="json") for table in tables]
@@ -613,7 +674,11 @@ def main(argv: list[str] | None = None) -> int:
             (match.table_id, match.page_number): match for match in statement_matches
         }
         all_verified_results = []
-        if args.show_verified_metrics or args.show_aggregated_metrics:
+        if (
+            args.show_verified_metrics
+            or args.show_aggregated_metrics
+            or args.show_scorecard
+        ):
             for table in shown_tables:
                 statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
                 all_verified_results.extend(
@@ -636,7 +701,11 @@ def main(argv: list[str] | None = None) -> int:
             hide_statement_classification=args.hide_statement_classification,
             total_verified_metrics=(
                 len(all_verified_results)
-                if args.show_verified_metrics or args.show_aggregated_metrics
+                if (
+                    args.show_verified_metrics
+                    or args.show_aggregated_metrics
+                    or args.show_scorecard
+                )
                 else None
             ),
         )
@@ -665,13 +734,25 @@ def main(argv: list[str] | None = None) -> int:
                 show_verified_json=args.show_verified_json,
             )
 
-        if args.show_aggregated_metrics:
+        aggregated_results = None
+        if args.show_aggregated_metrics or args.show_scorecard:
             aggregated_results = aggregate_metric_results(all_verified_results)
+
+        if args.show_aggregated_metrics and aggregated_results is not None:
             _print_aggregated_metrics_section(
                 aggregated_results,
                 total_raw_verified_metrics=len(all_verified_results),
                 max_aggregated_metrics=args.max_aggregated_metrics,
                 show_aggregated_json=args.show_aggregated_json,
+            )
+
+        if args.show_scorecard and aggregated_results is not None:
+            scorecard_result = build_fundamental_scorecard_from_aggregated_metrics(
+                aggregated_results
+            )
+            _print_scorecard_section(
+                scorecard_result,
+                show_scorecard_json=args.show_scorecard_json,
             )
 
         if args.output_json:
