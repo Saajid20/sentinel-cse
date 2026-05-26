@@ -116,6 +116,34 @@ python research/python/scripts/test_r10_agent.py
 
 This smoke test is for manual execution only after setting `DEEPSEEK_API_KEY`. It is not run by `pytest` or CI.
 
+## R11 Institutional Financial Analyst Layer
+
+R11 is planned/starting as the Institutional Financial Analyst layer. It builds on R10-verified official CBSL/CSE documents and metadata, with R10 supplying the source boundary for future financial table extraction, accounting normalization, deterministic calculations, and strict analyst dossiers.
+
+See `research/python/docs/r11_architecture.md` for the R11 architecture document.
+
+See `research/python/docs/r11_tools_datasets_matrix.md` for the R11 tools and datasets evaluation matrix.
+
+See `research/python/docs/r11_teaching_from_finance_resources.md` for the R11 teaching strategy from external finance resources.
+
+See `research/python/docs/r11_table_extraction_bakeoff.md` for the R11 table extraction bakeoff design.
+
+See `research/python/docs/r11_deterministic_v0_1_closeout.md` for the deterministic R11 v0.1 closeout, validated COMB.N0000 path, current limitations, and next validation steps.
+
+The initial R11.1 schema foundation now lives under `research/python/sentinel_research/agents/r11/`.
+
+The initial R11.2 calculation toolbox now lives under `research/python/sentinel_research/agents/r11/tools/`.
+
+The initial R11.3B `pypdf` baseline extraction adapter now lives under `research/python/sentinel_research/agents/r11/extraction/`.
+
+The initial R11.3E statement page locator now lives under `research/python/sentinel_research/agents/r11/extraction/statement_locator.py`.
+
+The initial R11.3F prototype `pypdf` financial row parser now lives under `research/python/sentinel_research/agents/r11/extraction/pypdf_row_parser.py`.
+
+The initial R11.4A line-item normalization foundation now lives under `research/python/sentinel_research/agents/r11/tables/`.
+
+The initial R11.4C column/period mapping and numeric string parsing foundation now lives under `research/python/sentinel_research/agents/r11/tables/value_mapper.py`.
+
 ## Reports
 
 Generated reports belong in `research/python/reports/`. The directory is kept with `.gitkeep`; generated report files are ignored by Git.
