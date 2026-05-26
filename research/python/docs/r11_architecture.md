@@ -175,6 +175,7 @@ R11 must not place orders, recommend trading actions, modify strategy thresholds
 - R11.3F prototype `pypdf` financial row parser is now started/completed under `research/python/sentinel_research/agents/r11/extraction/pypdf_row_parser.py`.
 - R11.4A line-item normalization foundation is now started/completed under `research/python/sentinel_research/agents/r11/tables/line_item_mapper.py`.
 - R11.4C column/period mapping and numeric string parsing foundation is now started/completed under `research/python/sentinel_research/agents/r11/tables/value_mapper.py`.
+- R11.5A first non-LLM fundamental metrics prototype is now started/completed under `research/python/sentinel_research/agents/r11/analysis/metric_builder.py`, producing deterministic verified `FinancialMetric` and `ToolAuditEntry` objects from mapped statement values.
 - R11.0A Architecture document
 - R11.0B Existing tools/datasets evaluation matrix
 - R11.1 Schema foundation
