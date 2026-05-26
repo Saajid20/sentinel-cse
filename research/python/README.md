@@ -128,6 +128,8 @@ See `research/python/docs/r11_teaching_from_finance_resources.md` for the R11 te
 
 See `research/python/docs/r11_table_extraction_bakeoff.md` for the R11 table extraction bakeoff design.
 
+See `research/python/docs/r11_deterministic_v0_1_closeout.md` for the deterministic R11 v0.1 closeout, validated COMB.N0000 path, current limitations, and next validation steps.
+
 The initial R11.1 schema foundation now lives under `research/python/sentinel_research/agents/r11/`.
 
 The initial R11.2 calculation toolbox now lives under `research/python/sentinel_research/agents/r11/tools/`.

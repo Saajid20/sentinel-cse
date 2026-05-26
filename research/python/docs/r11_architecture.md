@@ -152,6 +152,8 @@ See `research/python/docs/r11_tools_datasets_matrix.md` for the R11.0B tools and
 
 See `research/python/docs/r11_teaching_from_finance_resources.md` for the R11.0C teaching strategy from external finance resources.
 
+See `research/python/docs/r11_deterministic_v0_1_closeout.md` for the deterministic R11 v0.1 closeout, real-document validation summary, current limitations, and next validation plan.
+
 ## Safety Boundary
 
 Forbidden behavior:
