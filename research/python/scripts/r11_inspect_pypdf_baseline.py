@@ -17,6 +17,9 @@ from sentinel_research.agents.r11.extraction import (  # noqa: E402
     locate_statement_pages,
     parse_financial_rows_from_table,
 )
+from sentinel_research.agents.r11.analysis.metric_builder import (  # noqa: E402
+    build_growth_metrics_for_items,
+)
 from sentinel_research.agents.r11.schemas import ExtractedFinancialTable  # noqa: E402
 from sentinel_research.agents.r11.tables import (  # noqa: E402
     map_comb_six_column_items,
@@ -164,6 +167,28 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print full JSON for each displayed mapped semantic value item.",
     )
     parser.add_argument(
+        "--show-verified-metrics",
+        action="store_true",
+        help="Print verified financial metrics for each shown page/table.",
+    )
+    parser.add_argument(
+        "--metric-entity",
+        choices=("group", "bank"),
+        default="group",
+        help="Entity prefix to use for verified metrics.",
+    )
+    parser.add_argument(
+        "--max-verified-metrics",
+        type=_positive_int("max_verified_metrics"),
+        default=30,
+        help="Maximum verified financial metrics to print per shown page/table.",
+    )
+    parser.add_argument(
+        "--show-verified-json",
+        action="store_true",
+        help="Print full JSON for each displayed verified financial metric result.",
+    )
+    parser.add_argument(
         "--hide-statement-classification",
         action="store_true",
         help="Hide detected statement classification output.",
@@ -280,6 +305,7 @@ def _print_summary(
     start_page: int | None,
     end_page: int | None,
     hide_statement_classification: bool,
+    total_verified_metrics: int | None = None,
 ) -> None:
     pages = [table.page_number for table in tables if table.page_number is not None]
     filtered_pages = [
@@ -305,6 +331,8 @@ def _print_summary(
     print(f"pages extracted: {pages}")
     print(f"pages matched: {filtered_pages}")
     print(f"pages shown/saved: {shown_pages}")
+    if total_verified_metrics is not None:
+        print(f"total verified metric count: {total_verified_metrics}")
     if not hide_statement_classification:
         print("statement classifications:")
         for match in statement_matches:
@@ -333,7 +361,11 @@ def _print_table_preview(
     show_mapped_values: bool,
     max_mapped_values: int,
     show_mapped_json: bool,
-) -> None:
+    show_verified_metrics: bool,
+    metric_entity: str,
+    max_verified_metrics: int,
+    show_verified_json: bool,
+) -> int:
     print()
     print(f"table_id: {table.table_id}")
     print(f"page_number: {table.page_number}")
@@ -370,7 +402,7 @@ def _print_table_preview(
             _print_parsed_row(parsed_row, show_parsed_json=show_parsed_json)
 
     normalized_rows = []
-    if show_normalized_rows or show_mapped_values:
+    if show_normalized_rows or show_mapped_values or show_verified_metrics:
         normalized_rows = normalize_parsed_financial_rows(parsed_rows)
 
     if show_normalized_rows:
@@ -381,15 +413,34 @@ def _print_table_preview(
                 show_normalized_json=show_normalized_json,
             )
 
-    if show_mapped_values:
+    mapped_items = []
+    if show_mapped_values or show_verified_metrics:
         mapped_items = map_comb_six_column_items(normalized_rows)
+
+    if show_mapped_values:
         print(f"mapped semantic values: {len(mapped_items)}")
         for mapped_item in mapped_items[:max_mapped_values]:
             _print_mapped_item(mapped_item, show_mapped_json=show_mapped_json)
 
+    verified_metric_count = 0
+    if show_verified_metrics:
+        verified_results = build_growth_metrics_for_items(
+            mapped_items,
+            entity_prefix=metric_entity,
+        )
+        verified_metric_count = len(verified_results)
+        print(f"verified financial metrics: {verified_metric_count}")
+        for verification_result in verified_results[:max_verified_metrics]:
+            _print_verified_metric_result(
+                verification_result,
+                show_verified_json=show_verified_json,
+            )
+
     if show_json:
         print("json:")
         print(table.model_dump_json(indent=2))
+
+    return verified_metric_count
 
 
 def _print_parsed_row(parsed_row: ParsedFinancialRow, *, show_parsed_json: bool) -> None:
@@ -424,6 +475,28 @@ def _print_mapped_item(mapped_item, *, show_mapped_json: bool) -> None:
         print(mapped_item.model_dump_json(indent=2))
 
 
+def _print_verified_metric_result(
+    verification_result,
+    *,
+    show_verified_json: bool,
+) -> None:
+    print(f"  {verification_result.metric.metric_name}:")
+    print(
+        f"    calculated_change_percent={verification_result.calculated_change_percent}"
+    )
+    print(
+        f"    reported_change_percent={verification_result.reported_change_percent}"
+    )
+    print(
+        "    difference_percent_points="
+        f"{verification_result.difference_percent_points}"
+    )
+    print(f"    matches_reported={verification_result.matches_reported}")
+    print(f"    direction={verification_result.metric.direction.value}")
+    if show_verified_json:
+        print(verification_result.model_dump_json(indent=2))
+
+
 def _write_output_json(path: Path, tables: list[ExtractedFinancialTable]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [table.model_dump(mode="json") for table in tables]
@@ -456,6 +529,23 @@ def main(argv: list[str] | None = None) -> int:
         statement_matches_by_key = {
             (match.table_id, match.page_number): match for match in statement_matches
         }
+        total_verified_metrics = 0
+
+        for table in shown_tables:
+            statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
+            if args.show_verified_metrics:
+                parsed_rows = parse_financial_rows_from_table(
+                    table,
+                    statement_type=statement_match.statement_type if statement_match is not None else None,
+                )
+                normalized_rows = normalize_parsed_financial_rows(parsed_rows)
+                mapped_items = map_comb_six_column_items(normalized_rows)
+                total_verified_metrics += len(
+                    build_growth_metrics_for_items(
+                        mapped_items,
+                        entity_prefix=args.metric_entity,
+                    )
+                )
 
         _print_summary(
             pdf_path=pdf_path,
@@ -467,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
             start_page=args.start_page,
             end_page=args.end_page,
             hide_statement_classification=args.hide_statement_classification,
+            total_verified_metrics=total_verified_metrics if args.show_verified_metrics else None,
         )
         for table in shown_tables:
             _print_table_preview(
@@ -487,6 +578,10 @@ def main(argv: list[str] | None = None) -> int:
                 show_mapped_values=args.show_mapped_values,
                 max_mapped_values=args.max_mapped_values,
                 show_mapped_json=args.show_mapped_json,
+                show_verified_metrics=args.show_verified_metrics,
+                metric_entity=args.metric_entity,
+                max_verified_metrics=args.max_verified_metrics,
+                show_verified_json=args.show_verified_json,
             )
 
         if args.output_json:
