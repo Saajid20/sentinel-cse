@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ from sentinel_research.agents.r11.analysis.metric_builder import (  # noqa: E402
     build_growth_metrics_for_items,
 )
 from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E402
+    R11ScorecardBuildError,
     build_fundamental_scorecard_from_aggregated_metrics,
 )
 from sentinel_research.agents.r11.schemas import ExtractedFinancialTable  # noqa: E402
@@ -119,6 +121,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-json",
         help="Optional output path for extracted tables as UTF-8 JSON.",
+    )
+    parser.add_argument(
+        "--output-analysis-json",
+        help="Optional output path for deterministic R11 analysis artifacts as UTF-8 JSON.",
     )
     parser.add_argument(
         "--show-json",
@@ -327,6 +333,23 @@ def _iter_shown_tables(
     return tables[:limit_pages]
 
 
+def _active_filters(
+    *,
+    search_terms: list[str] | None,
+    start_page: int | None,
+    end_page: int | None,
+) -> list[str]:
+    active_filters: list[str] = []
+    if start_page is not None:
+        active_filters.append(f"start_page>={start_page}")
+    if end_page is not None:
+        active_filters.append(f"end_page<={end_page}")
+    normalized_terms = _normalize_search_terms(search_terms)
+    if normalized_terms:
+        active_filters.append(f"search={normalized_terms}")
+    return active_filters
+
+
 def _print_summary(
     *,
     pdf_path: Path,
@@ -346,14 +369,11 @@ def _print_summary(
     ]
     shown_pages = [table.page_number for table in shown_tables if table.page_number is not None]
     extraction_method = tables[0].extraction_method if tables else "unknown"
-    active_filters: list[str] = []
-    if start_page is not None:
-        active_filters.append(f"start_page>={start_page}")
-    if end_page is not None:
-        active_filters.append(f"end_page<={end_page}")
-    normalized_terms = _normalize_search_terms(search_terms)
-    if normalized_terms:
-        active_filters.append(f"search={normalized_terms}")
+    active_filters = _active_filters(
+        search_terms=search_terms,
+        start_page=start_page,
+        end_page=end_page,
+    )
 
     print("R11 pypdf Baseline Inspection")
     print(f"PDF path: {pdf_path.resolve()}")
@@ -641,12 +661,78 @@ def _print_scorecard_section(
         print(scorecard_result.model_dump_json(indent=2))
 
 
+def _build_deterministic_analysis_payload(
+    *,
+    pdf_path: Path,
+    tables: list[ExtractedFinancialTable],
+    filtered_tables: list[ExtractedFinancialTable],
+    shown_tables: list[ExtractedFinancialTable],
+    statement_matches: list[StatementPageMatch],
+    search_terms: list[str] | None,
+    start_page: int | None,
+    end_page: int | None,
+    verified_metric_results,
+    aggregated_metric_results,
+    scorecard_build_result,
+    scorecard_build_error: str | None,
+    generated_at: datetime,
+) -> dict[str, object]:
+    pages_extracted = [table.page_number for table in tables if table.page_number is not None]
+    pages_matched = [
+        table.page_number for table in filtered_tables if table.page_number is not None
+    ]
+    pages_shown = [table.page_number for table in shown_tables if table.page_number is not None]
+    notes: list[str] = [
+        "Deterministic R11 analysis artifact built from the local manual inspection pipeline."
+    ]
+    if scorecard_build_result is None:
+        notes.append("Scorecard build was not available for this deterministic analysis artifact.")
+    if scorecard_build_error is not None:
+        notes.append(f"Scorecard build error: {scorecard_build_error}")
+
+    return {
+        "schema_version": "r11_deterministic_analysis_v1",
+        "pdf_path": str(pdf_path.resolve()),
+        "extraction_method": tables[0].extraction_method if tables else "unknown",
+        "pages_extracted": pages_extracted,
+        "pages_matched": pages_matched,
+        "pages_shown": pages_shown,
+        "active_filters": _active_filters(
+            search_terms=search_terms,
+            start_page=start_page,
+            end_page=end_page,
+        ),
+        "statement_classifications": [
+            match.model_dump(mode="json") for match in statement_matches
+        ],
+        "verified_metric_results": [
+            result.model_dump(mode="json") for result in verified_metric_results
+        ],
+        "aggregated_metric_results": [
+            result.model_dump(mode="json") for result in aggregated_metric_results
+        ],
+        "scorecard_build_result": None
+        if scorecard_build_result is None
+        else scorecard_build_result.model_dump(mode="json"),
+        "scorecard_build_error": scorecard_build_error,
+        "generated_at": generated_at.isoformat(),
+        "notes": notes,
+    }
+
+
 def _write_output_json(path: Path, tables: list[ExtractedFinancialTable]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [table.model_dump(mode="json") for table in tables]
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
     print()
     print(f"saved json: {path.resolve()}")
+
+
+def _write_output_analysis_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
+    print()
+    print(f"saved analysis json: {path.resolve()}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -678,6 +764,7 @@ def main(argv: list[str] | None = None) -> int:
             args.show_verified_metrics
             or args.show_aggregated_metrics
             or args.show_scorecard
+            or args.output_analysis_json
         ):
             for table in shown_tables:
                 statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
@@ -705,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.show_verified_metrics
                     or args.show_aggregated_metrics
                     or args.show_scorecard
+                    or args.output_analysis_json
                 )
                 else None
             ),
@@ -735,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         aggregated_results = None
-        if args.show_aggregated_metrics or args.show_scorecard:
+        if args.show_aggregated_metrics or args.show_scorecard or args.output_analysis_json:
             aggregated_results = aggregate_metric_results(all_verified_results)
 
         if args.show_aggregated_metrics and aggregated_results is not None:
@@ -746,13 +834,55 @@ def main(argv: list[str] | None = None) -> int:
                 show_aggregated_json=args.show_aggregated_json,
             )
 
+        scorecard_result = None
+        scorecard_build_error = None
         if args.show_scorecard and aggregated_results is not None:
-            scorecard_result = build_fundamental_scorecard_from_aggregated_metrics(
-                aggregated_results
+            try:
+                scorecard_result = build_fundamental_scorecard_from_aggregated_metrics(
+                    aggregated_results
+                )
+            except (R11ScorecardBuildError, ValueError) as error:
+                scorecard_build_error = str(error)
+                print()
+                print(f"scorecard build failed: {scorecard_build_error}")
+            else:
+                _print_scorecard_section(
+                    scorecard_result,
+                    show_scorecard_json=args.show_scorecard_json,
+                )
+
+        if (
+            args.output_analysis_json
+            and aggregated_results is not None
+            and scorecard_result is None
+            and scorecard_build_error is None
+        ):
+            try:
+                scorecard_result = build_fundamental_scorecard_from_aggregated_metrics(
+                    aggregated_results
+                )
+            except (R11ScorecardBuildError, ValueError) as error:
+                scorecard_build_error = str(error)
+
+        if args.output_analysis_json:
+            analysis_payload = _build_deterministic_analysis_payload(
+                pdf_path=pdf_path,
+                tables=tables,
+                filtered_tables=filtered_tables,
+                shown_tables=shown_tables,
+                statement_matches=statement_matches,
+                search_terms=args.search,
+                start_page=args.start_page,
+                end_page=args.end_page,
+                verified_metric_results=all_verified_results,
+                aggregated_metric_results=aggregated_results or [],
+                scorecard_build_result=scorecard_result,
+                scorecard_build_error=scorecard_build_error,
+                generated_at=datetime.now(tz=UTC),
             )
-            _print_scorecard_section(
-                scorecard_result,
-                show_scorecard_json=args.show_scorecard_json,
+            _write_output_analysis_json(
+                Path(args.output_analysis_json).expanduser(),
+                analysis_payload,
             )
 
         if args.output_json:
