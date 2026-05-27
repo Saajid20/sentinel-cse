@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { MarketSnapshot } from '@sentinel/core';
 import { DEFAULT_OPENING_MOMENTUM_PARAMETERS } from '../packages/strategies/src/index.js';
@@ -23,6 +24,7 @@ export interface ManualATradReplaySessionConfig {
   inputPath: string;
   universePath?: string;
   conditionDiagnostics?: boolean;
+  diagnosticsJsonOutputPath?: string;
   readonlyMode: true;
 }
 
@@ -141,12 +143,57 @@ export interface ManualATradReplaySessionResult {
   diagnostics: ATradReplayDiagnostics;
   conditionDiagnostics?: ATradReplayConditionDiagnostics;
   universeCoverage?: TradeableUniverseCoverageSummary;
+  diagnosticsJsonOutputPath?: string;
   warning?: string;
 }
 
 export interface ManualATradReplaySessionRuntime {
   readFile(path: string): Promise<string>;
+  ensureDir(path: string): Promise<void>;
+  writeFile(path: string, contents: string): Promise<void>;
   log(message: string): void;
+}
+
+export interface ATradReplayDiagnosticsJsonExport {
+  sessionId: string;
+  inputPath: string;
+  source: string;
+  totalSnapshotsLoaded: number;
+  replayedSnapshots: number;
+  uniqueTickers: number;
+  signalsGenerated: number;
+  aggregateReplayDiagnostics: {
+    snapshotsProcessed: number;
+    enrichedSnapshots: number;
+    spreadBlockedCount: number;
+    volumeBlockedCount: number;
+    imbalanceBlockedCount: number;
+    vwapMissingCount: number;
+    firstFiveMinuteHighMissingCount: number;
+    priceNotAboveVwapCount: number;
+    priceNotAboveMomentumTriggerCount: number;
+    insufficientHistoryCount: number;
+    strategyReadySnapshotCount: number;
+    likelyBlockers: string[];
+  };
+  thresholdSummary: ATradReplayConditionThresholdSummary;
+  perTickerConditionDiagnostics?: Array<{
+    ticker: string;
+    snapshots: number;
+    historyPass: number;
+    strategyReady: number;
+    spreadPass: number;
+    vwapAvailable: number;
+    priceAboveVwap: number;
+    firstHighAvailable: number;
+    momentumPass: number;
+    volumeRatioAvailable: number;
+    volumeRatioPass: number;
+    imbalanceAvailable: number;
+    imbalancePass: number;
+    signals: number;
+    topBlockers: string[];
+  }>;
 }
 
 export function createManualATradReplaySessionConfig(
@@ -161,6 +208,9 @@ export function createManualATradReplaySessionConfig(
     inputPath,
     ...(readFlagValue(args, '--universe') ? { universePath: readFlagValue(args, '--universe') } : {}),
     ...(hasFlag(args, '--condition-diagnostics') ? { conditionDiagnostics: true } : {}),
+    ...(readFlagValue(args, '--diagnostics-json-output')
+      ? { diagnosticsJsonOutputPath: readFlagValue(args, '--diagnostics-json-output') }
+      : {}),
     readonlyMode: true
   };
 }
@@ -614,8 +664,20 @@ export async function runManualATradReplaySession(
     diagnostics,
     ...(conditionDiagnostics ? { conditionDiagnostics } : {}),
     ...(universeResult ? { universeCoverage: universeResult.coverage } : {}),
+    ...(config.diagnosticsJsonOutputPath
+      ? { diagnosticsJsonOutputPath: config.diagnosticsJsonOutputPath }
+      : {}),
     warning
   };
+
+  if (config.diagnosticsJsonOutputPath) {
+    const diagnosticsJson = buildATradReplayDiagnosticsJsonExport(config, result);
+    await runtime.ensureDir(dirname(config.diagnosticsJsonOutputPath));
+    await runtime.writeFile(
+      config.diagnosticsJsonOutputPath,
+      `${JSON.stringify(diagnosticsJson, null, 2)}\n`
+    );
+  }
 
   for (const line of formatATradReplaySessionSummary(result)) {
     runtime.log(line);
@@ -862,6 +924,15 @@ export function buildATradReplayFeatures(
   return enrichATradReplaySnapshots(snapshots);
 }
 
+function buildATradReplayConditionThresholdSummary(): ATradReplayConditionThresholdSummary {
+  return {
+    maxSpreadPercent: OPENING_MOMENTUM_SPREAD_THRESHOLD,
+    minimumVolumeRatio: OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD,
+    minimumImbalance: OPENING_MOMENTUM_IMBALANCE_THRESHOLD,
+    momentumTriggerBasis: 'lastPrice > first5MinHighEstimate derived from prior session high'
+  };
+}
+
 export function analyzeATradStrategyConditionDiagnostics(
   snapshots: ReplayableATradSnapshot[],
   replaySummary: ReplayResultSummary
@@ -883,13 +954,60 @@ export function analyzeATradStrategyConditionDiagnostics(
     );
 
   return {
-    thresholdSummary: {
-      maxSpreadPercent: OPENING_MOMENTUM_SPREAD_THRESHOLD,
-      minimumVolumeRatio: OPENING_MOMENTUM_VOLUME_RATIO_THRESHOLD,
-      minimumImbalance: OPENING_MOMENTUM_IMBALANCE_THRESHOLD,
-      momentumTriggerBasis: 'lastPrice > first5MinHighEstimate derived from prior session high'
-    },
+    thresholdSummary: buildATradReplayConditionThresholdSummary(),
     perTicker
+  };
+}
+
+export function buildATradReplayDiagnosticsJsonExport(
+  config: ManualATradReplaySessionConfig,
+  result: ManualATradReplaySessionResult
+): ATradReplayDiagnosticsJsonExport {
+  return {
+    sessionId: result.sessionId,
+    inputPath: config.inputPath,
+    source: result.source,
+    totalSnapshotsLoaded: result.totalSnapshotsLoaded,
+    replayedSnapshots: result.replaySummary.snapshotsProcessed,
+    uniqueTickers: result.uniqueTickers,
+    signalsGenerated: result.replaySummary.signalsGenerated,
+    aggregateReplayDiagnostics: {
+      snapshotsProcessed: result.diagnostics.snapshotsProcessed,
+      enrichedSnapshots: result.diagnostics.enrichedSnapshotsCount,
+      spreadBlockedCount: result.diagnostics.spreadBlockedCount,
+      volumeBlockedCount: result.diagnostics.volumeBlockedCount,
+      imbalanceBlockedCount: result.diagnostics.imbalanceBlockedCount,
+      vwapMissingCount: result.diagnostics.vwapMissingCount,
+      firstFiveMinuteHighMissingCount: result.diagnostics.firstFiveMinuteHighMissingCount,
+      priceNotAboveVwapCount: result.diagnostics.priceNotAboveVwapCount,
+      priceNotAboveMomentumTriggerCount: result.diagnostics.priceNotAboveMomentumTriggerCount,
+      insufficientHistoryCount: result.diagnostics.insufficientHistoryCount,
+      strategyReadySnapshotCount: result.diagnostics.strategyReadySnapshotCount,
+      likelyBlockers: result.diagnostics.likelyBlockers
+    },
+    thresholdSummary:
+      result.conditionDiagnostics?.thresholdSummary ?? buildATradReplayConditionThresholdSummary(),
+    ...(result.conditionDiagnostics
+      ? {
+          perTickerConditionDiagnostics: result.conditionDiagnostics.perTicker.map((ticker) => ({
+            ticker: ticker.ticker,
+            snapshots: ticker.snapshots,
+            historyPass: ticker.sufficientHistory,
+            strategyReady: ticker.strategyReady,
+            spreadPass: ticker.spreadPass,
+            vwapAvailable: ticker.vwapAvailable,
+            priceAboveVwap: ticker.priceAboveVwap,
+            firstHighAvailable: ticker.firstHighAvailable,
+            momentumPass: ticker.momentumPass,
+            volumeRatioAvailable: ticker.volumeRatioAvailable,
+            volumeRatioPass: ticker.volumeRatioPass,
+            imbalanceAvailable: ticker.imbalanceAvailable,
+            imbalancePass: ticker.imbalancePass,
+            signals: ticker.signals,
+            topBlockers: ticker.topBlockers
+          }))
+        }
+      : {})
   };
 }
 
@@ -1051,6 +1169,8 @@ function incrementBlocker(blockerCounts: Map<string, number>, blocker: string): 
 function defaultRuntime(): ManualATradReplaySessionRuntime {
   return {
     readFile: async (path) => readFile(path, 'utf8'),
+    ensureDir: async (path) => mkdir(path, { recursive: true }),
+    writeFile: async (path, contents) => writeFile(path, contents, 'utf8'),
     log: (message) => console.log(message)
   };
 }

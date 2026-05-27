@@ -4,6 +4,7 @@ import type { ManualATradReplaySessionRuntime } from './manualATradReplaySession
 import {
   analyzeATradReplayDiagnostics,
   analyzeATradStrategyConditionDiagnostics,
+  buildATradReplayDiagnosticsJsonExport,
   buildATradReplayFeatures,
   createManualATradReplaySessionConfig,
   extractReplayableATradSnapshots,
@@ -91,6 +92,20 @@ const fakeRecordedSession = {
   ]
 };
 
+function createRuntime(
+  overrides: Partial<ManualATradReplaySessionRuntime> = {}
+): ManualATradReplaySessionRuntime {
+  return {
+    async readFile() {
+      return JSON.stringify(fakeRecordedSession);
+    },
+    async ensureDir() {},
+    async writeFile() {},
+    log() {},
+    ...overrides
+  };
+}
+
 describe('manual ATrad replay-session helpers', () => {
   it('parses the input CLI flag', () => {
     const config = createManualATradReplaySessionConfig(['--input', 'data/live-sessions/example.json']);
@@ -126,6 +141,21 @@ describe('manual ATrad replay-session helpers', () => {
     expect(config).toEqual({
       inputPath: 'data/live-sessions/example.json',
       conditionDiagnostics: true,
+      readonlyMode: true
+    });
+  });
+
+  it('parses the diagnostics JSON output flag', () => {
+    const config = createManualATradReplaySessionConfig([
+      '--input',
+      'data/live-sessions/example.json',
+      '--diagnostics-json-output',
+      '.runtime-pipeline/replay-diagnostics.json'
+    ]);
+
+    expect(config).toEqual({
+      inputPath: 'data/live-sessions/example.json',
+      diagnosticsJsonOutputPath: '.runtime-pipeline/replay-diagnostics.json',
       readonlyMode: true
     });
   });
@@ -249,12 +279,12 @@ describe('manual ATrad replay-session helpers', () => {
   });
 
   it('rejects a missing input file path at runtime', async () => {
-    const runtime: ManualATradReplaySessionRuntime = {
+    const runtime = createRuntime({
       async readFile() {
         throw new Error('ENOENT');
       },
       log() {}
-    };
+    });
 
     await expect(
       runManualATradReplaySession(
@@ -266,14 +296,11 @@ describe('manual ATrad replay-session helpers', () => {
 
   it('replays in safe SHADOW mode without sending alerts', async () => {
     const calls: string[] = [];
-    const runtime: ManualATradReplaySessionRuntime = {
-      async readFile() {
-        return JSON.stringify(fakeRecordedSession);
-      },
+    const runtime = createRuntime({
       log(message) {
         calls.push(message);
       }
-    };
+    });
 
     const result = await runManualATradReplaySession(
       createManualATradReplaySessionConfig(['--input', 'fixture.json']),
@@ -298,7 +325,7 @@ describe('manual ATrad replay-session helpers', () => {
 
   it('applies a tradeable universe filter when provided', async () => {
     const calls: string[] = [];
-    const runtime: ManualATradReplaySessionRuntime = {
+    const runtime = createRuntime({
       async readFile(path) {
         if (path === 'fixture.json') return JSON.stringify(fakeRecordedSession);
         if (path === 'universe.json') {
@@ -322,7 +349,7 @@ describe('manual ATrad replay-session helpers', () => {
       log(message) {
         calls.push(message);
       }
-    };
+    });
 
     const result = await runManualATradReplaySession(
       createManualATradReplaySessionConfig(['--input', 'fixture.json', '--universe', 'universe.json']),
@@ -433,14 +460,11 @@ describe('manual ATrad replay-session helpers', () => {
 
   it('does not print condition diagnostics by default', async () => {
     const calls: string[] = [];
-    const runtime: ManualATradReplaySessionRuntime = {
-      async readFile() {
-        return JSON.stringify(fakeRecordedSession);
-      },
+    const runtime = createRuntime({
       log(message) {
         calls.push(message);
       }
-    };
+    });
 
     await runManualATradReplaySession(
       createManualATradReplaySessionConfig(['--input', 'fixture.json']),
@@ -452,14 +476,11 @@ describe('manual ATrad replay-session helpers', () => {
 
   it('prints condition diagnostics when requested and counts conditions per ticker', async () => {
     const calls: string[] = [];
-    const runtime: ManualATradReplaySessionRuntime = {
-      async readFile() {
-        return JSON.stringify(fakeRecordedSession);
-      },
+    const runtime = createRuntime({
       log(message) {
         calls.push(message);
       }
-    };
+    });
 
     const result = await runManualATradReplaySession(
       createManualATradReplaySessionConfig([
@@ -492,6 +513,103 @@ describe('manual ATrad replay-session helpers', () => {
     );
   });
 
+  it('writes replay diagnostics JSON without modifying the input session', async () => {
+    const writes: Array<{ path: string; contents: string }> = [];
+    const reads: string[] = [];
+    const runtime = createRuntime({
+      async readFile(path) {
+        reads.push(path);
+        return JSON.stringify(fakeRecordedSession);
+      },
+      async ensureDir() {},
+      async writeFile(path, contents) {
+        writes.push({ path, contents });
+      }
+    });
+
+    const result = await runManualATradReplaySession(
+      createManualATradReplaySessionConfig([
+        '--input',
+        'fixture.json',
+        '--diagnostics-json-output',
+        '.runtime-pipeline/replay-diagnostics.json'
+      ]),
+      runtime
+    );
+
+    expect(reads).toEqual(['fixture.json']);
+    expect(result.diagnosticsJsonOutputPath).toBe('.runtime-pipeline/replay-diagnostics.json');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.path).toBe('.runtime-pipeline/replay-diagnostics.json');
+
+    const exported = JSON.parse(writes[0]?.contents ?? '{}');
+    expect(exported).toMatchObject({
+      sessionId: fakeRecordedSession.sessionId,
+      inputPath: 'fixture.json',
+      source: fakeRecordedSession.source,
+      totalSnapshotsLoaded: 3,
+      replayedSnapshots: 3,
+      uniqueTickers: 2,
+      signalsGenerated: 0,
+      aggregateReplayDiagnostics: {
+        snapshotsProcessed: 3,
+        enrichedSnapshots: 3,
+        spreadBlockedCount: 0,
+        volumeBlockedCount: 3,
+        imbalanceBlockedCount: 0,
+        insufficientHistoryCount: 2,
+        strategyReadySnapshotCount: 1
+      },
+      thresholdSummary: {
+        maxSpreadPercent: 1.5,
+        minimumVolumeRatio: 2,
+        minimumImbalance: 0,
+        momentumTriggerBasis: 'lastPrice > first5MinHighEstimate derived from prior session high'
+      }
+    });
+    expect(exported.perTickerConditionDiagnostics).toBeUndefined();
+  });
+
+  it('writes per-ticker condition diagnostics into replay diagnostics JSON when requested', async () => {
+    const writes: Array<{ path: string; contents: string }> = [];
+    const runtime = createRuntime({
+      async ensureDir() {},
+      async writeFile(path, contents) {
+        writes.push({ path, contents });
+      }
+    });
+
+    await runManualATradReplaySession(
+      createManualATradReplaySessionConfig([
+        '--input',
+        'fixture.json',
+        '--condition-diagnostics',
+        '--diagnostics-json-output',
+        '.runtime-pipeline/replay-diagnostics.json'
+      ]),
+      runtime
+    );
+
+    const exported = JSON.parse(writes[0]?.contents ?? '{}');
+    expect(exported.perTickerConditionDiagnostics?.[0]).toMatchObject({
+      ticker: 'ALFA.N0000',
+      snapshots: 2,
+      historyPass: 1,
+      strategyReady: 0,
+      spreadPass: 2,
+      vwapAvailable: 2,
+      priceAboveVwap: 0,
+      firstHighAvailable: 1,
+      momentumPass: 1,
+      volumeRatioAvailable: 1,
+      volumeRatioPass: 0,
+      imbalanceAvailable: 2,
+      imbalancePass: 2,
+      signals: 0,
+      topBlockers: ['price below VWAP', 'first high unavailable']
+    });
+  });
+
   it('identifies top blockers by ticker from enriched replay features', () => {
     const session = parseATradRecordedSessionFile(JSON.stringify(fakeRecordedSession));
     const diagnostics = analyzeATradStrategyConditionDiagnostics(
@@ -515,6 +633,95 @@ describe('manual ATrad replay-session helpers', () => {
       'price below VWAP',
       'first high unavailable'
     ]);
+  });
+
+  it('builds export payload from authoritative replay diagnostics', () => {
+    const exported = buildATradReplayDiagnosticsJsonExport(
+      createManualATradReplaySessionConfig([
+        '--input',
+        'fixture.json',
+        '--condition-diagnostics',
+        '--diagnostics-json-output',
+        '.runtime-pipeline/replay-diagnostics.json'
+      ]),
+      {
+        ok: true,
+        message: 'done',
+        sessionId: fakeRecordedSession.sessionId,
+        source: fakeRecordedSession.source,
+        startedAt: fakeRecordedSession.startedAt,
+        endedAt: fakeRecordedSession.endedAt,
+        totalSnapshotsLoaded: 3,
+        uniqueTickers: 2,
+        topTickers: [
+          { ticker: 'ALFA.N0000', snapshotCount: 2 },
+          { ticker: 'BETA.N0000', snapshotCount: 1 }
+        ],
+        replaySummary: {
+          snapshotsProcessed: 3,
+          signalsGenerated: 0,
+          generatedSignals: [],
+          alertsSent: 0,
+          outcomesClosed: 0,
+          finalActiveSignals: []
+        },
+        diagnostics: {
+          snapshotsProcessed: 3,
+          enrichedSnapshotsCount: 3,
+          uniqueTickers: 2,
+          tickersWithRepeatedSnapshots: 1,
+          spreadBlockedCount: 0,
+          volumeBlockedCount: 2,
+          imbalanceBlockedCount: 0,
+          vwapMissingCount: 0,
+          firstFiveMinuteHighMissingCount: 2,
+          priceNotAboveVwapCount: 2,
+          priceNotAboveMomentumTriggerCount: 0,
+          insufficientHistoryCount: 1,
+          qualityGateExcludedCount: 2,
+          snapshotsWithVwapEstimate: 3,
+          snapshotsWithFirstFiveMinuteHighEstimate: 1,
+          snapshotsWithVolumeRatioEstimate: 1,
+          snapshotsWithOrderBookImbalance: 3,
+          strategyGeneratedSignalCount: 0,
+          strategyReadySnapshotCount: 1,
+          likelyBlockers: ['insufficient time-series history'],
+          recommendations: [],
+          readinessStatus: 'PARTIALLY_READY',
+          perTickerDiagnostics: []
+        },
+        conditionDiagnostics: {
+          thresholdSummary: {
+            maxSpreadPercent: 1.5,
+            minimumVolumeRatio: 2,
+            minimumImbalance: 0,
+            momentumTriggerBasis: 'lastPrice > first5MinHighEstimate derived from prior session high'
+          },
+          perTicker: [
+            {
+              ticker: 'ALFA.N0000',
+              snapshots: 2,
+              sufficientHistory: 1,
+              strategyReady: 0,
+              spreadPass: 2,
+              vwapAvailable: 2,
+              priceAboveVwap: 0,
+              firstHighAvailable: 1,
+              momentumPass: 1,
+              volumeRatioAvailable: 1,
+              volumeRatioPass: 0,
+              imbalanceAvailable: 2,
+              imbalancePass: 2,
+              signals: 0,
+              topBlockers: ['price below VWAP']
+            }
+          ]
+        }
+      }
+    );
+
+    expect(exported.thresholdSummary.maxSpreadPercent).toBe(1.5);
+    expect(exported.perTickerConditionDiagnostics?.[0]?.historyPass).toBe(1);
   });
 
   it('formats a replay summary', () => {
