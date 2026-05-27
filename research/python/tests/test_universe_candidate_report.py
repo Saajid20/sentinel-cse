@@ -16,6 +16,7 @@ TEST_TMP_ROOT = PYTHON_ROOT / ".tmp-test-output"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from universe_candidate_report import (  # noqa: E402
+    UniverseCandidateFilters,
     build_universe_candidate_report,
     format_universe_candidate_report,
 )
@@ -184,6 +185,185 @@ def test_top_argument_limits_report_rows() -> None:
     assert [candidate.ticker for candidate in report.candidates] == ["ALFA.N0000", "BETA.N0000"]
 
 
+def test_min_snapshots_filters_low_observation_tickers() -> None:
+    session = build_session(
+        [
+            build_snapshot("ALFA.N0000", 1),
+            build_snapshot("ALFA.N0000", 2),
+            build_snapshot("BETA.N0000", 1),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(min_snapshots=2),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["ALFA.N0000"]
+    assert report.original_candidate_count == 2
+    assert report.filtered_candidate_count == 1
+
+
+def test_min_bid_ask_coverage_filters_partial_candidates() -> None:
+    session = build_session(
+        [
+            build_snapshot("ALFA.N0000", 1),
+            build_snapshot("ALFA.N0000", 2, best_bid=None, best_ask=None),
+            build_snapshot("BETA.N0000", 1),
+            build_snapshot("BETA.N0000", 2),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(min_bid_ask_coverage=0.8),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["BETA.N0000"]
+
+
+def test_max_median_spread_filters_wide_spread_tickers() -> None:
+    session = build_session(
+        [
+            build_snapshot("ALFA.N0000", 1, best_bid=9.9, best_ask=10.0),
+            build_snapshot("ALFA.N0000", 2, best_bid=9.9, best_ask=10.0),
+            build_snapshot("BETA.N0000", 1, best_bid=8.0, best_ask=10.0),
+            build_snapshot("BETA.N0000", 2, best_bid=8.0, best_ask=10.0),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(max_median_spread=1.5),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["ALFA.N0000"]
+
+
+def test_min_latest_turnover_filters_low_turnover_tickers() -> None:
+    session = build_session(
+        [
+            build_snapshot("ALFA.N0000", 1, turnover=25_000),
+            build_snapshot("BETA.N0000", 1, turnover=5_000),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(min_latest_turnover=10_000),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["ALFA.N0000"]
+
+
+def test_min_max_volume_filters_low_volume_tickers() -> None:
+    session = build_session(
+        [
+            build_snapshot("ALFA.N0000", 1, volume=20_000),
+            build_snapshot("ALFA.N0000", 2, volume=25_000),
+            build_snapshot("BETA.N0000", 1, volume=5_000),
+            build_snapshot("BETA.N0000", 2, volume=7_000),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(min_max_volume=10_000),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["ALFA.N0000"]
+
+
+def test_exclude_non_voting_removes_x0000() -> None:
+    session = build_session(
+        [
+            build_snapshot("SEYB.X0000", 1),
+            build_snapshot("SEYB.X0000", 2),
+            build_snapshot("COMB.N0000", 1),
+            build_snapshot("COMB.N0000", 2),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(exclude_non_voting=True),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["COMB.N0000"]
+
+
+def test_repeatable_exclude_pattern_removes_matching_suffixes() -> None:
+    session = build_session(
+        [
+            build_snapshot("SEYB.X0000", 1),
+            build_snapshot("WARR.U0000", 1),
+            build_snapshot("COMB.N0000", 1),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(exclude_patterns=[".x0000", ".U0000"]),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["COMB.N0000"]
+
+
+def test_combined_filters_remain_deterministic() -> None:
+    session = build_session(
+        [
+            build_snapshot("BETA.N0000", 1, best_bid=9.9, best_ask=10.0, volume=20_000, turnover=25_000),
+            build_snapshot("BETA.N0000", 2, best_bid=9.9, best_ask=10.0, volume=21_000, turnover=26_000),
+            build_snapshot("ALFA.N0000", 1, best_bid=9.7, best_ask=10.0, volume=20_000, turnover=25_000),
+            build_snapshot("ALFA.N0000", 2, best_bid=9.7, best_ask=10.0, volume=21_000, turnover=26_000),
+            build_snapshot("NOPE.X0000", 1, best_bid=9.9, best_ask=10.0, volume=50_000, turnover=50_000),
+            build_snapshot("NOPE.X0000", 2, best_bid=9.9, best_ask=10.0, volume=50_000, turnover=50_000),
+        ]
+    )
+
+    report = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(
+            exclude_non_voting=True,
+            min_snapshots=2,
+            min_bid_ask_coverage=1.0,
+            max_median_spread=3.0,
+            min_latest_turnover=20_000,
+            min_max_volume=20_000,
+        ),
+    )
+
+    assert [candidate.ticker for candidate in report.candidates] == ["BETA.N0000", "ALFA.N0000"]
+
+
+def test_missing_metrics_are_excluded_only_when_required_by_active_filter() -> None:
+    session = build_session(
+        [
+            build_snapshot("MISS.N0000", 1, best_bid=None, best_ask=None, volume=None, turnover=None),
+            build_snapshot("KEEP.N0000", 1, best_bid=9.9, best_ask=10.0, volume=20_000, turnover=30_000),
+        ]
+    )
+
+    unfiltered = build_universe_candidate_report(session)
+    turnover_filtered = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(min_latest_turnover=10_000),
+    )
+    volume_filtered = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(min_max_volume=10_000),
+    )
+    spread_filtered = build_universe_candidate_report(
+        session,
+        filters=UniverseCandidateFilters(max_median_spread=1.5),
+    )
+
+    assert [candidate.ticker for candidate in unfiltered.candidates] == ["KEEP.N0000", "MISS.N0000"]
+    assert [candidate.ticker for candidate in turnover_filtered.candidates] == ["KEEP.N0000"]
+    assert [candidate.ticker for candidate in volume_filtered.candidates] == ["KEEP.N0000"]
+    assert [candidate.ticker for candidate in spread_filtered.candidates] == ["KEEP.N0000"]
+
+
 def test_cli_top_behavior_displays_only_requested_rows() -> None:
     directory = make_temp_dir()
     try:
@@ -214,5 +394,71 @@ def test_cli_top_behavior_displays_only_requested_rows() -> None:
         assert "ALFA.N0000" in completed.stdout
         assert "BETA.N0000" in completed.stdout
         assert "CALT.N0000" not in completed.stdout
+        assert "original candidates: 3" in completed.stdout
+        assert "filtered candidates: 3" in completed.stdout
+        assert "top limit: 2" in completed.stdout
+        assert "displayed candidates: 2" in completed.stdout
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_cli_filters_apply_before_top_and_report_counts() -> None:
+    directory = make_temp_dir()
+    try:
+        session_path = directory / "session.json"
+        session_path.write_text(
+            json.dumps(
+                build_session(
+                    [
+                        build_snapshot("SEYB.X0000", 1, volume=30_000, turnover=50_000),
+                        build_snapshot("SEYB.X0000", 2, volume=30_000, turnover=50_000),
+                        build_snapshot("ALFA.N0000", 1, volume=30_000, turnover=50_000),
+                        build_snapshot("ALFA.N0000", 2, volume=30_000, turnover=50_000),
+                        build_snapshot("BETA.N0000", 1, volume=5_000, turnover=8_000),
+                        build_snapshot("BETA.N0000", 2, volume=5_000, turnover=8_000),
+                        build_snapshot("GAMM.U0000", 1, volume=30_000, turnover=50_000),
+                        build_snapshot("GAMM.U0000", 2, volume=30_000, turnover=50_000),
+                    ]
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "--input",
+                str(session_path),
+                "--top",
+                "5",
+                "--exclude-non-voting",
+                "--exclude-pattern",
+                ".u0000",
+                "--min-snapshots",
+                "2",
+                "--min-bid-ask-coverage",
+                "1.0",
+                "--max-median-spread",
+                "2",
+                "--min-latest-turnover",
+                "10000",
+                "--min-max-volume",
+                "10000",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode == 0
+        assert "original candidates: 4" in completed.stdout
+        assert "filtered candidates: 1" in completed.stdout
+        assert "top limit: 5" in completed.stdout
+        assert "displayed candidates: 1" in completed.stdout
+        assert "ALFA.N0000" in completed.stdout
+        assert "SEYB.X0000" not in completed.stdout
+        assert "GAMM.U0000" not in completed.stdout
+        assert "BETA.N0000" not in completed.stdout
     finally:
         shutil.rmtree(directory, ignore_errors=True)

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from statistics import median
 from typing import Any
 
 from summarize_session import SessionFormatError, load_session, numeric_value, spread_percent
+
+FILTER_EPSILON = 1e-9
 
 
 @dataclass(frozen=True)
@@ -38,14 +40,29 @@ class UniverseCandidateReport:
     source: str
     mode: str
     total_snapshots: int
-    unique_tickers: int
+    original_candidate_count: int
+    filtered_candidate_count: int
     candidates: list[UniverseCandidate]
+    top_limit: int | None = None
+
+
+@dataclass(frozen=True)
+class UniverseCandidateFilters:
+    exclude_non_voting: bool = False
+    exclude_patterns: list[str] = field(default_factory=list)
+    min_snapshots: int | None = None
+    min_bid_ask_coverage: float | None = None
+    max_median_spread: float | None = None
+    min_latest_turnover: float | None = None
+    min_max_volume: float | None = None
 
 
 def build_universe_candidate_report(
     session: dict[str, Any],
+    filters: UniverseCandidateFilters | None = None,
     top: int | None = None,
 ) -> UniverseCandidateReport:
+    filters = filters or UniverseCandidateFilters()
     snapshots = [snapshot for snapshot in session.get("snapshots", []) if isinstance(snapshot, dict)]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for snapshot in snapshots:
@@ -53,8 +70,14 @@ def build_universe_candidate_report(
         if isinstance(ticker, str) and ticker.strip():
             grouped[ticker.strip()].append(snapshot)
 
+    all_candidates = [
+        summarize_universe_candidate(ticker, entries) for ticker, entries in grouped.items()
+    ]
+    filtered_candidates = [
+        candidate for candidate in all_candidates if candidate_matches_filters(candidate, filters)
+    ]
     candidates = sorted(
-        (summarize_universe_candidate(ticker, entries) for ticker, entries in grouped.items()),
+        filtered_candidates,
         key=universe_candidate_sort_key,
     )
     if top is not None and top >= 0:
@@ -67,7 +90,9 @@ def build_universe_candidate_report(
         source=session["source"],
         mode=session["mode"],
         total_snapshots=len(snapshots),
-        unique_tickers=len(grouped),
+        original_candidate_count=len(grouped),
+        filtered_candidate_count=len(filtered_candidates),
+        top_limit=top,
         candidates=candidates,
     )
 
@@ -124,6 +149,49 @@ def universe_candidate_sort_key(candidate: UniverseCandidate) -> tuple[float, fl
         -latest_turnover,
         candidate.ticker,
     )
+
+
+def candidate_matches_filters(
+    candidate: UniverseCandidate,
+    filters: UniverseCandidateFilters,
+) -> bool:
+    normalized_ticker = candidate.ticker.upper()
+
+    if filters.exclude_non_voting and normalized_ticker.endswith(".X0000"):
+        return False
+
+    normalized_patterns = [pattern.strip().upper() for pattern in filters.exclude_patterns if pattern.strip()]
+    if normalized_patterns and any(pattern in normalized_ticker for pattern in normalized_patterns):
+        return False
+
+    if filters.min_snapshots is not None and candidate.snapshot_count < filters.min_snapshots:
+        return False
+
+    if (
+        filters.min_bid_ask_coverage is not None
+        and candidate.bid_ask_coverage_ratio + FILTER_EPSILON < filters.min_bid_ask_coverage
+    ):
+        return False
+
+    if filters.max_median_spread is not None:
+        if candidate.median_spread_percent is None:
+            return False
+        if candidate.median_spread_percent - filters.max_median_spread > FILTER_EPSILON:
+            return False
+
+    if filters.min_latest_turnover is not None:
+        if candidate.latest_turnover is None:
+            return False
+        if candidate.latest_turnover + FILTER_EPSILON < filters.min_latest_turnover:
+            return False
+
+    if filters.min_max_volume is not None:
+        if candidate.max_volume is None:
+            return False
+        if candidate.max_volume + FILTER_EPSILON < filters.min_max_volume:
+            return False
+
+    return True
 
 
 def has_valid_bid_ask(snapshot: dict[str, Any]) -> bool:
@@ -205,8 +273,10 @@ def format_universe_candidate_report(report: UniverseCandidateReport) -> str:
         f"source: {report.source}",
         f"mode: {report.mode}",
         f"total snapshots: {format_int(report.total_snapshots)}",
-        f"unique tickers: {format_int(report.unique_tickers)}",
-        f"ranked candidates: {format_int(len(report.candidates))}",
+        f"original candidates: {format_int(report.original_candidate_count)}",
+        f"filtered candidates: {format_int(report.filtered_candidate_count)}",
+        f"top limit: {format_optional_int(report.top_limit)}",
+        f"displayed candidates: {format_int(len(report.candidates))}",
         "",
         format_table_row(headers, widths),
         format_table_row(["-" * width for width in widths], widths),
@@ -250,6 +320,10 @@ def format_int(value: int) -> str:
     return f"{value:,}"
 
 
+def format_optional_int(value: int | None) -> str:
+    return "unavailable" if value is None else format_int(value)
+
+
 def format_number(value: float | None) -> str:
     if value is None:
         return "unavailable"
@@ -265,6 +339,38 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input", required=True, help="Path to a recorded session JSON file.")
     parser.add_argument("--top", type=int, default=25, help="Number of ranked tickers to display.")
+    parser.add_argument(
+        "--exclude-non-voting",
+        action="store_true",
+        help="Exclude non-voting tickers such as .X0000.",
+    )
+    parser.add_argument(
+        "--exclude-pattern",
+        action="append",
+        default=[],
+        help="Repeatable ticker substring exclusion pattern, matched case-insensitively.",
+    )
+    parser.add_argument("--min-snapshots", type=int, help="Minimum snapshot count required.")
+    parser.add_argument(
+        "--min-bid-ask-coverage",
+        type=float,
+        help="Minimum bid/ask availability ratio required, such as 0.8.",
+    )
+    parser.add_argument(
+        "--max-median-spread",
+        type=float,
+        help="Maximum median spread percent allowed.",
+    )
+    parser.add_argument(
+        "--min-latest-turnover",
+        type=float,
+        help="Minimum latest turnover required.",
+    )
+    parser.add_argument(
+        "--min-max-volume",
+        type=float,
+        help="Minimum max volume required.",
+    )
     return parser.parse_args()
 
 
@@ -272,7 +378,16 @@ def main() -> int:
     args = parse_args()
     try:
         session = load_session(Path(args.input))
-        report = build_universe_candidate_report(session, top=max(args.top, 0))
+        filters = UniverseCandidateFilters(
+            exclude_non_voting=args.exclude_non_voting,
+            exclude_patterns=args.exclude_pattern,
+            min_snapshots=args.min_snapshots,
+            min_bid_ask_coverage=args.min_bid_ask_coverage,
+            max_median_spread=args.max_median_spread,
+            min_latest_turnover=args.min_latest_turnover,
+            min_max_volume=args.min_max_volume,
+        )
+        report = build_universe_candidate_report(session, filters=filters, top=max(args.top, 0))
         print(format_universe_candidate_report(report))
         return 0
     except SessionFormatError as error:
