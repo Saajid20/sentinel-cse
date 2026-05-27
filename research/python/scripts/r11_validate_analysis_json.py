@@ -58,6 +58,12 @@ class AnalysisValidationContext:
     scorecard_build_result: ScorecardBuildResult | None
 
 
+@dataclass(frozen=True)
+class AnalysisValidationRunResult:
+    context: AnalysisValidationContext
+    evaluation: PdfValidationChecklistEvaluation
+
+
 def _positive_int(name: str):
     def _parser(value: str) -> int:
         try:
@@ -237,6 +243,13 @@ def _validation_options_from_args(args: argparse.Namespace) -> ValidationCliOpti
         require_scorecard=bool(args.require_scorecard),
         require_no_conflicts=bool(args.require_no_conflicts),
     )
+
+
+def parse_validation_cli_request(
+    argv: list[str],
+) -> tuple[Path, ValidationCliOptions]:
+    args = _build_parser().parse_args(argv)
+    return Path(args.analysis_json).expanduser(), _validation_options_from_args(args)
 
 
 def _build_validation_checklist(
@@ -512,6 +525,18 @@ def run_validation_checklist(
     return evaluate_pdf_validation_checklist(checklist, results)
 
 
+def validate_analysis_json_path(
+    analysis_path: Path,
+    options: ValidationCliOptions,
+) -> AnalysisValidationRunResult:
+    context = _load_analysis_validation_context(analysis_path)
+    evaluation = run_validation_checklist(context, options)
+    return AnalysisValidationRunResult(
+        context=context,
+        evaluation=evaluation,
+    )
+
+
 def _validation_output_payload(
     context: AnalysisValidationContext,
     evaluation: PdfValidationChecklistEvaluation,
@@ -560,25 +585,26 @@ def _exit_code_from_evaluation(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-
     try:
-        context = _load_analysis_validation_context(
-            Path(args.analysis_json).expanduser()
+        args = _build_parser().parse_args(argv)
+        run_result = validate_analysis_json_path(
+            Path(args.analysis_json).expanduser(),
+            _validation_options_from_args(args),
         )
-        options = _validation_options_from_args(args)
-        evaluation = run_validation_checklist(context, options)
 
-        _print_compact_validation_output(context, evaluation)
+        _print_compact_validation_output(
+            run_result.context,
+            run_result.evaluation,
+        )
 
         if args.output_json:
             _write_validation_output_json(
                 Path(args.output_json).expanduser(),
-                context,
-                evaluation,
+                run_result.context,
+                run_result.evaluation,
             )
 
-        return _exit_code_from_evaluation(evaluation)
+        return _exit_code_from_evaluation(run_result.evaluation)
     except (ValueError, ValidationError) as error:
         print(f"R11 analysis JSON validation failed: {error}")
         return 2
