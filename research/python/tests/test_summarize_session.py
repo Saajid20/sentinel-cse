@@ -145,6 +145,9 @@ def test_handles_missing_optional_fields_gracefully() -> None:
     assert summary.usable_snapshots is None
     assert summary.market_state_counts["UNKNOWN"] == 0
     assert summary.ticker_summaries[0].average_spread_percent is None
+    assert summary.quality.classification is None
+    assert summary.quality.training_grade_count is None
+    assert summary.quality.scan_mode_counts == {}
 
 
 def test_formats_large_volumes_without_scientific_notation() -> None:
@@ -240,6 +243,283 @@ def test_markdown_formats_market_state_counts_with_grouping() -> None:
 
     assert "| OPEN | 1,234 |" in text
     assert "- total snapshots: `1,234`" in text
+
+
+def test_legacy_session_quality_is_unavailable_without_diagnostics() -> None:
+    session = {
+        "sessionId": "legacy-session",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:16:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "totals": {
+            "usableSnapshots": 2,
+            "quarantinedSnapshots": 1,
+            "rejectedSnapshots": 0,
+        },
+        "snapshots": [
+            {"ticker": "LEGY.N0000", "timestamp": 1, "lastPrice": 10.0},
+            {"ticker": "LEGY.N0000", "timestamp": 2, "lastPrice": 10.2},
+        ],
+    }
+
+    summary = summarize_session(session)
+    text = format_terminal_summary(summary)
+
+    assert summary.quality.classification is None
+    assert summary.quality.training_grade_count is None
+    assert summary.quality.full_grid_scan_yes_count is None
+    assert summary.quality.top_rejection_reasons == []
+    assert "session quality:" in text
+    assert "- classification: unavailable" in text
+    assert "- training-grade ticks: unavailable" in text
+
+
+def test_quality_with_diagnostics_but_missing_training_grade_field_stays_unavailable() -> None:
+    session = {
+        "sessionId": "missing-training-grade-field",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:20:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "totals": {
+            "usableSnapshots": 100,
+            "quarantinedSnapshots": 10,
+            "rejectedSnapshots": 5,
+        },
+        "snapshots": [],
+        "diagnostics": [
+            {
+                "marketState": "OPEN",
+                "usableSnapshots": 50,
+                "quarantinedSnapshots": 5,
+                "rejectedSnapshots": 2,
+                "scanMode": "store_fallback_scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 60,
+            },
+            {
+                "marketState": "OPEN",
+                "usableSnapshots": 50,
+                "quarantinedSnapshots": 5,
+                "rejectedSnapshots": 3,
+                "scanMode": "store_fallback_scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 58,
+            },
+        ],
+    }
+
+    summary = summarize_session(session)
+    text = format_terminal_summary(summary)
+
+    assert summary.quality.training_grade_count is None
+    assert summary.quality.training_grade_evaluated_ticks == 0
+    assert summary.quality.classification == "PASS"
+    assert summary.quality.classification_reason == (
+        "OPEN market coverage is strong; full-grid scan coverage is strong; unique ticker coverage is broad"
+    )
+    assert "- training-grade ticks: unavailable" in text
+
+
+def test_summarizes_full_grid_quality_metrics_and_scan_modes() -> None:
+    session = {
+        "sessionId": "phase26-quality-session",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:20:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "totals": {
+            "usableSnapshots": 65,
+            "quarantinedSnapshots": 7,
+            "rejectedSnapshots": 5,
+        },
+        "snapshots": [{"ticker": "ALFA.N0000", "timestamp": 1, "lastPrice": 10.0}],
+        "diagnostics": [
+            {
+                "marketState": "OPEN",
+                "usableSnapshots": 25,
+                "quarantinedSnapshots": 1,
+                "rejectedSnapshots": 1,
+                "trainingGradeCandidate": "yes",
+                "scanMode": "store_reconstructed",
+                "fullGridScan": True,
+                "uniqueTickers": 30,
+            },
+            {
+                "marketState": "OPEN",
+                "usableSnapshots": 20,
+                "quarantinedSnapshots": 2,
+                "rejectedSnapshots": 2,
+                "trainingGradeCandidate": "no",
+                "scanMode": "store_reconstructed",
+                "fullGridScan": True,
+                "uniqueTickers": 28,
+            },
+            {
+                "marketState": "UNKNOWN",
+                "usableSnapshots": 20,
+                "quarantinedSnapshots": 4,
+                "rejectedSnapshots": 2,
+                "trainingGradeCandidate": "no",
+                "scanMode": "store_fallback_scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 26,
+            },
+        ],
+    }
+
+    summary = summarize_session(session)
+    text = format_terminal_summary(summary)
+
+    assert summary.quality.classification == "PASS"
+    assert summary.quality.training_grade_count == 1
+    assert summary.quality.training_grade_evaluated_ticks == 3
+    assert summary.quality.training_grade_ratio == pytest.approx(1 / 3)
+    assert summary.quality.scan_mode_counts == {
+        "store_reconstructed": 2,
+        "store_fallback_scroll": 1,
+    }
+    assert summary.quality.full_grid_scan_yes_count == 3
+    assert summary.quality.full_grid_scan_no_count == 0
+    assert summary.quality.peak_unique_ticker_coverage == 30
+    assert summary.quality.median_unique_ticker_coverage == 28.0
+    assert summary.quality.classification_reason == (
+        "OPEN market coverage is strong; full-grid scan coverage is strong; unique ticker coverage is broad"
+    )
+    assert "- classification: PASS (OPEN market coverage is strong; full-grid scan coverage is strong; unique ticker coverage is broad)" in text
+    assert "- scan modes: store_reconstructed:2, store_fallback_scroll:1" in text
+    assert "- full-grid scan yes/no: 3/0" in text
+    assert "- unique ticker coverage peak/median: 30/28" in text
+
+
+def test_aggregates_top_rejection_reasons_across_tick_diagnostics() -> None:
+    session = {
+        "sessionId": "rejection-rollup-session",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:20:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "snapshots": [],
+        "diagnostics": [
+            {
+                "marketState": "OPEN",
+                "trainingGradeCandidate": "no",
+                "scanMode": "scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 20,
+                "topRejectReasons": [
+                    {"code": "PLACEHOLDER_ROW", "count": 2},
+                    {"code": "MISSING_LIVE_BID_ASK", "count": 1},
+                ],
+            },
+            {
+                "marketState": "OPEN",
+                "trainingGradeCandidate": "no",
+                "scanMode": "scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 18,
+                "topRejectReasons": [
+                    {"code": "MISSING_LIVE_BID_ASK", "count": 3},
+                    {"code": "PLACEHOLDER_ROW", "count": 1},
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_session(session)
+    text = format_terminal_summary(summary)
+
+    assert summary.quality.top_rejection_reasons == [
+        ("MISSING_LIVE_BID_ASK", 4),
+        ("PLACEHOLDER_ROW", 3),
+    ]
+    assert "- top rejection reasons: MISSING_LIVE_BID_ASK:4, PLACEHOLDER_ROW:3" in text
+
+
+def test_quality_classification_warn_and_fail_behaviors() -> None:
+    warn_session = {
+        "sessionId": "warn-session",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:20:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "totals": {"usableSnapshots": 5, "quarantinedSnapshots": 1, "rejectedSnapshots": 2},
+        "snapshots": [],
+        "diagnostics": [
+            {
+                "marketState": "OPEN",
+                "usableSnapshots": 5,
+                "trainingGradeCandidate": "no",
+                "scanMode": "store_fallback_scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 22,
+            }
+        ],
+    }
+    fail_session = {
+        "sessionId": "fail-session",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:20:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "totals": {"usableSnapshots": 0, "quarantinedSnapshots": 1, "rejectedSnapshots": 4},
+        "snapshots": [],
+        "diagnostics": [
+            {
+                "marketState": "CLOSED",
+                "usableSnapshots": 0,
+                "trainingGradeCandidate": "no",
+                "scanMode": "visible",
+                "fullGridScan": False,
+                "uniqueTickers": 4,
+            }
+        ],
+    }
+
+    warn_summary = summarize_session(warn_session)
+    fail_summary = summarize_session(fail_session)
+
+    assert warn_summary.quality.classification == "WARN"
+    assert warn_summary.quality.classification_reason == "unique ticker coverage is limited; no training-grade ticks recorded"
+    assert fail_summary.quality.classification == "FAIL"
+    assert fail_summary.quality.classification_reason == "no OPEN ticks recorded"
+
+
+def test_explicit_false_training_grade_stays_warn_when_rejection_ratio_is_high() -> None:
+    session = {
+        "sessionId": "explicit-false-high-rejection",
+        "startedAt": "2026-05-08T10:15:00.000Z",
+        "endedAt": "2026-05-08T10:20:00.000Z",
+        "source": "unit-test",
+        "mode": "read-only-local-recording",
+        "totals": {
+            "usableSnapshots": 5680,
+            "quarantinedSnapshots": 53,
+            "rejectedSnapshots": 8846,
+        },
+        "snapshots": [],
+        "diagnostics": [
+            {
+                "marketState": "OPEN",
+                "trainingGradeCandidate": "no",
+                "scanMode": "store_fallback_scroll",
+                "fullGridScan": True,
+                "uniqueTickers": 548,
+            }
+            for _ in range(27)
+        ],
+    }
+
+    summary = summarize_session(session)
+    text = format_terminal_summary(summary)
+
+    assert summary.quality.training_grade_count == 0
+    assert summary.quality.training_grade_evaluated_ticks == 27
+    assert summary.quality.classification == "WARN"
+    assert summary.quality.classification_reason == "rejection ratio is high; no training-grade ticks recorded"
+    assert "- classification: WARN (rejection ratio is high; no training-grade ticks recorded)" in text
+    assert "- training-grade ticks: 0/27 (0.00%)" in text
 
 
 def test_sample_data_is_not_real_live_sessions_path() -> None:
