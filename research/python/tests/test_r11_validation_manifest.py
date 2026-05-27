@@ -103,6 +103,20 @@ def test_load_validation_manifest_loads_valid_json(tmp_path: Path) -> None:
     assert manifest.cases[0].case_id == "comb_q1_2026_known_good"
 
 
+def test_load_validation_manifest_loads_utf8_bom_json(tmp_path: Path) -> None:
+    path = tmp_path / "manifest_bom.json"
+    path.write_text(
+        make_manifest().model_dump_json(indent=2),
+        encoding="utf-8-sig",
+        newline="\n",
+    )
+
+    manifest = load_validation_manifest(path)
+
+    assert manifest.schema_version == "r11_validation_manifest_v1"
+    assert manifest.cases[0].case_id == "comb_q1_2026_known_good"
+
+
 def test_load_validation_manifest_rejects_missing_file(tmp_path: Path) -> None:
     path = tmp_path / "missing_manifest.json"
 

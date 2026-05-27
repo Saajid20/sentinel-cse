@@ -144,7 +144,7 @@ def load_validation_manifest(path: str | Path) -> R11ValidationManifest:
         )
 
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as error:
         raise R11ValidationManifestError(
             f"Validation manifest JSON is invalid: {error}"
