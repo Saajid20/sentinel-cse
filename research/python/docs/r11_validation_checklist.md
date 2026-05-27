@@ -29,3 +29,5 @@ The module lives under `research/python/sentinel_research/agents/r11/validation/
 - No coupling to R10 runtime paths or live systems.
 
 This foundation is meant to be fed later by deterministic extractors or fake harness inputs, while keeping the checklist semantics testable in isolation.
+
+See `research/python/docs/r11_validation_manifest.md` for the R11.8A3 manifest format that defines multiple local validation cases for the existing manual analysis-JSON runner.

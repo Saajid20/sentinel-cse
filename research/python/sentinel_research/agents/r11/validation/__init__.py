@@ -11,6 +11,15 @@ from sentinel_research.agents.r11.validation.checklist import (
     R11ValidationChecklistError,
     evaluate_pdf_validation_checklist,
 )
+from sentinel_research.agents.r11.validation.manifest import (
+    ExpectedStatementPage,
+    R11ValidationCase,
+    R11ValidationManifest,
+    R11ValidationManifestError,
+    load_validation_manifest,
+    save_validation_manifest,
+    validation_case_to_cli_args,
+)
 
 __all__ = [
     "R11ValidationChecklistError",
@@ -24,4 +33,11 @@ __all__ = [
     "PdfValidationItemEvaluation",
     "PdfValidationChecklistEvaluation",
     "evaluate_pdf_validation_checklist",
+    "R11ValidationManifestError",
+    "ExpectedStatementPage",
+    "R11ValidationCase",
+    "R11ValidationManifest",
+    "load_validation_manifest",
+    "save_validation_manifest",
+    "validation_case_to_cli_args",
 ]
