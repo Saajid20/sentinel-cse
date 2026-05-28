@@ -23,7 +23,8 @@ from sentinel_research.agents.r11.analysis.metric_aggregator import (  # noqa: E
     has_metric_conflicts,
 )
 from sentinel_research.agents.r11.analysis.metric_builder import (  # noqa: E402
-    build_growth_metrics_for_items,
+    R11MetricBuildError,
+    build_growth_metric_for_item,
 )
 from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E402
     R11ScorecardBuildError,
@@ -482,9 +483,9 @@ def _print_table_preview(
 
     verified_metric_count = 0
     if show_verified_metrics:
-        verified_results = build_growth_metrics_for_items(
+        verified_results, metric_build_warnings = _build_verified_metric_results_for_mapped_items(
             mapped_items,
-            entity_prefix=metric_entity,
+            metric_entity=metric_entity,
         )
         verified_metric_count = len(verified_results)
         print(f"verified financial metrics: {verified_metric_count}")
@@ -493,6 +494,10 @@ def _print_table_preview(
                 verification_result,
                 show_verified_json=show_verified_json,
             )
+        if metric_build_warnings:
+            print(f"verified metric warnings: {len(metric_build_warnings)}")
+            for warning in metric_build_warnings:
+                print(f"  - {warning}")
 
     if show_json:
         print("json:")
@@ -555,6 +560,28 @@ def _print_verified_metric_result(
         print(verification_result.model_dump_json(indent=2))
 
 
+def _build_verified_metric_results_for_mapped_items(
+    mapped_items,
+    *,
+    metric_entity: str,
+):
+    verified_results = []
+    metric_build_warnings: list[str] = []
+    for mapped_item in mapped_items:
+        try:
+            verification_result = build_growth_metric_for_item(
+                mapped_item,
+                entity_prefix=metric_entity,
+            )
+        except R11MetricBuildError as error:
+            metric_build_warnings.append(str(error))
+            continue
+        if verification_result is None:
+            continue
+        verified_results.append(verification_result)
+    return verified_results, metric_build_warnings
+
+
 def _build_verified_metric_results_for_table(
     *,
     table: ExtractedFinancialTable,
@@ -567,10 +594,19 @@ def _build_verified_metric_results_for_table(
     )
     normalized_rows = normalize_parsed_financial_rows(parsed_rows)
     mapped_items = map_comb_six_column_items(normalized_rows)
-    return build_growth_metrics_for_items(
+    return _build_verified_metric_results_for_mapped_items(
         mapped_items,
-        entity_prefix=metric_entity,
+        metric_entity=metric_entity,
     )
+
+
+def _print_metric_build_warnings(warnings: list[str]) -> None:
+    if not warnings:
+        return
+    print()
+    print("metric build warnings:")
+    for warning in warnings:
+        print(f"  - {warning}")
 
 
 def _print_aggregated_metric_result(
@@ -673,6 +709,7 @@ def _build_deterministic_analysis_payload(
     end_page: int | None,
     verified_metric_results,
     aggregated_metric_results,
+    metric_build_warnings: list[str],
     scorecard_build_result,
     scorecard_build_error: str | None,
     generated_at: datetime,
@@ -685,6 +722,10 @@ def _build_deterministic_analysis_payload(
     notes: list[str] = [
         "Deterministic R11 analysis artifact built from the local manual inspection pipeline."
     ]
+    if metric_build_warnings:
+        notes.append(
+            f"Skipped {len(metric_build_warnings)} invalid metric candidate(s) during deterministic metric assembly."
+        )
     if scorecard_build_result is None:
         notes.append("Scorecard build was not available for this deterministic analysis artifact.")
     if scorecard_build_error is not None:
@@ -711,6 +752,7 @@ def _build_deterministic_analysis_payload(
         "aggregated_metric_results": [
             result.model_dump(mode="json") for result in aggregated_metric_results
         ],
+        "metric_build_warnings": metric_build_warnings,
         "scorecard_build_result": None
         if scorecard_build_result is None
         else scorecard_build_result.model_dump(mode="json"),
@@ -760,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
             (match.table_id, match.page_number): match for match in statement_matches
         }
         all_verified_results = []
+        metric_build_warnings: list[str] = []
         if (
             args.show_verified_metrics
             or args.show_aggregated_metrics
@@ -768,13 +811,13 @@ def main(argv: list[str] | None = None) -> int:
         ):
             for table in shown_tables:
                 statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
-                all_verified_results.extend(
-                    _build_verified_metric_results_for_table(
-                        table=table,
-                        statement_match=statement_match,
-                        metric_entity=args.metric_entity,
-                    )
+                table_verified_results, table_metric_build_warnings = _build_verified_metric_results_for_table(
+                    table=table,
+                    statement_match=statement_match,
+                    metric_entity=args.metric_entity,
                 )
+                all_verified_results.extend(table_verified_results)
+                metric_build_warnings.extend(table_metric_build_warnings)
 
         _print_summary(
             pdf_path=pdf_path,
@@ -821,6 +864,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_verified_metrics=args.max_verified_metrics,
                 show_verified_json=args.show_verified_json,
             )
+
+        _print_metric_build_warnings(metric_build_warnings)
 
         aggregated_results = None
         if args.show_aggregated_metrics or args.show_scorecard or args.output_analysis_json:
@@ -876,6 +921,7 @@ def main(argv: list[str] | None = None) -> int:
                 end_page=args.end_page,
                 verified_metric_results=all_verified_results,
                 aggregated_metric_results=aggregated_results or [],
+                metric_build_warnings=metric_build_warnings,
                 scorecard_build_result=scorecard_result,
                 scorecard_build_error=scorecard_build_error,
                 generated_at=datetime.now(tz=UTC),

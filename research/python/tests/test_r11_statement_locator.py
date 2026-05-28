@@ -125,12 +125,137 @@ def test_classify_equity_page_high_confidence() -> None:
     assert match.confidence is R11ConfidenceLevel.HIGH
 
 
+def test_equity_movement_page_overrides_comprehensive_income_markers() -> None:
+    table = _make_table(
+        10,
+        [
+            "Balance as at 1st January",
+            "Stated capital",
+            "Statutory reserve fund",
+            "Retained earnings",
+            "Profit for the period",
+            "Other comprehensive income",
+            "Total comprehensive income for the period",
+            "Final dividend",
+            "Transfer to reserves",
+            "Balance as at 31st March",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.EQUITY_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_group_equity_movement_page_classifies_as_equity_statement() -> None:
+    table = _make_table(
+        11,
+        [
+            "Transactions with equity holders",
+            "Contributions by and distributions to equity holders",
+            "Unclaimed dividend adjustments",
+            "Stated capital",
+            "Retained earnings",
+            "Profit for the period",
+            "Other comprehensive income",
+            "Balance as at 31 March",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.EQUITY_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_financial_position_equity_section_classifies_as_balance_sheet() -> None:
+    table = _make_table(
+        9,
+        [
+            "As at 31st March 2026",
+            "Stated capital",
+            "Statutory reserve fund",
+            "Retained earnings",
+            "Total Equity",
+            "Total Liabilities & Equity",
+            "Net asset value per share",
+            "Commitments & contingencies",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.BALANCE_SHEET
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
 def test_classify_cash_flow_page() -> None:
     table = _make_table(
         9,
         [
             "Statement of Cash Flows",
             "Operating activities",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.CASH_FLOW
+    assert match.confidence is R11ConfidenceLevel.HIGH
+
+
+def test_classify_untitled_income_statement_from_strong_row_markers() -> None:
+    table = _make_table(
+        6,
+        [
+            "Gross income",
+            "Interest income",
+            "Interest expense",
+            "Net interest income",
+            "Fee & commission income",
+            "Total operating income",
+            "Impairment charge/(reversal)",
+            "Total operating expenses",
+            "Profit before income tax",
+            "Profit for the period",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_classify_comprehensive_income_continuation_as_income_statement() -> None:
+    table = _make_table(
+        7,
+        [
+            "Profit for the period",
+            "Other comprehensive income",
+            "Total comprehensive income for the period net of tax",
+            "STATEMENT OF COMPREHENSIVE INCOME",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_cash_flow_markers_override_assets_and_liabilities_terms() -> None:
+    table = _make_table(
+        12,
+        [
+            "Cash flows from operating activities",
+            "Interest receipts",
+            "Interest payments",
+            "Operating profit before changes in operating assets & liabilities",
+            "Net cash generated from / used in operating activities",
+            "Assets",
+            "Liabilities",
         ],
     )
 
