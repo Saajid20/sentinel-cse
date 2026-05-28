@@ -140,6 +140,66 @@ def test_classify_cash_flow_page() -> None:
     assert match.confidence is R11ConfidenceLevel.HIGH
 
 
+def test_classify_untitled_income_statement_from_strong_row_markers() -> None:
+    table = _make_table(
+        6,
+        [
+            "Gross income",
+            "Interest income",
+            "Interest expense",
+            "Net interest income",
+            "Fee & commission income",
+            "Total operating income",
+            "Impairment charge/(reversal)",
+            "Total operating expenses",
+            "Profit before income tax",
+            "Profit for the period",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_classify_comprehensive_income_continuation_as_income_statement() -> None:
+    table = _make_table(
+        7,
+        [
+            "Profit for the period",
+            "Other comprehensive income",
+            "Total comprehensive income for the period net of tax",
+            "STATEMENT OF COMPREHENSIVE INCOME",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_cash_flow_markers_override_assets_and_liabilities_terms() -> None:
+    table = _make_table(
+        12,
+        [
+            "Cash flows from operating activities",
+            "Interest receipts",
+            "Interest payments",
+            "Operating profit before changes in operating assets & liabilities",
+            "Net cash generated from / used in operating activities",
+            "Assets",
+            "Liabilities",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.CASH_FLOW
+    assert match.confidence is R11ConfidenceLevel.HIGH
+
+
 def test_classify_notes_page() -> None:
     table = _make_table(
         10,
