@@ -4,9 +4,10 @@ import argparse
 import csv
 import json
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 MARKET_STATES = ("OPEN", "CLOSED", "INACTIVE", "UNKNOWN")
@@ -30,6 +31,28 @@ class TickerSummary:
 
 
 @dataclass(frozen=True)
+class SessionQualitySummary:
+    classification: str | None = None
+    classification_reason: str | None = None
+    training_grade_count: int | None = None
+    training_grade_ratio: float | None = None
+    training_grade_evaluated_ticks: int = 0
+    scan_mode_counts: dict[str, int] = field(default_factory=dict)
+    full_grid_scan_yes_count: int | None = None
+    full_grid_scan_no_count: int | None = None
+    peak_unique_ticker_coverage: int | None = None
+    median_unique_ticker_coverage: float | None = None
+    top_rejection_reasons: list[tuple[str, int]] = field(default_factory=list)
+    usable_snapshots: int | None = None
+    quarantined_snapshots: int | None = None
+    rejected_snapshots: int | None = None
+    rejection_ratio: float | None = None
+    observed_tick_count: int = 0
+    open_tick_count: int = 0
+    open_tick_ratio: float | None = None
+
+
+@dataclass(frozen=True)
 class SessionSummary:
     session_id: str
     started_at: str
@@ -45,6 +68,7 @@ class SessionSummary:
     market_state_counts: dict[str, int]
     top_tickers: list[tuple[str, int]]
     ticker_summaries: list[TickerSummary]
+    quality: SessionQualitySummary = field(default_factory=SessionQualitySummary)
 
 
 def load_session(path: str | Path) -> dict[str, Any]:
@@ -83,6 +107,7 @@ def validate_session(session: Any) -> None:
 def summarize_session(session: dict[str, Any], top: int = 10) -> SessionSummary:
     snapshots = [snapshot for snapshot in session.get("snapshots", []) if isinstance(snapshot, dict)]
     totals = session.get("totals") if isinstance(session.get("totals"), dict) else {}
+    diagnostics = session.get("diagnostics", [])
     ticker_counts = Counter(
         snapshot.get("ticker")
         for snapshot in snapshots
@@ -90,6 +115,10 @@ def summarize_session(session: dict[str, Any], top: int = 10) -> SessionSummary:
     )
 
     ticker_summaries = summarize_tickers(snapshots)
+    state_counts = market_state_counts(diagnostics)
+    usable_snapshots = optional_int(totals.get("usableSnapshots"))
+    quarantined_snapshots = optional_int(totals.get("quarantinedSnapshots"))
+    rejected_snapshots = optional_int(totals.get("rejectedSnapshots"))
 
     return SessionSummary(
         session_id=session["sessionId"],
@@ -100,12 +129,20 @@ def summarize_session(session: dict[str, Any], top: int = 10) -> SessionSummary:
         ticks_attempted=optional_int(totals.get("ticksAttempted")),
         total_snapshots=len(snapshots),
         unique_tickers=len(ticker_counts),
-        usable_snapshots=optional_int(totals.get("usableSnapshots")),
-        quarantined_snapshots=optional_int(totals.get("quarantinedSnapshots")),
-        rejected_snapshots=optional_int(totals.get("rejectedSnapshots")),
-        market_state_counts=market_state_counts(session.get("diagnostics", [])),
+        usable_snapshots=usable_snapshots,
+        quarantined_snapshots=quarantined_snapshots,
+        rejected_snapshots=rejected_snapshots,
+        market_state_counts=state_counts,
         top_tickers=ticker_counts.most_common(max(top, 0)),
         ticker_summaries=ticker_summaries[: max(top, 0)],
+        quality=summarize_session_quality(
+            diagnostics,
+            totals,
+            state_counts,
+            usable_snapshots,
+            quarantined_snapshots,
+            rejected_snapshots,
+        ),
     )
 
 
@@ -159,6 +196,262 @@ def market_state_counts(diagnostics: Any) -> dict[str, int]:
     return counts
 
 
+def summarize_session_quality(
+    diagnostics: Any,
+    totals: dict[str, Any],
+    state_counts: dict[str, int],
+    usable_snapshots: int | None,
+    quarantined_snapshots: int | None,
+    rejected_snapshots: int | None,
+) -> SessionQualitySummary:
+    if not isinstance(diagnostics, list):
+        diagnostics = []
+
+    diagnostic_rows = [item for item in diagnostics if isinstance(item, dict)]
+    observed_tick_count = len(diagnostic_rows)
+    open_tick_count = state_counts["OPEN"]
+    open_tick_ratio = (
+        open_tick_count / observed_tick_count if observed_tick_count > 0 else None
+    )
+
+    training_grade_values = [
+        parsed
+        for parsed in (
+            parse_yes_no_field(row.get("trainingGradeCandidate")) for row in diagnostic_rows
+        )
+        if parsed is not None
+    ]
+    training_grade_count = (
+        sum(1 for value in training_grade_values if value) if training_grade_values else None
+    )
+    training_grade_ratio = (
+        (training_grade_count / len(training_grade_values))
+        if training_grade_count is not None and training_grade_values
+        else None
+    )
+
+    scan_mode_counts = Counter(
+        row.get("scanMode")
+        for row in diagnostic_rows
+        if isinstance(row.get("scanMode"), str) and row.get("scanMode")
+    )
+
+    full_grid_values = [
+        value
+        for value in (row.get("fullGridScan") for row in diagnostic_rows)
+        if isinstance(value, bool)
+    ]
+    full_grid_scan_yes_count = (
+        sum(1 for value in full_grid_values if value) if full_grid_values else None
+    )
+    full_grid_scan_no_count = (
+        sum(1 for value in full_grid_values if not value) if full_grid_values else None
+    )
+
+    unique_ticker_values = [
+        value
+        for value in (
+            optional_int(row.get("uniqueTickers")) for row in diagnostic_rows
+        )
+        if value is not None
+    ]
+    peak_unique_ticker_coverage = max(unique_ticker_values) if unique_ticker_values else None
+    median_unique_ticker_coverage = (
+        float(median(unique_ticker_values)) if unique_ticker_values else None
+    )
+
+    rejection_counts: Counter[str] = Counter()
+    for row in diagnostic_rows:
+        top_reject_reasons = row.get("topRejectReasons")
+        if not isinstance(top_reject_reasons, list):
+            continue
+        for entry in top_reject_reasons:
+            if not isinstance(entry, dict):
+                continue
+            code = entry.get("code")
+            count = optional_int(entry.get("count"))
+            if isinstance(code, str) and code and count is not None and count > 0:
+                rejection_counts[code] += count
+
+    if usable_snapshots is None:
+        usable_snapshots = aggregate_diagnostic_total(diagnostic_rows, "usableSnapshots")
+    if quarantined_snapshots is None:
+        quarantined_snapshots = aggregate_diagnostic_total(
+            diagnostic_rows, "quarantinedSnapshots"
+        )
+    if rejected_snapshots is None:
+        rejected_snapshots = aggregate_diagnostic_total(diagnostic_rows, "rejectedSnapshots")
+
+    rejection_ratio = calculate_rejection_ratio(
+        usable_snapshots,
+        quarantined_snapshots,
+        rejected_snapshots,
+    )
+
+    quality_fields_available = any(
+        (
+            training_grade_values,
+            scan_mode_counts,
+            full_grid_values,
+            unique_ticker_values,
+            rejection_counts,
+            usable_snapshots is not None,
+            quarantined_snapshots is not None,
+            rejected_snapshots is not None,
+        )
+    )
+    classification, classification_reason = classify_session_quality(
+        quality_fields_available=quality_fields_available,
+        observed_tick_count=observed_tick_count,
+        open_tick_count=open_tick_count,
+        open_tick_ratio=open_tick_ratio,
+        usable_snapshots=usable_snapshots,
+        full_grid_scan_yes_count=full_grid_scan_yes_count,
+        peak_unique_ticker_coverage=peak_unique_ticker_coverage,
+        rejection_ratio=rejection_ratio,
+        training_grade_evaluated_ticks=len(training_grade_values),
+        training_grade_count=training_grade_count,
+    )
+
+    return SessionQualitySummary(
+        classification=classification,
+        classification_reason=classification_reason,
+        training_grade_count=training_grade_count,
+        training_grade_ratio=training_grade_ratio,
+        training_grade_evaluated_ticks=len(training_grade_values),
+        scan_mode_counts=dict(scan_mode_counts),
+        full_grid_scan_yes_count=full_grid_scan_yes_count,
+        full_grid_scan_no_count=full_grid_scan_no_count,
+        peak_unique_ticker_coverage=peak_unique_ticker_coverage,
+        median_unique_ticker_coverage=median_unique_ticker_coverage,
+        top_rejection_reasons=rejection_counts.most_common(5),
+        usable_snapshots=usable_snapshots,
+        quarantined_snapshots=quarantined_snapshots,
+        rejected_snapshots=rejected_snapshots,
+        rejection_ratio=rejection_ratio,
+        observed_tick_count=observed_tick_count,
+        open_tick_count=open_tick_count,
+        open_tick_ratio=open_tick_ratio,
+    )
+
+
+def aggregate_diagnostic_total(
+    diagnostics: list[dict[str, Any]],
+    field_name: str,
+) -> int | None:
+    values = [
+        value
+        for value in (optional_int(row.get(field_name)) for row in diagnostics)
+        if value is not None
+    ]
+    return sum(values) if values else None
+
+
+def classify_session_quality(
+    *,
+    quality_fields_available: bool,
+    observed_tick_count: int,
+    open_tick_count: int,
+    open_tick_ratio: float | None,
+    usable_snapshots: int | None,
+    full_grid_scan_yes_count: int | None,
+    peak_unique_ticker_coverage: int | None,
+    rejection_ratio: float | None,
+    training_grade_evaluated_ticks: int,
+    training_grade_count: int | None,
+) -> tuple[str | None, str | None]:
+    if observed_tick_count == 0 or not quality_fields_available:
+        return None, None
+
+    if open_tick_count == 0:
+        return "FAIL", "no OPEN ticks recorded"
+
+    if usable_snapshots is not None and usable_snapshots <= 0:
+        return "FAIL", "no usable snapshots recorded"
+
+    issues: list[str] = []
+    strengths: list[str] = []
+
+    if open_tick_ratio is not None:
+        if open_tick_ratio >= 0.5:
+            strengths.append("OPEN market coverage is strong")
+        else:
+            issues.append("OPEN market coverage is mixed")
+
+    if full_grid_scan_yes_count is not None and observed_tick_count > 0:
+        full_grid_scan_ratio = full_grid_scan_yes_count / observed_tick_count
+        if full_grid_scan_ratio >= 0.5:
+            strengths.append("full-grid scan coverage is strong")
+        else:
+            issues.append("full-grid scan coverage is limited")
+
+    if peak_unique_ticker_coverage is not None:
+        if peak_unique_ticker_coverage >= 25:
+            strengths.append("unique ticker coverage is broad")
+        else:
+            issues.append("unique ticker coverage is limited")
+
+    if rejection_ratio is not None:
+        if rejection_ratio <= 0.5:
+            strengths.append("rejection ratio is controlled")
+        else:
+            issues.append("rejection ratio is high")
+
+    if training_grade_evaluated_ticks > 0:
+        if training_grade_count is not None and training_grade_count > 0:
+            strengths.append("training-grade ticks were recorded")
+        else:
+            issues.append("no training-grade ticks recorded")
+
+    if usable_snapshots is not None and usable_snapshots > 0:
+        strengths.append("usable snapshots were recorded")
+
+    if not issues and strengths:
+        return "PASS", summarize_quality_reason(strengths[:3])
+
+    if issues:
+        return "WARN", summarize_quality_reason(issues[:2])
+
+    return "WARN", "quality diagnostics are partial"
+
+
+def summarize_quality_reason(reasons: list[str]) -> str:
+    if not reasons:
+        return "quality diagnostics are partial"
+    if len(reasons) == 1:
+        return reasons[0]
+    return "; ".join(reasons)
+
+
+def calculate_rejection_ratio(
+    usable_snapshots: int | None,
+    quarantined_snapshots: int | None,
+    rejected_snapshots: int | None,
+) -> float | None:
+    components = [usable_snapshots, quarantined_snapshots, rejected_snapshots]
+    if any(value is None for value in components):
+        return None
+
+    denominator = sum(value for value in components if value is not None)
+    if denominator <= 0 or rejected_snapshots is None:
+        return None
+
+    return rejected_snapshots / denominator
+
+
+def parse_yes_no_field(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized == "yes":
+        return True
+    if normalized == "no":
+        return False
+    return None
+
+
 def spread_percent(snapshot: dict[str, Any]) -> float | None:
     bid = numeric_value(snapshot.get("bestBid"))
     ask = numeric_value(snapshot.get("bestAsk"))
@@ -206,6 +499,15 @@ def format_terminal_summary(summary: SessionSummary) -> str:
         f"usable/quarantined/rejected: {format_optional(summary.usable_snapshots)}/{format_optional(summary.quarantined_snapshots)}/{format_optional(summary.rejected_snapshots)}",
         "market states:",
         *[f"- {state}: {format_optional(summary.market_state_counts[state])}" for state in MARKET_STATES],
+        "session quality:",
+        f"- classification: {format_quality_classification(summary.quality)}",
+        f"- training-grade ticks: {format_quality_ratio(summary.quality.training_grade_count, summary.quality.training_grade_evaluated_ticks, summary.quality.training_grade_ratio)}",
+        f"- scan modes: {format_distribution(summary.quality.scan_mode_counts)}",
+        f"- full-grid scan yes/no: {format_yes_no_counts(summary.quality.full_grid_scan_yes_count, summary.quality.full_grid_scan_no_count)}",
+        f"- unique ticker coverage peak/median: {format_optional(summary.quality.peak_unique_ticker_coverage)}/{format_optional_number(summary.quality.median_unique_ticker_coverage)}",
+        f"- top rejection reasons: {format_top_rejection_reasons(summary.quality.top_rejection_reasons)}",
+        f"- quality usable/quarantined/rejected: {format_optional(summary.quality.usable_snapshots)}/{format_optional(summary.quality.quarantined_snapshots)}/{format_optional(summary.quality.rejected_snapshots)}",
+        f"- market-state quality: {format_market_state_quality(summary.quality)}",
         "top tickers:",
     ]
     lines.extend(f"- {ticker}: {format_optional(count)}" for ticker, count in summary.top_tickers)
@@ -243,6 +545,17 @@ def write_markdown(summary: SessionSummary, path: str | Path) -> None:
         "| State | Ticks |",
         "|---|---:|",
         *[f"| {state} | {format_optional(summary.market_state_counts[state])} |" for state in MARKET_STATES],
+        "",
+        "## Session Quality",
+        "",
+        f"- classification: `{format_quality_classification(summary.quality)}`",
+        f"- training-grade ticks: `{format_quality_ratio(summary.quality.training_grade_count, summary.quality.training_grade_evaluated_ticks, summary.quality.training_grade_ratio)}`",
+        f"- scan modes: `{format_distribution(summary.quality.scan_mode_counts)}`",
+        f"- full-grid scan yes/no: `{format_yes_no_counts(summary.quality.full_grid_scan_yes_count, summary.quality.full_grid_scan_no_count)}`",
+        f"- unique ticker coverage peak/median: `{format_optional(summary.quality.peak_unique_ticker_coverage)}/{format_optional_number(summary.quality.median_unique_ticker_coverage)}`",
+        f"- top rejection reasons: `{format_top_rejection_reasons(summary.quality.top_rejection_reasons)}`",
+        f"- quality usable/quarantined/rejected: `{format_optional(summary.quality.usable_snapshots)}/{format_optional(summary.quality.quarantined_snapshots)}/{format_optional(summary.quality.rejected_snapshots)}`",
+        f"- market-state quality: `{format_market_state_quality(summary.quality)}`",
         "",
         "## Tickers",
         "",
@@ -354,6 +667,52 @@ def format_decimal(value: Decimal, grouping: bool) -> str:
 
 def format_optional_number(value: float | None) -> str:
     return "n/a" if value is None else format_number(value, max_decimals=6, grouping=False)
+
+
+def format_quality_classification(quality: SessionQualitySummary) -> str:
+    if quality.classification is None:
+        return "unavailable"
+    if quality.classification_reason:
+        return f"{quality.classification} ({quality.classification_reason})"
+    return quality.classification
+
+
+def format_quality_ratio(
+    count: int | None,
+    denominator: int,
+    ratio: float | None,
+) -> str:
+    if count is None or denominator <= 0 or ratio is None:
+        return "unavailable"
+    return f"{format_optional(count)}/{format_optional(denominator)} ({format_percent(ratio * 100)})"
+
+
+def format_distribution(values: dict[str, int]) -> str:
+    if not values:
+        return "unavailable"
+    ordered = sorted(values.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{name}:{format_optional(count)}" for name, count in ordered)
+
+
+def format_yes_no_counts(yes_count: int | None, no_count: int | None) -> str:
+    if yes_count is None or no_count is None:
+        return "unavailable"
+    return f"{format_optional(yes_count)}/{format_optional(no_count)}"
+
+
+def format_top_rejection_reasons(values: list[tuple[str, int]]) -> str:
+    if not values:
+        return "unavailable"
+    return ", ".join(f"{code}:{format_optional(count)}" for code, count in values)
+
+
+def format_market_state_quality(quality: SessionQualitySummary) -> str:
+    if quality.observed_tick_count <= 0 or quality.open_tick_ratio is None:
+        return "unavailable"
+    return (
+        f"OPEN {format_optional(quality.open_tick_count)}/{format_optional(quality.observed_tick_count)} "
+        f"({format_percent(quality.open_tick_ratio * 100)})"
+    )
 
 
 def parse_args() -> argparse.Namespace:
