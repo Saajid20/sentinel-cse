@@ -10,6 +10,7 @@ from sentinel_research.agents.ingestion.cbsl_source import (
 from sentinel_research.agents.ingestion.cse_api import (
     CseAnnouncementDetail,
     CseAnnouncementDocument,
+    CseFinancialReport,
     CseAnnouncementSummary,
     CseApiClient,
     CseApiError,
@@ -38,6 +39,7 @@ __all__ = [
     "CbslUrlDocumentSource",
     "CseAnnouncementDetail",
     "CseAnnouncementDocument",
+    "CseFinancialReport",
     "CseAnnouncementSummary",
     "CseApiClient",
     "CseApiError",
