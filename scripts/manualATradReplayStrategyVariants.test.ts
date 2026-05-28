@@ -42,6 +42,39 @@ function buildSessionWithTriggerVolume(volume: number) {
   };
 }
 
+function buildSessionWithTriggerVolumeAndImbalance(volume: number, bidDepth: number, askDepth: number) {
+  return {
+    sessionId: 'atrad-session-variant-test',
+    source: 'atrad-full-watch-equity',
+    startedAt: '2026-05-26T05:47:22.000Z',
+    endedAt: '2026-05-26T05:57:22.000Z',
+    snapshots: [
+      {
+        ticker: 'SAMP.N0000',
+        timestamp: 0,
+        lastPrice: 50,
+        bestBid: 49.8,
+        bestAsk: 50,
+        bidDepth: 200,
+        askDepth: 100,
+        volume: 100,
+        totalTurnover: 5000
+      },
+      {
+        ticker: 'SAMP.N0000',
+        timestamp: 300_000,
+        lastPrice: 55,
+        bestBid: 54.9,
+        bestAsk: 55,
+        bidDepth,
+        askDepth,
+        volume,
+        totalTurnover: volume * 55
+      }
+    ]
+  };
+}
+
 function createRuntime(
   session: Record<string, unknown>,
   calls: string[] = []
@@ -54,6 +87,15 @@ function createRuntime(
       calls.push(message);
     }
   };
+}
+
+function variantByName(
+  result: Awaited<ReturnType<typeof runManualATradReplayStrategyVariants>>,
+  name: string
+) {
+  const variant = result.variants.find((item) => item.name === name);
+  expect(variant).toBeDefined();
+  return variant!;
 }
 
 describe('manual ATrad replay strategy variants', () => {
@@ -79,7 +121,7 @@ describe('manual ATrad replay strategy variants', () => {
       createRuntime(session)
     );
 
-    const baseline = result.variants[0];
+    const baseline = variantByName(result, 'baseline');
     expect(baseline?.name).toBe('baseline');
     expect(baseline?.parameterOverrides).toEqual({});
     expect(baseline?.signalsGenerated).toBe(1);
@@ -97,22 +139,31 @@ describe('manual ATrad replay strategy variants', () => {
       createRuntime(session)
     );
 
-    const baseline = result.variants[0];
-    const volumeDisabled = result.variants[1];
-    const lowerVolume = result.variants[2];
+    const baseline = variantByName(result, 'baseline');
+    const volumeDisabled = variantByName(result, 'volume-ratio-disabled-diagnostic');
+    const lowerVolume = variantByName(result, 'lower-volume-ratio-threshold');
+    const imbalanceDisabled = variantByName(result, 'imbalance-disabled-diagnostic');
+    const volumeAndImbalanceDisabled = variantByName(
+      result,
+      'volume-and-imbalance-disabled-diagnostic'
+    );
 
     expect(baseline?.signalsGenerated).toBe(0);
     expect(volumeDisabled?.signalsGenerated).toBe(1);
     expect(lowerVolume?.signalsGenerated).toBe(0);
+    expect(imbalanceDisabled?.signalsGenerated).toBe(0);
+    expect(volumeAndImbalanceDisabled?.signalsGenerated).toBe(1);
     expect(DEFAULT_OPENING_MOMENTUM_PARAMETERS).toEqual(defaultBefore);
     expect(BASELINE_OPENING_MOMENTUM_PARAMETERS).toEqual(defaultBefore);
   });
 
-  it('variant order is deterministic', () => {
+  it('imbalance-disabled-diagnostic appears in deterministic variant order', () => {
     expect(FIXED_OPENING_MOMENTUM_VARIANTS.map((variant) => variant.name)).toEqual([
       'baseline',
       'volume-ratio-disabled-diagnostic',
-      'lower-volume-ratio-threshold'
+      'lower-volume-ratio-threshold',
+      'imbalance-disabled-diagnostic',
+      'volume-and-imbalance-disabled-diagnostic'
     ]);
   });
 
@@ -124,8 +175,10 @@ describe('manual ATrad replay strategy variants', () => {
     );
 
     expect(result.variants[0]?.signalsGenerated).toBe(0);
-    expect(result.variants[1]?.signalsGenerated).toBe(1);
-    expect(result.variants[1]?.signalTickerCounts).toEqual([{ ticker: 'SAMP.N0000', count: 1 }]);
+    expect(variantByName(result, 'volume-ratio-disabled-diagnostic').signalsGenerated).toBe(1);
+    expect(variantByName(result, 'volume-ratio-disabled-diagnostic').signalTickerCounts).toEqual([
+      { ticker: 'SAMP.N0000', count: 1 }
+    ]);
   });
 
   it('lower-volume-ratio variant changes results deterministically on a controlled fixture', async () => {
@@ -135,10 +188,37 @@ describe('manual ATrad replay strategy variants', () => {
       createRuntime(session)
     );
 
-    expect(result.variants[0]?.signalsGenerated).toBe(0);
-    expect(result.variants[1]?.signalsGenerated).toBe(1);
-    expect(result.variants[2]?.signalsGenerated).toBe(1);
-    expect(result.variants[2]?.signalTickerCounts).toEqual([{ ticker: 'SAMP.N0000', count: 1 }]);
+    expect(variantByName(result, 'baseline').signalsGenerated).toBe(0);
+    expect(variantByName(result, 'volume-ratio-disabled-diagnostic').signalsGenerated).toBe(1);
+    expect(variantByName(result, 'lower-volume-ratio-threshold').signalsGenerated).toBe(1);
+    expect(variantByName(result, 'lower-volume-ratio-threshold').signalTickerCounts).toEqual([
+      { ticker: 'SAMP.N0000', count: 1 }
+    ]);
+  });
+
+  it('imbalance-disabled variant changes results on a controlled fixture where imbalance is the only blocker', async () => {
+    const session = buildSessionWithTriggerVolumeAndImbalance(3000, 100, 200);
+    const result = await runManualATradReplayStrategyVariants(
+      createManualATradReplayStrategyVariantsConfig(['--input', 'fixture.json']),
+      createRuntime(session)
+    );
+
+    expect(variantByName(result, 'baseline').signalsGenerated).toBe(0);
+    expect(variantByName(result, 'volume-ratio-disabled-diagnostic').signalsGenerated).toBe(0);
+    expect(variantByName(result, 'imbalance-disabled-diagnostic').signalsGenerated).toBe(1);
+  });
+
+  it('volume-and-imbalance-disabled-diagnostic changes results deterministically when both gates block baseline', async () => {
+    const session = buildSessionWithTriggerVolumeAndImbalance(500, 100, 200);
+    const result = await runManualATradReplayStrategyVariants(
+      createManualATradReplayStrategyVariantsConfig(['--input', 'fixture.json']),
+      createRuntime(session)
+    );
+
+    expect(variantByName(result, 'baseline').signalsGenerated).toBe(0);
+    expect(variantByName(result, 'volume-ratio-disabled-diagnostic').signalsGenerated).toBe(0);
+    expect(variantByName(result, 'imbalance-disabled-diagnostic').signalsGenerated).toBe(0);
+    expect(variantByName(result, 'volume-and-imbalance-disabled-diagnostic').signalsGenerated).toBe(1);
   });
 
   it('runner is SHADOW and readonly only', async () => {
@@ -221,6 +301,10 @@ describe('manual ATrad replay strategy variants', () => {
 
     expect(summary).toContain('top signal tickers per variant: 1');
     expect(summary).toContain('variant: baseline');
+    expect(summary).toContain('variant: imbalance-disabled-diagnostic');
+    expect(summary).toContain('variant: volume-and-imbalance-disabled-diagnostic');
+    expect(summary).toContain('- parameter overrides: orderBookImbalanceThreshold=-1');
+    expect(summary).toContain('- parameter overrides: orderBookImbalanceThreshold=-1, volumeRatioThreshold=-1');
     expect(summary).toContain('- top signal tickers: ALFA.N0000:1');
     expect(summary).not.toContain('BETA.N0000:1, ALFA.N0000:1');
   });

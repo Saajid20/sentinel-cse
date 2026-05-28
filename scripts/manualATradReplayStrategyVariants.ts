@@ -84,6 +84,25 @@ export const FIXED_OPENING_MOMENTUM_VARIANTS: StrategyVariantDefinition[] = [
     parameterOverrides: {
       volumeRatioThreshold: 1.2
     }
+  },
+  {
+    name: 'imbalance-disabled-diagnostic',
+    diagnosticOnly: true,
+    description:
+      'Diagnostic-only variant that neutralizes the order-book imbalance gate with orderBookImbalanceThreshold = -1.',
+    parameterOverrides: {
+      orderBookImbalanceThreshold: -1
+    }
+  },
+  {
+    name: 'volume-and-imbalance-disabled-diagnostic',
+    diagnosticOnly: true,
+    description:
+      'Diagnostic-only variant that neutralizes both volume-ratio and order-book imbalance gates for offline comparison.',
+    parameterOverrides: {
+      volumeRatioThreshold: -1,
+      orderBookImbalanceThreshold: -1
+    }
   }
 ];
 
