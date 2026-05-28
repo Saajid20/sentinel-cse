@@ -3,6 +3,7 @@ import { DEFAULT_OPENING_MOMENTUM_PARAMETERS } from '../packages/strategies/src/
 import {
   BASELINE_OPENING_MOMENTUM_PARAMETERS,
   FIXED_OPENING_MOMENTUM_VARIANTS,
+  buildATradReplayStrategyVariantsJsonExport,
   createManualATradReplayStrategyVariantsConfig,
   formatATradReplayStrategyVariantsSummary,
   runManualATradReplayStrategyVariants,
@@ -83,6 +84,8 @@ function createRuntime(
     async readFile() {
       return JSON.stringify(session);
     },
+    async ensureDir() {},
+    async writeFile() {},
     log(message) {
       calls.push(message);
     }
@@ -110,6 +113,24 @@ describe('manual ATrad replay strategy variants', () => {
     expect(config).toEqual({
       inputPath: 'data/live-sessions/example.json',
       topSignalTickers: 20,
+      readonlyMode: true
+    });
+  });
+
+  it('CLI parsing accepts --variant-json-output', () => {
+    const config = createManualATradReplayStrategyVariantsConfig([
+      '--input',
+      'data/live-sessions/example.json',
+      '--top',
+      '20',
+      '--variant-json-output',
+      '.runtime-pipeline/variant-comparison.json'
+    ]);
+
+    expect(config).toEqual({
+      inputPath: 'data/live-sessions/example.json',
+      topSignalTickers: 20,
+      variantJsonOutputPath: '.runtime-pipeline/variant-comparison.json',
       readonlyMode: true
     });
   });
@@ -233,7 +254,11 @@ describe('manual ATrad replay strategy variants', () => {
     expect(logs.join('\n')).toContain('warning: offline research only; SHADOW replay only; no production thresholds changed');
     expect(() =>
       runManualATradReplayStrategyVariants(
-        { inputPath: 'fixture.json', topSignalTickers: 1, readonlyMode: false as true },
+        {
+          inputPath: 'fixture.json',
+          topSignalTickers: 1,
+          readonlyMode: false as true
+        },
         createRuntime(session)
       )
     ).rejects.toThrow('ATrad strategy variant replay must run in readonlyMode.');
@@ -307,5 +332,187 @@ describe('manual ATrad replay strategy variants', () => {
     expect(summary).toContain('- parameter overrides: orderBookImbalanceThreshold=-1, volumeRatioThreshold=-1');
     expect(summary).toContain('- top signal tickers: ALFA.N0000:1');
     expect(summary).not.toContain('BETA.N0000:1, ALFA.N0000:1');
+  });
+
+  it('JSON is written only when the flag is passed and leaves input untouched', async () => {
+    const session = buildSessionWithTriggerVolume(3000);
+    const writes: Array<{ path: string; contents: string }> = [];
+    const reads: string[] = [];
+    const runtime: ManualATradReplayStrategyVariantsRuntime = {
+      async readFile(path) {
+        reads.push(path);
+        return JSON.stringify(session);
+      },
+      async ensureDir() {},
+      async writeFile(path, contents) {
+        writes.push({ path, contents });
+      },
+      log() {}
+    };
+
+    const withoutExport = await runManualATradReplayStrategyVariants(
+      createManualATradReplayStrategyVariantsConfig(['--input', 'fixture.json']),
+      runtime
+    );
+    const withExport = await runManualATradReplayStrategyVariants(
+      createManualATradReplayStrategyVariantsConfig([
+        '--input',
+        'fixture.json',
+        '--variant-json-output',
+        '.runtime-pipeline/variant-comparison.json'
+      ]),
+      runtime
+    );
+
+    expect(reads).toEqual(['fixture.json', 'fixture.json']);
+    expect(withoutExport.variantJsonOutputPath).toBeUndefined();
+    expect(withExport.variantJsonOutputPath).toBe('.runtime-pipeline/variant-comparison.json');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.path).toBe('.runtime-pipeline/variant-comparison.json');
+  });
+
+  it('export includes top-level session fields and inputPath', async () => {
+    const session = buildSessionWithTriggerVolume(3000);
+    const writes: Array<{ path: string; contents: string }> = [];
+    const runtime: ManualATradReplayStrategyVariantsRuntime = {
+      async readFile() {
+        return JSON.stringify(session);
+      },
+      async ensureDir() {},
+      async writeFile(path, contents) {
+        writes.push({ path, contents });
+      },
+      log() {}
+    };
+
+    await runManualATradReplayStrategyVariants(
+      createManualATradReplayStrategyVariantsConfig([
+        '--input',
+        'fixture.json',
+        '--top',
+        '3',
+        '--variant-json-output',
+        '.runtime-pipeline/variant-comparison.json'
+      ]),
+      runtime
+    );
+
+    const exported = JSON.parse(writes[0]?.contents ?? '{}');
+    expect(exported).toMatchObject({
+      sessionId: 'atrad-session-variant-test',
+      inputPath: 'fixture.json',
+      source: 'atrad-full-watch-equity',
+      startedAt: '2026-05-26T05:47:22.000Z',
+      endedAt: '2026-05-26T05:57:22.000Z',
+      totalSnapshotsLoaded: 2,
+      uniqueTickers: 1,
+      topSignalTickerLimit: 3
+    });
+  });
+
+  it('export includes full variants array with existing computed fields and preserves deterministic order', async () => {
+    const session = buildSessionWithTriggerVolumeAndImbalance(500, 100, 200);
+    const writes: Array<{ path: string; contents: string }> = [];
+    const runtime: ManualATradReplayStrategyVariantsRuntime = {
+      async readFile() {
+        return JSON.stringify(session);
+      },
+      async ensureDir() {},
+      async writeFile(path, contents) {
+        writes.push({ path, contents });
+      },
+      log() {}
+    };
+
+    await runManualATradReplayStrategyVariants(
+      createManualATradReplayStrategyVariantsConfig([
+        '--input',
+        'fixture.json',
+        '--variant-json-output',
+        '.runtime-pipeline/variant-comparison.json'
+      ]),
+      runtime
+    );
+
+    const exported = JSON.parse(writes[0]?.contents ?? '{}');
+    expect(exported.variants.map((variant: { variantName: string }) => variant.variantName)).toEqual([
+      'baseline',
+      'volume-ratio-disabled-diagnostic',
+      'lower-volume-ratio-threshold',
+      'imbalance-disabled-diagnostic',
+      'volume-and-imbalance-disabled-diagnostic'
+    ]);
+    expect(exported.variants[0]).toMatchObject({
+      variantName: 'baseline',
+      diagnosticOnly: false,
+      runtimeMode: 'SHADOW',
+      replayedSnapshots: 2,
+      signalsGenerated: 0,
+      uniqueSignalTickers: 0,
+      generatedStrategies: [],
+      signalTickerCounts: []
+    });
+    expect(exported.variants[4]).toMatchObject({
+      variantName: 'volume-and-imbalance-disabled-diagnostic',
+      diagnosticOnly: true,
+      runtimeMode: 'SHADOW',
+      replayedSnapshots: 2,
+      signalsGenerated: 1,
+      uniqueSignalTickers: 1,
+      generatedStrategies: [DEFAULT_OPENING_MOMENTUM_PARAMETERS.strategyName],
+      signalTickerCounts: [{ ticker: 'SAMP.N0000', count: 1 }]
+    });
+  });
+
+  it('export works when a variant has zero signals and empty signalTickerCounts', () => {
+    const exported = buildATradReplayStrategyVariantsJsonExport(
+      createManualATradReplayStrategyVariantsConfig([
+        '--input',
+        'fixture.json',
+        '--variant-json-output',
+        '.runtime-pipeline/variant-comparison.json'
+      ]),
+      {
+        ok: true,
+        message: 'done',
+        sessionId: 'atrad-session-variant-test',
+        source: 'atrad-full-watch-equity',
+        startedAt: '2026-05-26T05:47:22.000Z',
+        endedAt: '2026-05-26T05:57:22.000Z',
+        totalSnapshotsLoaded: 2,
+        uniqueTickers: 1,
+        topSignalTickerLimit: 10,
+        variants: [
+          {
+            name: 'baseline',
+            diagnosticOnly: false,
+            description: 'Default Opening Momentum detector parameters.',
+            parameterOverrides: {},
+            runtimeMode: 'SHADOW',
+            replayedSnapshots: 2,
+            signalsGenerated: 0,
+            uniqueSignalTickers: 0,
+            signalTickerCounts: [],
+            generatedStrategies: []
+          }
+        ],
+        variantJsonOutputPath: '.runtime-pipeline/variant-comparison.json'
+      }
+    );
+
+    expect(exported.variants).toEqual([
+      {
+        variantName: 'baseline',
+        diagnosticOnly: false,
+        description: 'Default Opening Momentum detector parameters.',
+        parameterOverrides: {},
+        runtimeMode: 'SHADOW',
+        replayedSnapshots: 2,
+        signalsGenerated: 0,
+        uniqueSignalTickers: 0,
+        generatedStrategies: [],
+        signalTickerCounts: []
+      }
+    ]);
   });
 });

@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MarketReplayEngine, SentinelPipeline } from '../apps/worker/src/index.js';
 import {
@@ -14,11 +15,14 @@ import {
 export interface ManualATradReplayStrategyVariantsConfig {
   inputPath: string;
   topSignalTickers: number;
+  variantJsonOutputPath?: string;
   readonlyMode: true;
 }
 
 export interface ManualATradReplayStrategyVariantsRuntime {
   readFile(path: string): Promise<string>;
+  ensureDir(path: string): Promise<void>;
+  writeFile(path: string, contents: string): Promise<void>;
   log(message: string): void;
 }
 
@@ -57,7 +61,31 @@ export interface ManualATradReplayStrategyVariantsResult {
   totalSnapshotsLoaded: number;
   uniqueTickers: number;
   topSignalTickerLimit: number;
+  variantJsonOutputPath?: string;
   variants: StrategyVariantReplayResult[];
+}
+
+export interface StrategyVariantReplayJsonExport {
+  sessionId: string;
+  inputPath: string;
+  source: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  totalSnapshotsLoaded: number;
+  uniqueTickers: number;
+  topSignalTickerLimit: number;
+  variants: Array<{
+    variantName: string;
+    diagnosticOnly: boolean;
+    description: string;
+    parameterOverrides: Partial<OpeningMomentumParameters>;
+    runtimeMode: 'SHADOW';
+    replayedSnapshots: number;
+    signalsGenerated: number;
+    uniqueSignalTickers: number;
+    generatedStrategies: string[];
+    signalTickerCounts: StrategyVariantSignalTickerCount[];
+  }>;
 }
 
 export const FIXED_OPENING_MOMENTUM_VARIANTS: StrategyVariantDefinition[] = [
@@ -120,6 +148,9 @@ export function createManualATradReplayStrategyVariantsConfig(
   return {
     inputPath,
     topSignalTickers: Number.isFinite(topSignalTickers) ? Math.max(topSignalTickers, 0) : 10,
+    ...(readFlagValue(args, '--variant-json-output')
+      ? { variantJsonOutputPath: readFlagValue(args, '--variant-json-output') }
+      : {}),
     readonlyMode: true
   };
 }
@@ -179,8 +210,20 @@ export async function runManualATradReplayStrategyVariants(
     totalSnapshotsLoaded: snapshots.length,
     uniqueTickers: new Set(snapshots.map((snapshot) => snapshot.ticker)).size,
     topSignalTickerLimit: config.topSignalTickers,
+    ...(config.variantJsonOutputPath
+      ? { variantJsonOutputPath: config.variantJsonOutputPath }
+      : {}),
     variants
   };
+
+  if (config.variantJsonOutputPath) {
+    const variantsJson = buildATradReplayStrategyVariantsJsonExport(config, result);
+    await runtime.ensureDir(dirname(config.variantJsonOutputPath));
+    await runtime.writeFile(
+      config.variantJsonOutputPath,
+      `${JSON.stringify(variantsJson, null, 2)}\n`
+    );
+  }
 
   for (const line of formatATradReplayStrategyVariantsSummary(result)) {
     runtime.log(line);
@@ -281,9 +324,39 @@ function formatSignalTickerCounts(
     .join(', ');
 }
 
+export function buildATradReplayStrategyVariantsJsonExport(
+  config: ManualATradReplayStrategyVariantsConfig,
+  result: ManualATradReplayStrategyVariantsResult
+): StrategyVariantReplayJsonExport {
+  return {
+    sessionId: result.sessionId,
+    inputPath: config.inputPath,
+    source: result.source,
+    startedAt: result.startedAt ?? null,
+    endedAt: result.endedAt ?? null,
+    totalSnapshotsLoaded: result.totalSnapshotsLoaded,
+    uniqueTickers: result.uniqueTickers,
+    topSignalTickerLimit: result.topSignalTickerLimit,
+    variants: result.variants.map((variant) => ({
+      variantName: variant.name,
+      diagnosticOnly: variant.diagnosticOnly,
+      description: variant.description,
+      parameterOverrides: { ...variant.parameterOverrides },
+      runtimeMode: variant.runtimeMode,
+      replayedSnapshots: variant.replayedSnapshots,
+      signalsGenerated: variant.signalsGenerated,
+      uniqueSignalTickers: variant.uniqueSignalTickers,
+      generatedStrategies: [...variant.generatedStrategies],
+      signalTickerCounts: variant.signalTickerCounts.map((item) => ({ ...item }))
+    }))
+  };
+}
+
 function defaultRuntime(): ManualATradReplayStrategyVariantsRuntime {
   return {
     readFile: async (path) => readFile(path, 'utf8'),
+    ensureDir: async (path) => mkdir(path, { recursive: true }),
+    writeFile: async (path, contents) => writeFile(path, contents, 'utf8'),
     log: (message) => console.log(message)
   };
 }
