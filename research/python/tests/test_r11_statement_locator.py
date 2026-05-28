@@ -169,6 +169,27 @@ def test_group_equity_movement_page_classifies_as_equity_statement() -> None:
     assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
 
 
+def test_financial_position_equity_section_classifies_as_balance_sheet() -> None:
+    table = _make_table(
+        9,
+        [
+            "As at 31st March 2026",
+            "Stated capital",
+            "Statutory reserve fund",
+            "Retained earnings",
+            "Total Equity",
+            "Total Liabilities & Equity",
+            "Net asset value per share",
+            "Commitments & contingencies",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.BALANCE_SHEET
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
 def test_classify_cash_flow_page() -> None:
     table = _make_table(
         9,
