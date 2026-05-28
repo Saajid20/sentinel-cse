@@ -24,6 +24,26 @@ _CASH_FLOW_STRUCTURE_MARKERS = [
     "NET CASH GENERATED FROM USED IN OPERATING ACTIVITIES",
 ]
 
+_EQUITY_TITLE_MARKERS = [
+    "STATEMENT OF CHANGES IN EQUITY",
+]
+
+_EQUITY_STRUCTURE_MARKERS = [
+    "BALANCE AS AT 1ST JANUARY",
+    "BALANCE AS AT 31ST MARCH",
+    "BALANCE AS AT 31 MARCH",
+    "BALANCE AS AT 31ST DECEMBER",
+    "BALANCE AS AT 31 DECEMBER",
+    "TRANSACTIONS WITH EQUITY HOLDERS",
+    "CONTRIBUTIONS BY AND DISTRIBUTIONS TO EQUITY HOLDERS",
+    "FINAL DIVIDEND",
+    "UNCLAIMED DIVIDEND ADJUSTMENTS",
+    "TRANSFER TO RESERVES",
+    "STATED CAPITAL",
+    "STATUTORY RESERVE FUND",
+    "RETAINED EARNINGS",
+]
+
 _INCOME_STATEMENT_TITLE_MARKERS = [
     "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME",
     "INCOME STATEMENT",
@@ -139,6 +159,8 @@ def classify_statement_page(table: ExtractedFinancialTable) -> StatementPageMatc
     )
     cash_flow_title_markers = _find_present_markers(normalized_text, _CASH_FLOW_TITLE_MARKERS)
     cash_flow_structure_markers = _find_present_markers(normalized_text, _CASH_FLOW_STRUCTURE_MARKERS)
+    equity_title_markers = _find_present_markers(normalized_text, _EQUITY_TITLE_MARKERS)
+    equity_structure_markers = _find_present_markers(normalized_text, _EQUITY_STRUCTURE_MARKERS)
     income_title_markers = _find_present_markers(normalized_text, _INCOME_STATEMENT_TITLE_MARKERS)
     income_row_markers = _find_present_markers(normalized_text, _INCOME_STATEMENT_ROW_MARKERS)
     comprehensive_income_markers = _find_present_markers(normalized_text, _COMPREHENSIVE_INCOME_MARKERS)
@@ -150,6 +172,14 @@ def classify_statement_page(table: ExtractedFinancialTable) -> StatementPageMatc
         if cash_flow_title_markers or "NET CASH GENERATED FROM / USED IN OPERATING ACTIVITIES" in cash_flow_structure_markers:
             confidence = R11ConfidenceLevel.HIGH
         elif len(cash_flow_structure_markers) >= 3:
+            confidence = R11ConfidenceLevel.HIGH
+        else:
+            confidence = R11ConfidenceLevel.MEDIUM
+    elif has_equity_title or _has_strong_equity_structure(equity_structure_markers):
+        statement_type = FinancialStatementType.EQUITY_STATEMENT
+        matched_markers.extend(equity_title_markers)
+        matched_markers.extend(equity_structure_markers)
+        if has_equity_title or len(equity_structure_markers) >= 4:
             confidence = R11ConfidenceLevel.HIGH
         else:
             confidence = R11ConfidenceLevel.MEDIUM
@@ -203,10 +233,6 @@ def classify_statement_page(table: ExtractedFinancialTable) -> StatementPageMatc
             confidence = R11ConfidenceLevel.HIGH
         else:
             confidence = R11ConfidenceLevel.MEDIUM
-    elif has_equity_title:
-        statement_type = FinancialStatementType.EQUITY_STATEMENT
-        confidence = R11ConfidenceLevel.HIGH
-        matched_markers.append("STATEMENT OF CHANGES IN EQUITY")
     elif "NOTES TO THE FINANCIAL STATEMENTS" in normalized_text:
         statement_type = FinancialStatementType.NOTES
         confidence = R11ConfidenceLevel.MEDIUM
@@ -239,6 +265,17 @@ def _find_present_markers(normalized_text: str, markers: list[str]) -> list[str]
 
 def _has_strong_cash_flow_structure(markers: list[str]) -> bool:
     return len(markers) >= 2
+
+
+def _has_strong_equity_structure(markers: list[str]) -> bool:
+    if len(markers) >= 3:
+        return True
+    has_balance_marker = any(marker.startswith("BALANCE AS AT ") for marker in markers)
+    has_equity_column_marker = any(
+        marker in {"STATED CAPITAL", "STATUTORY RESERVE FUND", "RETAINED EARNINGS"}
+        for marker in markers
+    )
+    return has_balance_marker and has_equity_column_marker
 
 
 def _has_strong_income_statement_structure(

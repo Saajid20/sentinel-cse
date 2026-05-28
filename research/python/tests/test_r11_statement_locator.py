@@ -125,6 +125,50 @@ def test_classify_equity_page_high_confidence() -> None:
     assert match.confidence is R11ConfidenceLevel.HIGH
 
 
+def test_equity_movement_page_overrides_comprehensive_income_markers() -> None:
+    table = _make_table(
+        10,
+        [
+            "Balance as at 1st January",
+            "Stated capital",
+            "Statutory reserve fund",
+            "Retained earnings",
+            "Profit for the period",
+            "Other comprehensive income",
+            "Total comprehensive income for the period",
+            "Final dividend",
+            "Transfer to reserves",
+            "Balance as at 31st March",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.EQUITY_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
+def test_group_equity_movement_page_classifies_as_equity_statement() -> None:
+    table = _make_table(
+        11,
+        [
+            "Transactions with equity holders",
+            "Contributions by and distributions to equity holders",
+            "Unclaimed dividend adjustments",
+            "Stated capital",
+            "Retained earnings",
+            "Profit for the period",
+            "Other comprehensive income",
+            "Balance as at 31 March",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.EQUITY_STATEMENT
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+
+
 def test_classify_cash_flow_page() -> None:
     table = _make_table(
         9,
