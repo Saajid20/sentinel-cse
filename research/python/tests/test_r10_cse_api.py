@@ -13,6 +13,7 @@ sys.path.insert(0, str(PYTHON_ROOT))
 from sentinel_research.agents.ingestion import (  # noqa: E402
     CseApiClient,
     CseApiError,
+    CseFinancialReport,
     normalize_cse_document_url,
 )
 
@@ -273,6 +274,88 @@ def test_get_announcement_detail_parses_base_announcement_and_documents() -> Non
     assert detail.documents[0].file_url == "cmt/announcement_portal_prod/doc.pdf"
 
 
+def test_get_financial_reports_parses_response_and_normalizes_full_url() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
+        calls.append({"url": url, **kwargs})
+        return FakeResponse(
+            json.dumps(
+                {
+                    "reqFinancialAnnouncemnets": [
+                        {
+                            "id": 51415,
+                            "path": "cmt/upload_report_file/446_1779883742342.03.2026 Consolidated Interim Financial Statements.pdf",
+                            "manualDate": 1774895400000,
+                            "uploadedDate": "27 May 2026 05:39:02 PM",
+                            "fileText": "Interim Financial Statements for the Quarter ended 31st March 2026",
+                            "name": "DIALOG AXIATA PLC",
+                            "symbol": "DIAL",
+                            "logoUrl": "upload_logo/446_1192516470.gif",
+                            "authorizedDate": "27 May 2026 06:11:25 PM",
+                        }
+                    ]
+                }
+            )
+        )
+
+    reports = make_client(http_post=fake_http_post).get_financial_reports()
+
+    assert len(reports) == 1
+    assert isinstance(reports[0], CseFinancialReport)
+    assert reports[0].id == 51415
+    assert reports[0].path == "cmt/upload_report_file/446_1779883742342.03.2026 Consolidated Interim Financial Statements.pdf"
+    assert reports[0].manual_date_ms == 1774895400000
+    assert reports[0].uploaded_date == "27 May 2026 05:39:02 PM"
+    assert reports[0].file_text == "Interim Financial Statements for the Quarter ended 31st March 2026"
+    assert reports[0].name == "DIALOG AXIATA PLC"
+    assert reports[0].symbol == "DIAL"
+    assert reports[0].logo_url == "upload_logo/446_1192516470.gif"
+    assert reports[0].authorized_date == "27 May 2026 06:11:25 PM"
+    assert reports[0].full_url == (
+        "https://cdn.cse.lk/cmt/upload_report_file/"
+        "446_1779883742342.03.2026 Consolidated Interim Financial Statements.pdf"
+    )
+    assert calls == [
+        {
+            "url": "https://www.cse.lk/api/getFinancialAnnouncement",
+            "data": b"",
+            "headers": {
+                "User-Agent": "Sentinel-CSE-R10/0.1",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://www.cse.lk",
+                "Referer": "https://www.cse.lk/",
+                "Connection": "close",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            },
+            "timeout": 20.0,
+            "user_agent": "Sentinel-CSE-R10/0.1",
+        }
+    ]
+
+
+def test_get_financial_reports_returns_empty_list_for_empty_response() -> None:
+    def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
+        return FakeResponse(json.dumps({"reqFinancialAnnouncemnets": []}))
+
+    reports = make_client(http_post=fake_http_post).get_financial_reports()
+
+    assert reports == []
+
+
+def test_get_financial_reports_missing_expected_key_raises_cse_api_error() -> None:
+    def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
+        return FakeResponse(json.dumps({"wrongKey": []}))
+
+    client = make_client(http_post=fake_http_post)
+
+    with pytest.raises(
+        CseApiError,
+        match="missing reqFinancialAnnouncemnets list",
+    ):
+        client.get_financial_reports()
+
+
 def test_detail_document_full_url_is_normalized_correctly() -> None:
     def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
         return FakeResponse(
@@ -374,14 +457,17 @@ def test_no_test_calls_real_network() -> None:
     def fake_http_post(url: str, **kwargs: object) -> FakeResponse:
         nonlocal http_post_calls
         http_post_calls += 1
+        if url.endswith("/getFinancialAnnouncement"):
+            return FakeResponse(json.dumps({"reqFinancialAnnouncemnets": []}))
         return FakeResponse(json.dumps({"reqCompanyAnnouncement": []}))
 
     client = make_client(http_get=fake_http_get, http_post=fake_http_post)
     client.list_securities()
     client.get_announcements_by_company("JKH.N0000", "2024-02-08", "2024-02-08")
+    client.get_financial_reports()
 
     assert http_get_calls == 1
-    assert http_post_calls == 1
+    assert http_post_calls == 2
 
 
 def test_no_test_calls_deepseek() -> None:

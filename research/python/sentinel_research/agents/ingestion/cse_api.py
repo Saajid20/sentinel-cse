@@ -144,6 +144,57 @@ class CseAnnouncementDetail(BaseModel):
         return stripped or None
 
 
+class CseFinancialReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: int | None = None
+    path: str
+    manual_date_ms: int | None = Field(default=None, alias="manualDate")
+    uploaded_date: str | None = Field(default=None, alias="uploadedDate")
+    file_text: str | None = Field(default=None, alias="fileText")
+    name: str | None = None
+    symbol: str | None = None
+    logo_url: str | None = Field(default=None, alias="logoUrl")
+    authorized_date: str | None = Field(default=None, alias="authorizedDate")
+    full_url: str = Field(alias="fullUrl")
+
+    @field_validator(
+        "path",
+        "uploaded_date",
+        "file_text",
+        "name",
+        "symbol",
+        "logo_url",
+        "authorized_date",
+        "full_url",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_str(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value:
+            raise ValueError("path must not be empty")
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_full_url(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        path = payload.get("path")
+        if isinstance(path, str) and path.strip():
+            payload["fullUrl"] = normalize_cse_document_url(path)
+        return payload
+
+
 def _default_http_get(
     url: str,
     *,
@@ -335,6 +386,27 @@ class CseApiClient:
         except Exception as error:
             raise CseApiError(
                 f"POST {endpoint} for announcement_id={announcement_id} returned invalid announcement detail payload: {error}"
+            ) from error
+
+    def get_financial_reports(self) -> list[CseFinancialReport]:
+        endpoint = "/getFinancialAnnouncement"
+        payload = self._load_json(
+            "POST",
+            endpoint,
+            form_payload={},
+        )
+        if not isinstance(payload, dict):
+            raise CseApiError(f"POST {endpoint} returned non-object JSON payload")
+        reports = payload.get("reqFinancialAnnouncemnets")
+        if not isinstance(reports, list):
+            raise CseApiError(
+                f"POST {endpoint} missing reqFinancialAnnouncemnets list"
+            )
+        try:
+            return [CseFinancialReport.model_validate(item) for item in reports]
+        except Exception as error:
+            raise CseApiError(
+                f"POST {endpoint} returned invalid financial report payload: {error}"
             ) from error
 
     def _load_json(
