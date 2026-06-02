@@ -15,6 +15,8 @@ import pytest
 from r11_inspect_pypdf_baseline import (  # noqa: E402
     _build_deterministic_analysis_payload,
     _build_verified_metric_results_for_mapped_items,
+    _build_verified_metric_results_for_tables,
+    _filter_redundant_metric_candidates,
     _filter_tables,
     _line_context,
     _matching_line_numbers,
@@ -34,6 +36,10 @@ from sentinel_research.agents.r11.schemas import (  # noqa: E402
     R11ConfidenceLevel,
     SourceTrace,
     ToolAuditEntry,
+)
+from sentinel_research.agents.r11.tables import (  # noqa: E402
+    MappedLineItemValues,
+    ParsedFinancialValue,
 )
 
 
@@ -180,6 +186,173 @@ def test_invalid_supported_metric_candidate_does_not_abort_and_records_warning(
         "failed to build metric for profit_for_the_period: "
         "profit_for_the_period has no numeric value for group_current"
     ]
+
+
+def test_filter_redundant_metric_candidates_drops_subset_duplicate_without_reported_percent() -> None:
+    source_trace = SourceTrace(
+        local_file_path="C:/tmp/sample.pdf",
+        page_number=2,
+        table_id="pypdf_page_2",
+        row_label="Profit for the period",
+        raw_value="raw row text",
+        notes="inspection test",
+    )
+    primary = MappedLineItemValues(
+        canonical_name="profit_for_the_period",
+        original_label="Profit for the period",
+        statement_type=FinancialStatementType.INCOME_STATEMENT,
+        unit=MetricUnit.UNKNOWN,
+        raw_period_values={
+            "value_1": "3,529,862,644",
+            "value_2": "2,350,673,578",
+            "value_3": "50",
+            "value_4": "7,695,789,746",
+            "value_5": "6,291,097,836",
+            "value_6": "22",
+        },
+        mapped_values={
+            "group_current": ParsedFinancialValue(raw="3,529,862,644", value=3529862644.0),
+            "group_previous": ParsedFinancialValue(raw="2,350,673,578", value=2350673578.0),
+            "group_reported_change_percent": ParsedFinancialValue(
+                raw="50",
+                value=50.0,
+                is_percent=True,
+            ),
+            "bank_current": ParsedFinancialValue(raw="7,695,789,746", value=7695789746.0),
+            "bank_previous": ParsedFinancialValue(raw="6,291,097,836", value=6291097836.0),
+            "bank_reported_change_percent": ParsedFinancialValue(
+                raw="22",
+                value=22.0,
+                is_percent=True,
+            ),
+        },
+        source_trace=source_trace,
+        notes="primary row",
+    )
+    repeated_subtotal = MappedLineItemValues(
+        canonical_name="profit_for_the_period",
+        original_label="Profit for the period",
+        statement_type=FinancialStatementType.INCOME_STATEMENT,
+        unit=MetricUnit.UNKNOWN,
+        raw_period_values={
+            "value_1": "3,529,862,644",
+            "value_2": "2,350,673,578",
+            "value_3": "7,695,789,746",
+            "value_4": "6,291,097,836",
+        },
+        mapped_values={
+            "group_current": ParsedFinancialValue(raw="3,529,862,644", value=3529862644.0),
+            "group_previous": ParsedFinancialValue(raw="2,350,673,578", value=2350673578.0),
+            "bank_current": ParsedFinancialValue(raw="7,695,789,746", value=7695789746.0),
+            "bank_previous": ParsedFinancialValue(raw="6,291,097,836", value=6291097836.0),
+        },
+        source_trace=source_trace,
+        notes="repeated subtotal row",
+    )
+
+    filtered = _filter_redundant_metric_candidates(
+        [primary, repeated_subtotal],
+        metric_entity="group",
+    )
+
+    assert filtered == [primary]
+
+
+def test_group_metric_source_selection_prefers_group_marked_income_statement_table(
+    monkeypatch,
+) -> None:
+    group_table = _make_table(
+        2,
+        [
+            "Income Statement",
+            "Profit for the period 100 90 11 400 360 11",
+            "Equity holders of the parent 95 85",
+            "Non-controlling interest 5 5",
+        ],
+    )
+    standalone_table = _make_table(
+        3,
+        [
+            "Income Statement",
+            "Profit for the period 80 70 14 300 290 3",
+        ],
+    )
+    calls: list[int] = []
+
+    def fake_build_verified_metric_results_for_table(*, table, statement_match, metric_entity):
+        calls.append(table.page_number)
+        return [_make_metric_verification_result(f"group_metric_page_{table.page_number}")], []
+
+    monkeypatch.setattr(
+        "r11_inspect_pypdf_baseline._build_verified_metric_results_for_table",
+        fake_build_verified_metric_results_for_table,
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[group_table, standalone_table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            ),
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            ),
+        },
+        metric_entity="group",
+    )
+
+    assert calls == [2]
+    assert [result.metric.metric_name for result in verified_results] == ["group_metric_page_2"]
+    assert warnings == []
+
+
+def test_group_metric_source_selection_keeps_all_income_statement_tables_without_group_markers(
+    monkeypatch,
+) -> None:
+    first_table = _make_table(
+        2,
+        [
+            "Income Statement",
+            "Profit for the period 100 90 11 400 360 11",
+        ],
+    )
+    second_table = _make_table(
+        3,
+        [
+            "Income Statement",
+            "Profit for the period 80 70 14 300 290 3",
+        ],
+    )
+    calls: list[int] = []
+
+    def fake_build_verified_metric_results_for_table(*, table, statement_match, metric_entity):
+        calls.append(table.page_number)
+        return [_make_metric_verification_result(f"group_metric_page_{table.page_number}")], []
+
+    monkeypatch.setattr(
+        "r11_inspect_pypdf_baseline._build_verified_metric_results_for_table",
+        fake_build_verified_metric_results_for_table,
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[first_table, second_table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            ),
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            ),
+        },
+        metric_entity="group",
+    )
+
+    assert calls == [2, 3]
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_metric_page_2",
+        "group_metric_page_3",
+    ]
+    assert warnings == []
 
 
 def test_analysis_payload_records_metric_build_warnings() -> None:
