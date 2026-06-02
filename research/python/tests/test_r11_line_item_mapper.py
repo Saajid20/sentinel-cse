@@ -127,6 +127,39 @@ def test_map_line_item_label_maps_total_assets_high() -> None:
     assert mapping.confidence is R11ConfidenceLevel.HIGH
 
 
+def test_map_line_item_label_maps_profit_loss_for_the_period_to_profit_for_the_period() -> None:
+    mapping = map_line_item_label(
+        "Profit/(loss) for the period",
+        FinancialStatementType.INCOME_STATEMENT,
+    )
+
+    assert mapping is not None
+    assert mapping.canonical_name == "profit_for_the_period"
+    assert mapping.confidence is R11ConfidenceLevel.HIGH
+
+
+def test_map_line_item_label_maps_profit_loss_before_tax_to_existing_before_tax_canonical() -> None:
+    mapping = map_line_item_label(
+        "Profit/(loss) before tax",
+        FinancialStatementType.INCOME_STATEMENT,
+    )
+
+    assert mapping is not None
+    assert mapping.canonical_name == "profit_before_income_tax"
+    assert mapping.confidence is R11ConfidenceLevel.HIGH
+
+
+def test_map_line_item_label_preserves_existing_profit_for_the_period_behavior() -> None:
+    mapping = map_line_item_label(
+        "Profit for the period",
+        FinancialStatementType.INCOME_STATEMENT,
+    )
+
+    assert mapping is not None
+    assert mapping.canonical_name == "profit_for_the_period"
+    assert mapping.confidence is R11ConfidenceLevel.HIGH
+
+
 def test_map_line_item_label_maps_due_to_depositors_high() -> None:
     mapping = map_line_item_label(
         "Financial liabilities at amortised cost – due to depositors",
