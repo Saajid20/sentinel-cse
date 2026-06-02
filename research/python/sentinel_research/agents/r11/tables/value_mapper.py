@@ -81,6 +81,12 @@ COMB_SIX_COLUMN_MAP: dict[str, str] = {
     "value_5": "bank_previous",
     "value_6": "bank_reported_change_percent",
 }
+COMB_FOUR_COLUMN_DUAL_SCOPE_MAP: dict[str, str] = {
+    "value_1": "group_current",
+    "value_2": "group_previous",
+    "value_3": "bank_current",
+    "value_4": "bank_previous",
+}
 
 _COMB_SIX_COLUMN_PERCENT_KEYS = {
     "group_reported_change_percent",
@@ -168,8 +174,9 @@ def map_comb_six_column_values(
             f"{item.canonical_name} is missing required value_1/value_2 fields"
         )
 
+    value_map, layout_note = _select_comb_value_map(item.period_values)
     mapped_period_values: dict[str, str | int | float | None] = {}
-    for raw_key, semantic_key in COMB_SIX_COLUMN_MAP.items():
+    for raw_key, semantic_key in value_map.items():
         if raw_key not in item.period_values:
             continue
         mapped_period_values[semantic_key] = item.period_values[raw_key]
@@ -187,7 +194,7 @@ def map_comb_six_column_values(
         raw_period_values=dict(item.period_values),
         mapped_values=parsed_values,
         source_trace=item.source_trace,
-        notes="comb_six_column_layout",
+        notes=layout_note,
     )
 
 
@@ -215,3 +222,17 @@ def get_required_numeric(mapped: MappedLineItemValues, key: str) -> float:
         )
 
     return parsed_value.value
+
+
+def _select_comb_value_map(
+    period_values: dict[str, str | int | float | None],
+) -> tuple[dict[str, str], str]:
+    has_value_3 = "value_3" in period_values
+    has_value_4 = "value_4" in period_values
+    has_value_5 = "value_5" in period_values
+    has_value_6 = "value_6" in period_values
+
+    # Four-value rows are dual-scope current/previous layouts, not percent-bearing rows.
+    if has_value_3 and has_value_4 and not has_value_5 and not has_value_6:
+        return COMB_FOUR_COLUMN_DUAL_SCOPE_MAP, "comb_four_column_dual_scope_layout"
+    return COMB_SIX_COLUMN_MAP, "comb_six_column_layout"

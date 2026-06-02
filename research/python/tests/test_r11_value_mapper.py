@@ -160,6 +160,31 @@ def test_map_comb_six_column_values_marks_change_fields_as_percent() -> None:
     assert mapped.mapped_values["bank_reported_change_percent"].is_percent is True
 
 
+def test_map_comb_six_column_values_treats_four_value_row_as_dual_scope_without_bogus_percent() -> None:
+    item = _make_line_item(
+        "profit_for_the_period",
+        "Profit for the period",
+        {
+            "value_1": "3,529,862,644",
+            "value_2": "2,350,673,578",
+            "value_3": "7,695,789,746",
+            "value_4": "6,291,097,836",
+        },
+    )
+
+    mapped = map_comb_six_column_values(item)
+
+    assert list(mapped.mapped_values.keys()) == [
+        "group_current",
+        "group_previous",
+        "bank_current",
+        "bank_previous",
+    ]
+    assert "group_reported_change_percent" not in mapped.mapped_values
+    assert mapped.mapped_values["bank_current"].value == 7695789746.0
+    assert mapped.notes == "comb_four_column_dual_scope_layout"
+
+
 def test_map_comb_six_column_values_preserves_identity_and_source_trace() -> None:
     item = _make_line_item(
         "total_assets",

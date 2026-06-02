@@ -30,10 +30,22 @@ from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E
     R11ScorecardBuildError,
     build_fundamental_scorecard_from_aggregated_metrics,
 )
-from sentinel_research.agents.r11.schemas import ExtractedFinancialTable  # noqa: E402
+from sentinel_research.agents.r11.schemas import (  # noqa: E402
+    ExtractedFinancialTable,
+    FinancialStatementType,
+)
 from sentinel_research.agents.r11.tables import (  # noqa: E402
+    MappedLineItemValues,
     map_comb_six_column_items,
     normalize_parsed_financial_rows,
+)
+
+_GROUP_INCOME_STATEMENT_MARKERS = (
+    "non-controlling interest",
+    "non controlling interest",
+    "equity holders of the parent",
+    "equity holders of the bank",
+    "attributable to equity holders",
 )
 
 
@@ -594,10 +606,154 @@ def _build_verified_metric_results_for_table(
     )
     normalized_rows = normalize_parsed_financial_rows(parsed_rows)
     mapped_items = map_comb_six_column_items(normalized_rows)
+    mapped_items = _filter_redundant_metric_candidates(
+        mapped_items,
+        metric_entity=metric_entity,
+    )
     return _build_verified_metric_results_for_mapped_items(
         mapped_items,
         metric_entity=metric_entity,
     )
+
+
+def _build_verified_metric_results_for_tables(
+    *,
+    tables: list[ExtractedFinancialTable],
+    statement_matches_by_key: dict[tuple[str, int | None], StatementPageMatch],
+    metric_entity: str,
+):
+    selected_tables = _select_tables_for_metric_entity(
+        tables,
+        statement_matches_by_key=statement_matches_by_key,
+        metric_entity=metric_entity,
+    )
+    verified_results = []
+    metric_build_warnings: list[str] = []
+    for table in selected_tables:
+        statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
+        table_verified_results, table_metric_build_warnings = _build_verified_metric_results_for_table(
+            table=table,
+            statement_match=statement_match,
+            metric_entity=metric_entity,
+        )
+        verified_results.extend(table_verified_results)
+        metric_build_warnings.extend(table_metric_build_warnings)
+    return verified_results, metric_build_warnings
+
+
+def _select_tables_for_metric_entity(
+    tables: list[ExtractedFinancialTable],
+    *,
+    statement_matches_by_key: dict[tuple[str, int | None], StatementPageMatch],
+    metric_entity: str,
+) -> list[ExtractedFinancialTable]:
+    if metric_entity != "group":
+        return list(tables)
+
+    income_statement_tables = [
+        table
+        for table in tables
+        if (
+            statement_matches_by_key.get((table.table_id, table.page_number)) is not None
+            and statement_matches_by_key[(table.table_id, table.page_number)].statement_type
+            is FinancialStatementType.INCOME_STATEMENT
+        )
+    ]
+    if len(income_statement_tables) <= 1:
+        return list(tables)
+
+    marked_keys = {
+        (table.table_id, table.page_number)
+        for table in income_statement_tables
+        if _table_has_group_income_statement_markers(table)
+    }
+    if not marked_keys:
+        return list(tables)
+
+    selected_tables: list[ExtractedFinancialTable] = []
+    for table in tables:
+        statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
+        if (
+            statement_match is not None
+            and statement_match.statement_type is FinancialStatementType.INCOME_STATEMENT
+            and (table.table_id, table.page_number) not in marked_keys
+        ):
+            continue
+        selected_tables.append(table)
+    return selected_tables
+
+
+def _table_has_group_income_statement_markers(table: ExtractedFinancialTable) -> bool:
+    for row in table.rows:
+        text = str(row.get("text", "")).strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _GROUP_INCOME_STATEMENT_MARKERS):
+            return True
+    return False
+
+
+def _filter_redundant_metric_candidates(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    current_key = f"{metric_entity}_current"
+    previous_key = f"{metric_entity}_previous"
+    reported_key = f"{metric_entity}_reported_change_percent"
+
+    grouped_items: dict[tuple[str, float, float] | None, list[MappedLineItemValues]] = {}
+    signature_order: list[tuple[str, float, float] | None] = []
+    for item in mapped_items:
+        signature = _metric_candidate_signature(
+            item,
+            current_key=current_key,
+            previous_key=previous_key,
+        )
+        if signature not in grouped_items:
+            grouped_items[signature] = []
+            signature_order.append(signature)
+        grouped_items[signature].append(item)
+
+    filtered_items: list[MappedLineItemValues] = []
+    for signature in signature_order:
+        items_for_signature = grouped_items[signature]
+        if signature is None:
+            filtered_items.extend(items_for_signature)
+            continue
+        if any(_has_non_missing_mapped_value(item, reported_key) for item in items_for_signature):
+            filtered_items.extend(
+                item
+                for item in items_for_signature
+                if _has_non_missing_mapped_value(item, reported_key)
+            )
+            continue
+        filtered_items.extend(items_for_signature)
+    return filtered_items
+
+
+def _metric_candidate_signature(
+    item: MappedLineItemValues,
+    *,
+    current_key: str,
+    previous_key: str,
+) -> tuple[str, float, float] | None:
+    current_value = _get_optional_mapped_numeric(item, current_key)
+    previous_value = _get_optional_mapped_numeric(item, previous_key)
+    if current_value is None or previous_value is None:
+        return None
+    return (item.canonical_name, current_value, previous_value)
+
+
+def _get_optional_mapped_numeric(item: MappedLineItemValues, key: str) -> float | None:
+    parsed_value = item.mapped_values.get(key)
+    if parsed_value is None:
+        return None
+    return parsed_value.value
+
+
+def _has_non_missing_mapped_value(item: MappedLineItemValues, key: str) -> bool:
+    return _get_optional_mapped_numeric(item, key) is not None
 
 
 def _print_metric_build_warnings(warnings: list[str]) -> None:
@@ -809,15 +965,11 @@ def main(argv: list[str] | None = None) -> int:
             or args.show_scorecard
             or args.output_analysis_json
         ):
-            for table in shown_tables:
-                statement_match = statement_matches_by_key.get((table.table_id, table.page_number))
-                table_verified_results, table_metric_build_warnings = _build_verified_metric_results_for_table(
-                    table=table,
-                    statement_match=statement_match,
-                    metric_entity=args.metric_entity,
-                )
-                all_verified_results.extend(table_verified_results)
-                metric_build_warnings.extend(table_metric_build_warnings)
+            all_verified_results, metric_build_warnings = _build_verified_metric_results_for_tables(
+                tables=shown_tables,
+                statement_matches_by_key=statement_matches_by_key,
+                metric_entity=args.metric_entity,
+            )
 
         _print_summary(
             pdf_path=pdf_path,
