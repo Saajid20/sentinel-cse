@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import re
 import sys
@@ -359,20 +361,45 @@ def inspect_local_pdf(
     analysis_path: Path,
     metric_entity: str,
 ) -> dict[str, object]:
-    exit_code = inspect_script.main(
-        [
-            "--pdf",
-            str(pdf_path),
-            "--metric-entity",
-            metric_entity,
-            "--show-scorecard",
-            "--output-analysis-json",
-            str(analysis_path),
-        ]
-    )
+    stdout_buffer = io.StringIO()
+    with contextlib.redirect_stdout(stdout_buffer):
+        exit_code = inspect_script.main(
+            [
+                "--pdf",
+                str(pdf_path),
+                "--metric-entity",
+                metric_entity,
+                "--show-scorecard",
+                "--output-analysis-json",
+                str(analysis_path),
+            ]
+        )
+    captured_output = stdout_buffer.getvalue()
+    if captured_output:
+        print(captured_output, end="")
     if exit_code != 0:
-        raise ValueError(f"R11 inspection failed for {pdf_path}")
+        error_message = _extract_inspection_error_message(captured_output)
+        raise ValueError(error_message)
     return _load_json(analysis_path)
+
+
+def _extract_inspection_error_message(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    for line in reversed(lines):
+        prefix = "R11 pypdf baseline inspection failed:"
+        if line.startswith(prefix):
+            remainder = line[len(prefix) :].strip()
+            return remainder or line
+    return "R11 inspection failed unexpectedly."
+
+
+def _inspect_failure_note(error_message: str) -> str | None:
+    normalized = error_message.strip().lower()
+    if "no extractable baseline table/text pages found" in normalized:
+        return "OCR_NEEDED"
+    if "invalid financial value" in normalized:
+        return "PARSE_ERROR"
+    return None
 
 
 def _statement_pages_from_analysis_payload(payload: dict[str, object]) -> list[str]:
@@ -528,7 +555,6 @@ def _apply_selection_to_result(
     result.selected_report_title = report.file_text or report.name or report.path
     result.pdf_url = report.full_url
     result.local_pdf_path = str(resolve_pdf_path_for_report(report, ticker=ticker))
-    result.analysis_json_path = str(resolve_analysis_path_for_report(report, ticker=ticker))
     return report
 
 
@@ -613,11 +639,14 @@ def run_inspect_mode(
         pdf_path = resolve_pdf_path_for_report(report, ticker=case.ticker)
         analysis_path = resolve_analysis_path_for_report(report, ticker=case.ticker)
         if not pdf_path.exists():
+            result.validation_status = "INSPECT_FAILED"
+            result.expectation_needed = True
             result.error = f"Local PDF does not exist: {pdf_path}"
             result.notes.append("Run --fetch first or place the PDF in .r10_runtime.")
             continue
 
         if dry_run:
+            result.validation_status = "INSPECT_PENDING"
             result.notes.append(
                 f"Dry run: would inspect {pdf_path} and write {analysis_path}."
             )
@@ -625,13 +654,27 @@ def run_inspect_mode(
 
         if analysis_path.exists() and not force:
             payload = _load_json(analysis_path)
+            result.analysis_json_path = str(analysis_path)
+            result.validation_status = "INSPECTED"
             result.notes.append(f"Using existing analysis JSON: {analysis_path}")
         else:
-            payload = inspect_local_pdf(
-                pdf_path=pdf_path,
-                analysis_path=analysis_path,
-                metric_entity=metric_entity,
-            )
+            try:
+                payload = inspect_local_pdf(
+                    pdf_path=pdf_path,
+                    analysis_path=analysis_path,
+                    metric_entity=metric_entity,
+                )
+            except ValueError as error:
+                result.validation_status = "INSPECT_FAILED"
+                result.expectation_needed = True
+                result.error = str(error)
+                failure_note = _inspect_failure_note(result.error)
+                if failure_note is not None:
+                    result.notes.append(failure_note)
+                result.notes.append("Inspection failed; manual follow-up is required.")
+                continue
+            result.analysis_json_path = str(analysis_path)
+            result.validation_status = "INSPECTED"
             result.notes.append(f"Saved analysis JSON: {analysis_path}")
 
         result.classified_pages = _statement_pages_from_analysis_payload(payload)
@@ -773,6 +816,8 @@ def _exit_code_from_results(
     results: list[BatchCaseResult],
     manifest_report_payload: dict[str, object] | None,
 ) -> int:
+    if mode == "inspect":
+        return 0
     if any(result.error is not None for result in results):
         return 1
     if any(result.lookup_status in {"NOT_FOUND", "AMBIGUOUS"} for result in results):

@@ -387,12 +387,107 @@ def test_inspect_mode_can_use_monkeypatched_inspection_call(
 
     monkeypatch.setattr(script_module, "inspect_local_pdf", fake_inspect_local_pdf)
 
-    exit_code = script_module.main(["--config", str(config_path), "--inspect"])
+    exit_code = script_module.main(["--config", str(config_path), "--inspect", "--force"])
 
     assert exit_code == 0
     analysis_path = script_module.resolve_analysis_path_for_report(report, ticker="COMB.N0000")
     payload = json.loads(analysis_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "r11_deterministic_analysis_v1"
+    report_payload = json.loads((tmp_path / ".r11_runtime" / "validation" / "report.json").read_text(encoding="utf-8"))
+    assert report_payload["case_results"][0]["validation_status"] == "INSPECTED"
+
+
+def test_inspect_mode_continues_after_first_case_failure_and_writes_report(
+    script_module,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = _write_config(
+        tmp_path,
+        {
+            "schema_version": "r11_batch_real_pdf_baseline_config_v1",
+            "cases": [
+                {"ticker": "GLAS.N0000"},
+                {"ticker": "COMB.N0000"},
+            ],
+        },
+    )
+    monkeypatch.setattr(script_module, "DEFAULT_R10_PDF_DIR", tmp_path / ".r10_runtime" / "pdfs")
+    monkeypatch.setattr(
+        script_module,
+        "DEFAULT_R11_ANALYSIS_DIR",
+        tmp_path / ".r11_runtime" / "analysis",
+    )
+    monkeypatch.setattr(
+        script_module,
+        "DEFAULT_REPORT_PATH",
+        tmp_path / ".r11_runtime" / "validation" / "report.json",
+    )
+    glas_report = _make_report(
+        report_id=201,
+        symbol="GLAS",
+        company="Glass Mock PLC",
+        file_text="Interim Financial Statements 31 March 2026",
+        manual_date_ms=1774895400000,
+        path="cmt/upload_report_file/glas_q1_2026.pdf",
+    )
+    comb_report = _make_report(
+        report_id=202,
+        symbol="COMB",
+        company="Commercial Bank of Ceylon PLC",
+        file_text="Interim Financial Statements 31 March 2026",
+        manual_date_ms=1774895400001,
+        path="cmt/upload_report_file/comb_q1_2026.pdf",
+    )
+    monkeypatch.setattr(
+        script_module,
+        "load_financial_reports",
+        lambda **kwargs: [glas_report, comb_report],
+    )
+
+    glas_pdf_path = script_module.resolve_pdf_path_for_report(glas_report, ticker="GLAS.N0000")
+    comb_pdf_path = script_module.resolve_pdf_path_for_report(comb_report, ticker="COMB.N0000")
+    glas_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    glas_pdf_path.write_bytes(b"%PDF-1.4\n")
+    comb_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    comb_pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    calls: list[str] = []
+
+    def fake_inspect_local_pdf(*, pdf_path: Path, analysis_path: Path, metric_entity: str):
+        calls.append(pdf_path.name)
+        if "GLAS.N0000" in pdf_path.name:
+            raise ValueError("No extractable baseline table/text pages found")
+        payload = _make_analysis_payload()
+        analysis_path.parent.mkdir(parents=True, exist_ok=True)
+        analysis_path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+        return payload
+
+    monkeypatch.setattr(script_module, "inspect_local_pdf", fake_inspect_local_pdf)
+
+    exit_code = script_module.main(["--config", str(config_path), "--inspect", "--force"])
+
+    assert exit_code == 0
+    assert len(calls) == 2
+
+    report_payload = json.loads(
+        (tmp_path / ".r11_runtime" / "validation" / "report.json").read_text(encoding="utf-8")
+    )
+    case_results = {case["ticker"]: case for case in report_payload["case_results"]}
+
+    failed_case = case_results["GLAS.N0000"]
+    assert failed_case["validation_status"] == "INSPECT_FAILED"
+    assert failed_case["error"] == "No extractable baseline table/text pages found"
+    assert failed_case["expectation_needed"] is True
+    assert failed_case["local_pdf_path"] is not None
+    assert failed_case["analysis_json_path"] is None
+    assert "OCR_NEEDED" in failed_case["notes"]
+
+    successful_case = case_results["COMB.N0000"]
+    assert successful_case["validation_status"] == "INSPECTED"
+    assert successful_case["error"] is None
+    assert successful_case["analysis_json_path"] is not None
+    assert successful_case["classified_pages"] == ["2:INCOME_STATEMENT", "4:BALANCE_SHEET"]
 
 
 def test_validate_mode_skips_cases_missing_expected_pages_and_builds_manifest_only_for_known_cases(
