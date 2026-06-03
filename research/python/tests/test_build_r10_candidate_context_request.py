@@ -15,6 +15,7 @@ sys.path.insert(0, str(PYTHON_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from build_r10_candidate_context_request import main  # noqa: E402
+from build_r10_candidate_context_request import build_parser  # noqa: E402
 
 
 def make_temp_dir() -> Path:
@@ -84,6 +85,15 @@ def run_cli(args: list[str]) -> tuple[int, str]:
     with redirect_stdout(buffer):
         exit_code = main(args)
     return exit_code, buffer.getvalue()
+
+
+def test_cli_parses_json_output_flag() -> None:
+    args = build_parser().parse_args(
+        ["--input", "request.json", "--json-output", "out/plan.json"]
+    )
+
+    assert args.input == "request.json"
+    assert args.json_output == "out/plan.json"
 
 
 def test_valid_request_prints_dry_run_summary_and_returns_zero() -> None:
@@ -229,6 +239,218 @@ def test_script_writes_no_files() -> None:
         after = sorted(path.relative_to(directory) for path in directory.rglob("*"))
         assert exit_code == 0
         assert before == after
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_no_json_file_is_written_without_flag() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        expected_json_path = directory / "plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(["--input", str(request_path)])
+
+        assert exit_code == 0
+        assert not expected_json_path.exists()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_parent_directory_is_created_automatically_for_json_output() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "nested" / "plans" / "PKME.N0000.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        assert exit_code == 0
+        assert json_path.is_file()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_json_output_contains_expected_top_level_fields() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert exit_code == 0
+        assert payload["schema_version"] == "r10-candidate-query-plan/v0.1"
+        assert payload["candidate_request_path"] == str(request_path)
+        assert payload["ticker"] == "PKME.N0000"
+        assert payload["company_name"] == "DIGITAL MOBILITY SOLUTIONS LANKA PLC"
+        assert payload["evidence_tier"] == "Tier A"
+        assert payload["review_status"] == "MANUAL_REVIEW"
+        assert payload["requested_reviews"] == [
+            "R10_CONTEXT_RISK",
+            "R11_FINANCIAL_STATEMENT",
+            "CSE_DISCLOSURE",
+            "HUMAN_NOTES",
+        ]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_json_output_contains_requested_source_types() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert exit_code == 0
+        assert payload["requested_source_types"] == [
+            "CSE_DISCLOSURE",
+            "CSE_ANNOUNCEMENT",
+            "CSE_FINANCIAL_DISCLOSURE",
+        ]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_json_output_does_not_include_cbsl_context_by_default() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert exit_code == 0
+        assert "CBSL_CONTEXT" not in payload["requested_source_types"]
+        assert payload["cbsl_context"] == {
+            "included": False,
+            "reason": "CBSL macro context is deferred unless an explicit macro-relevance rule exists.",
+        }
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_json_output_contains_expected_query_terms() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert exit_code == 0
+        assert payload["query_terms"] == [
+            "PKME.N0000",
+            "PKME",
+            "DIGITAL MOBILITY SOLUTIONS LANKA PLC",
+            "DIGITAL MOBILITY SOLUTIONS LANKA",
+        ]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_json_safety_object_is_present() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert exit_code == 0
+        assert payload["safety"] == {
+            "retrieval_intent_only": True,
+            "no_r10_execution": True,
+            "no_network": True,
+            "technical_evidence_is_not_source_evidence": True,
+            "not_financial_advice": True,
+            "not_live_execution_guidance": True,
+            "human_review_required": True,
+        }
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_terminal_output_remains_present_when_json_export_is_used() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        assert exit_code == 0
+        assert "Validated candidate request summary" in output
+        assert json_path.is_file()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_invalid_input_does_not_write_json() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "bad.json"
+        json_path = directory / "bad.plan.json"
+        write_json(
+            request_path,
+            make_valid_payload(schema_version="candidate-context-request/v0.2"),
+        )
+
+        exit_code, output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        assert exit_code == 2
+        assert "FAIL" in output
+        assert not json_path.exists()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_generated_json_contains_no_uppercase_trading_action_tokens() -> None:
+    directory = make_temp_dir()
+    try:
+        request_path = directory / "PKME.N0000.json"
+        json_path = directory / "PKME.N0000.plan.json"
+        write_json(request_path, make_valid_payload())
+
+        exit_code, _output = run_cli(
+            ["--input", str(request_path), "--json-output", str(json_path)]
+        )
+
+        dumped = json_path.read_text(encoding="utf-8")
+        assert exit_code == 0
+        for token in ("BUY", "SELL", "HOLD", "ENTRY", "EXIT", "TRADE"):
+            assert token not in dumped
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
