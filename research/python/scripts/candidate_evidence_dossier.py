@@ -124,6 +124,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Runtime output root for multi-session validation exports.",
     )
     parser.add_argument(
+        "--markdown-output",
+        help=(
+            "Optional Markdown export path, for example "
+            ".runtime-pipeline/candidate-dossiers/PKME.N0000.md. "
+            "Runtime outputs should not be committed."
+        ),
+    )
+    parser.add_argument(
         "--input",
         action="append",
         nargs="+",
@@ -754,6 +762,154 @@ def format_warnings_block(warnings: list[str]) -> str:
     return "\n".join(lines)
 
 
+def markdown_escape_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def markdown_table(
+    columns: list[tuple[str, object]],
+    rows: list[object],
+) -> str:
+    header = "| " + " | ".join(name for name, _getter in columns) + " |"
+    divider = "| " + " | ".join("---" for _name, _getter in columns) + " |"
+    body = [
+        "| "
+        + " | ".join(markdown_escape_cell(getter(row)) for _name, getter in columns)
+        + " |"
+        for row in rows
+    ]
+    if not body:
+        body = ["No rows."]
+    return "\n".join([header, divider, *body])
+
+
+def render_markdown_report(
+    report: CandidateEvidenceDossier,
+    *,
+    runtime_root: Path,
+    input_paths: list[Path],
+) -> str:
+    session_columns = [
+        ("session", lambda row: row.session_stem),
+        ("sessionId", lambda row: row.session_id),
+        ("coverage", lambda row: row.coverage_type),
+        ("quality", lambda row: row.quality_classification),
+        ("total snapshots", lambda row: format_number(row.total_snapshots)),
+        ("unique tickers", lambda row: format_number(row.unique_tickers)),
+        ("scan summary", lambda row: row.scan_mode_summary),
+        ("peak/median coverage", lambda row: row.peak_median_coverage),
+        ("ticker snapshots", lambda row: format_number(row.ticker_snapshots)),
+        ("bid/ask coverage", lambda row: format_ratio(row.bid_ask_coverage_ratio)),
+        ("median spread", lambda row: format_percent(row.median_spread_percent)),
+        ("latest turnover", lambda row: format_number(row.latest_turnover)),
+    ]
+    filtered_signal_columns = [
+        ("session", lambda row: row.session_stem),
+        ("coverage", lambda row: row.coverage_type),
+        ("variant", lambda row: row.variant_label),
+        ("count", lambda row: format_number(row.count)),
+        ("raw variant signal count", lambda row: format_number(row.raw_variant_signal_count)),
+        ("filtered count for this ticker", lambda row: format_number(row.filtered_ticker_count)),
+        ("notes", lambda row: row.notes),
+    ]
+    blocker_columns = [
+        ("session", lambda row: row.session_stem),
+        ("snapshots", lambda row: format_number(row.snapshots)),
+        ("historyPass", lambda row: format_number(row.history_pass)),
+        ("strategyReady", lambda row: format_number(row.strategy_ready)),
+        ("spreadPass", lambda row: format_number(row.spread_pass)),
+        ("vwapAvailable", lambda row: format_number(row.vwap_available)),
+        ("priceAboveVwap", lambda row: format_number(row.price_above_vwap)),
+        ("firstHighAvailable", lambda row: format_number(row.first_high_available)),
+        ("momentumPass", lambda row: format_number(row.momentum_pass)),
+        ("volumeRatioAvailable", lambda row: format_number(row.volume_ratio_available)),
+        ("volumeRatioPass", lambda row: format_number(row.volume_ratio_pass)),
+        ("imbalanceAvailable", lambda row: format_number(row.imbalance_available)),
+        ("imbalancePass", lambda row: format_number(row.imbalance_pass)),
+        ("signals", lambda row: format_number(row.signals)),
+        ("topBlockers", lambda row: format_top_blockers(row.top_blockers)),
+    ]
+    input_note = ", ".join(str(path) for path in input_paths) if input_paths else "runtime discovery only"
+    lines = [
+        f"# Candidate Evidence Dossier - {report.header.ticker}",
+        "",
+        "## Safety notice",
+        "- This dossier is research-only.",
+        "- It is derived from exported offline diagnostics.",
+        "- It is based on exported offline diagnostics and raw session metrics where available.",
+        "- It is not financial advice.",
+        "- It is not a buy/sell/hold recommendation.",
+        "- It is not live execution guidance.",
+        "- Human review is required.",
+        "",
+        "## Dossier header",
+        f"- ticker: {report.header.ticker}",
+        f"- company name: {report.header.company_name or 'n/a'}",
+        f"- evidence tier: {report.header.evidence_tier}",
+        f"- review status: {report.header.review_status}",
+        f"- total filtered count: {format_number(report.header.total_filtered_count)}",
+        f"- sessions seen: {format_number(report.header.sessions_seen)}",
+        f"- strong-full-grid sessions: {format_number(report.header.strong_full_grid_sessions)}",
+        f"- partial-coverage sessions: {format_number(report.header.partial_coverage_sessions)}",
+        f"- baseline count: {format_number(report.header.baseline_count)}",
+        f"- volume-off count: {format_number(report.header.volume_ratio_disabled_count)}",
+        f"- imbalance-off count: {format_number(report.header.imbalance_disabled_count)}",
+        f"- both-off count: {format_number(report.header.volume_and_imbalance_disabled_count)}",
+        f"- diagnostic count: {format_number(report.header.diagnostic_count)}",
+        f"- variants seen: {format_tuple(report.header.variants_seen)}",
+        f"- first session: {report.header.first_session or 'n/a'}",
+        f"- last session: {report.header.last_session or 'n/a'}",
+        "",
+        "## Session evidence table",
+        markdown_table(session_columns, report.session_rows),
+        "",
+        "## Filtered signal evidence table",
+        markdown_table(filtered_signal_columns, report.filtered_signal_rows),
+        "",
+        "## Variant interpretation",
+        f"- baseline evidence count: {format_number(report.header.baseline_count)}",
+        f"- volume-off diagnostic evidence count: {format_number(report.header.volume_ratio_disabled_count)}",
+        f"- imbalance-off diagnostic evidence count: {format_number(report.header.imbalance_disabled_count)}",
+        f"- both-off diagnostic evidence count: {format_number(report.header.volume_and_imbalance_disabled_count)}",
+        f"- diagnostic-only warning: {'yes' if report.header.baseline_count == 0 else 'no'}",
+        (
+            "- evidence appears in strong-full-grid sessions: "
+            f"{'yes' if report.header.strong_full_grid_sessions > 0 else 'no'}"
+        ),
+        "",
+        "## Blocker context table",
+        markdown_table(blocker_columns, report.blocker_rows),
+        "",
+        "## R10/R11 readiness placeholders",
+        "- R10 context/risk review: pending",
+        "- R11 financial statement review: pending",
+        "- CSE disclosure review: pending",
+        "- manual human notes: pending",
+        "",
+        "## Warnings / limitations",
+    ]
+    if report.warnings:
+        lines.extend(f"- {warning}" for warning in report.warnings)
+    else:
+        lines.append("- None.")
+    lines.extend(
+        [
+            "",
+            "## Generated-from/runtime source notes",
+            f"- runtime root: {runtime_root}",
+            f"- input selection: {input_note}",
+            "- Runtime artifacts should not be committed.",
+            "- This dossier is based on exported offline diagnostics and raw session metrics where available.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def write_markdown_report(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def format_table(title: str, rows: list[object], columns: list[tuple[str, int, object]]) -> str:
     header = " ".join(fit_cell(name, width) for name, width, _getter in columns)
     divider = " ".join("-" * width for _name, width, _getter in columns)
@@ -800,6 +956,7 @@ def run_candidate_evidence_dossier(
     runtime_root: Path,
     input_paths: list[Path],
     filters: UniverseCandidateFilters | None = None,
+    markdown_output: Path | None = None,
     output: TextIO | None = None,
 ) -> int:
     handle = output or io.StringIO()
@@ -809,6 +966,13 @@ def run_candidate_evidence_dossier(
         input_paths=input_paths,
         filters=filters,
     )
+    if markdown_output is not None:
+        markdown_content = render_markdown_report(
+            report,
+            runtime_root=runtime_root,
+            input_paths=input_paths,
+        )
+        write_markdown_report(markdown_output, markdown_content)
     print(render_report(report), file=handle)
     if output is None:
         print(handle.getvalue(), end="")
@@ -831,6 +995,7 @@ def parse_args_and_run(argv: list[str] | None = None) -> int:
         runtime_root=Path(args.runtime_root),
         input_paths=flatten_inputs(args.input),
         filters=filters,
+        markdown_output=Path(args.markdown_output) if args.markdown_output else None,
     )
 
 
