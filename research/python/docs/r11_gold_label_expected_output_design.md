@@ -62,6 +62,8 @@ Use for cases where the next work is parser hardening rather than locator or met
 
 Each gold-label case should be a reviewable JSON object with stable fields. The first implementation should keep the schema explicit and conservative rather than compressing too much meaning into free-form notes.
 
+See `research/python/docs/examples/r11_gold_label_case.example.json` for a checked-in synthetic example that demonstrates this shape without using any real company values, real PDF paths, runtime analysis JSONs, validation reports, or manifests.
+
 Proposed top-level fields:
 
 - `schema_version`: version string, for example `r11_gold_label_case_v1`
@@ -346,6 +348,10 @@ Recommended next sequence:
 Create a checked-in example gold-label JSON file with one small synthetic or fake case.
 
 The example should use invented values and no real PDF artifact. Its purpose is schema review and validator design, not benchmark scoring.
+
+The R11.13B example lives at:
+
+- `research/python/docs/examples/r11_gold_label_case.example.json`
 
 ### R11.13C
 
