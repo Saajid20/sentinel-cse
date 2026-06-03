@@ -11,7 +11,7 @@ from sentinel_research.agents.r11.schemas import (
 )
 
 _VALUE_TOKEN_PATTERN = re.compile(
-    r"^(?:\(?\d[\d,]*(?:\.\d+)?\)?|-|Rs\.\d[\d,]*(?:\.\d+)?)$",
+    r"^(?:(?:\d[\d,]*(?:\.\d+)?)|(?:\(\d[\d,]*(?:\.\d+)?\))|-|(?:Rs\.\d[\d,]*(?:\.\d+)?))$",
     re.IGNORECASE,
 )
 _DATE_HEADER_PATTERN = re.compile(
