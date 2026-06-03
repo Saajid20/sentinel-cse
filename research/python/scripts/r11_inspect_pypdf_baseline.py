@@ -40,12 +40,27 @@ from sentinel_research.agents.r11.tables import (  # noqa: E402
     normalize_parsed_financial_rows,
 )
 
+_GROUP_INCOME_STATEMENT_TITLE_MARKERS = (
+    "consolidated income statement",
+    "consolidated statement of profit or loss",
+    "group income statement",
+)
 _GROUP_INCOME_STATEMENT_MARKERS = (
+    *_GROUP_INCOME_STATEMENT_TITLE_MARKERS,
     "non-controlling interest",
     "non controlling interest",
     "equity holders of the parent",
     "equity holders of the bank",
     "attributable to equity holders",
+)
+_COMPANY_INCOME_STATEMENT_MARKERS = (
+    "company income statement",
+    "company statement of profit or loss",
+)
+_QUARTER_PLUS_ANNUAL_HEADER_MARKERS = (
+    "12 months ended",
+    "twelve months ended",
+    "year ended",
 )
 _INCOME_STATEMENT_METRIC_ITEMS = {
     "basic_eps",
@@ -505,6 +520,12 @@ def _print_table_preview(
     mapped_items = []
     if show_mapped_values or show_verified_metrics:
         mapped_items = map_comb_six_column_items(normalized_rows)
+        mapped_items = _prepare_mapped_items_for_metric_build(
+            mapped_items,
+            table=table,
+            statement_match=statement_match,
+            metric_entity=metric_entity,
+        )
 
     if show_mapped_values:
         print(f"mapped semantic values: {len(mapped_items)}")
@@ -625,6 +646,75 @@ def _is_primary_statement_metric_candidate(mapped_item: MappedLineItemValues) ->
     return True
 
 
+def _prepare_mapped_items_for_metric_build(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+    statement_match: StatementPageMatch | None,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    if metric_entity != "group":
+        return mapped_items
+    if (
+        statement_match is None
+        or statement_match.statement_type is not FinancialStatementType.INCOME_STATEMENT
+    ):
+        return mapped_items
+
+    if _table_has_company_income_statement_markers(table):
+        return []
+
+    if not _table_has_quarter_plus_annual_income_layout(table):
+        return mapped_items
+
+    if not _table_has_group_income_statement_title_markers(table):
+        return []
+
+    return [
+        _remap_quarter_plus_annual_income_item_for_group_metric(mapped_item)
+        for mapped_item in mapped_items
+    ]
+
+
+def _remap_quarter_plus_annual_income_item_for_group_metric(
+    mapped_item: MappedLineItemValues,
+) -> MappedLineItemValues:
+    if mapped_item.canonical_name not in _INCOME_STATEMENT_METRIC_ITEMS:
+        return mapped_item
+
+    raw_period_values = mapped_item.raw_period_values
+    is_four_value_layout = (
+        "value_1" in raw_period_values
+        and "value_2" in raw_period_values
+        and "value_3" in raw_period_values
+        and "value_4" in raw_period_values
+        and "value_5" not in raw_period_values
+        and "value_6" not in raw_period_values
+    )
+    if not is_four_value_layout:
+        return mapped_item
+
+    annual_current = mapped_item.mapped_values.get("bank_current")
+    annual_previous = mapped_item.mapped_values.get("bank_previous")
+    if annual_current is None or annual_previous is None:
+        return mapped_item
+
+    mapped_values = dict(mapped_item.mapped_values)
+    mapped_values["group_current"] = annual_current.model_copy()
+    mapped_values["group_previous"] = annual_previous.model_copy()
+
+    layout_note = "quarter_plus_annual_income_layout_group_annual_values"
+    notes = mapped_item.notes
+    notes = f"{notes}; {layout_note}" if notes else layout_note
+
+    return mapped_item.model_copy(
+        update={
+            "mapped_values": mapped_values,
+            "notes": notes,
+        }
+    )
+
+
 def _build_verified_metric_results_for_table(
     *,
     table: ExtractedFinancialTable,
@@ -637,6 +727,12 @@ def _build_verified_metric_results_for_table(
     )
     normalized_rows = normalize_parsed_financial_rows(parsed_rows)
     mapped_items = map_comb_six_column_items(normalized_rows)
+    mapped_items = _prepare_mapped_items_for_metric_build(
+        mapped_items,
+        table=table,
+        statement_match=statement_match,
+        metric_entity=metric_entity,
+    )
     mapped_items = _filter_redundant_metric_candidates(
         mapped_items,
         metric_entity=metric_entity,
@@ -722,6 +818,35 @@ def _table_has_group_income_statement_markers(table: ExtractedFinancialTable) ->
         if any(marker in text for marker in _GROUP_INCOME_STATEMENT_MARKERS):
             return True
     return False
+
+
+def _table_has_group_income_statement_title_markers(
+    table: ExtractedFinancialTable,
+) -> bool:
+    for row in table.rows:
+        text = str(row.get("text", "")).strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _GROUP_INCOME_STATEMENT_TITLE_MARKERS):
+            return True
+    return False
+
+
+def _table_has_company_income_statement_markers(table: ExtractedFinancialTable) -> bool:
+    for row in table.rows:
+        text = str(row.get("text", "")).strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _COMPANY_INCOME_STATEMENT_MARKERS):
+            return True
+    return False
+
+
+def _table_has_quarter_plus_annual_income_layout(table: ExtractedFinancialTable) -> bool:
+    table_text = " ".join(str(row.get("text", "")).strip().lower() for row in table.rows)
+    return "quarter ended" in table_text and any(
+        marker in table_text for marker in _QUARTER_PLUS_ANNUAL_HEADER_MARKERS
+    )
 
 
 def _filter_redundant_metric_candidates(

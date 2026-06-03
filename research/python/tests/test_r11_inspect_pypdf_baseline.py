@@ -431,6 +431,122 @@ def test_primary_income_statement_profit_row_still_produces_profit_growth_metric
     assert warnings == []
 
 
+def test_quarter_plus_annual_consolidated_income_row_uses_annual_group_values() -> None:
+    table = _make_table(
+        3,
+        [
+            "Condensed Consolidated Income Statement",
+            "Quarter ended 31 March 12 months ended 31 March",
+            "2026 2025 Change % 2026 2025 Change %",
+            "Profit for the period 146,379 412,352 -65% 2,330,446 1,884,909 24%",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_profit_for_the_period_yoy_growth"
+    ]
+    assert verified_results[0].audit_entry.inputs["current"] == 2330446.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 1884909.0
+    assert verified_results[0].calculated_change_percent == 23.64
+    assert warnings == []
+
+
+def test_quarter_plus_annual_wata_page_three_profit_row_produces_group_annual_metric() -> None:
+    table = _make_table(
+        3,
+        [
+            "WATAWALA PLANTATIONS PLC",
+            "Condensed Consolidated Income Statement",
+            "(all amounts in Sri Lankan Rupees thousands)",
+            "Quarter ended 31 March 12 months ended 31 March",
+            "2026 2025 Change % 2026 2025 Change %",
+            "Revenue 2,174,903 1,878,853 16% 9,442,172 7,800,043 21%",
+            "Profit for the period 146,379 412,352 -65% 2,330,446 1,884,909 24%",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert len(verified_results) == 1
+    assert verified_results[0].metric.metric_name == (
+        "group_profit_for_the_period_yoy_growth"
+    )
+    assert verified_results[0].calculated_change_percent == 23.64
+    assert warnings == []
+
+
+def test_company_income_statement_rows_do_not_produce_group_profit_metric() -> None:
+    table = _make_table(
+        4,
+        [
+            "Condensed Company Income Statement",
+            "Quarter ended 31 March 12 months ended 31 March",
+            "2026 2025 Change 2026 2025 Change",
+            "Profit for the period 217,326 (76,516) -384% 2,569,593 1,518,270 69%",
+            "Equity holders of the parent 217,326 (76,516) -384% 2,569,592 1,518,270 69%",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_4", 4): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
+def test_mixed_page_duplicate_company_income_section_does_not_produce_group_metrics() -> None:
+    table = _make_table(
+        5,
+        [
+            "Group Company",
+            "31.03.2026 31.03.2025 31.03.2026 31.03.2025",
+            "Total Assets 8,600,043 8,713,149 7,589,263 7,686,594",
+            "Condensed Statement of Financial Position",
+            "Quarter ended 31 March 12 months ended 31 March",
+            "2026 2025 Change 2026 2025 Change",
+            "Profit for the period 217,326 (76,516) -384% 2,569,593 1,518,270 69%",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_5", 5): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
 def test_primary_balance_sheet_rows_still_produce_balance_sheet_growth_metrics() -> None:
     table = _make_table(
         10,
