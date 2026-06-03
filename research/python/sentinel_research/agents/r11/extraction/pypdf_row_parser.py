@@ -14,6 +14,10 @@ _VALUE_TOKEN_PATTERN = re.compile(
     r"^(?:(?:\d[\d,]*(?:\.\d+)?)|(?:\(\d[\d,]*(?:\.\d+)?\))|-|(?:Rs\.\d[\d,]*(?:\.\d+)?))$",
     re.IGNORECASE,
 )
+_STRIPPABLE_VALUE_TOKEN_PATTERN = re.compile(
+    r"^(?:(?:\d[\d,]*(?:\.\d+)?)|(?:\(\d[\d,]*(?:\.\d+)?\))|(?:-?\d[\d,]*(?:\.\d+)?%)|(?:\(-?\d[\d,]*(?:\.\d+)?%\))|-|(?:Rs\.\d[\d,]*(?:\.\d+)?))$",
+    re.IGNORECASE,
+)
 _DATE_HEADER_PATTERN = re.compile(
     r"\b(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\b",
     re.IGNORECASE,
@@ -79,7 +83,7 @@ def strip_numeric_tokens_from_label(text: str, values: list[str]) -> str:
     tokens = re.split(r"\s+", text.strip())
     trailing_value_count = 0
     for token in reversed(tokens):
-        if _VALUE_TOKEN_PATTERN.fullmatch(token):
+        if _STRIPPABLE_VALUE_TOKEN_PATTERN.fullmatch(token):
             trailing_value_count += 1
             continue
         break
