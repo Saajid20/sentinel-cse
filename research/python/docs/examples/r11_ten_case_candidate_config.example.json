@@ -1,0 +1,148 @@
+{
+  "schema_version": "r11_batch_real_pdf_baseline_config_v1",
+  "notes": "Example controlled candidate set for expanding the real-PDF R11 benchmark from four validated cases toward ten cases. Runtime PDFs, analysis JSONs, manifests, and reports remain local-only artifacts.",
+  "cases": [
+    {
+      "ticker": "COMB.N0000",
+      "company_name": "Commercial Bank of Ceylon PLC",
+      "report_text_filter": "Interim Financial Statements",
+      "expected_pages": [
+        {
+          "page_number": 2,
+          "statement_type": "INCOME_STATEMENT"
+        },
+        {
+          "page_number": 3,
+          "statement_type": "BALANCE_SHEET"
+        },
+        {
+          "page_number": 4,
+          "statement_type": "EQUITY_STATEMENT"
+        },
+        {
+          "page_number": 5,
+          "statement_type": "CASH_FLOW"
+        }
+      ],
+      "min_verified_metrics": 7,
+      "min_aggregated_metrics": 7,
+      "expect_manual_review": false
+    },
+    {
+      "ticker": "SAMP.N0000",
+      "company_name": "Sampath Bank PLC",
+      "report_text_filter": "Interim Financial Statements",
+      "expected_pages": [
+        {
+          "page_number": 2,
+          "statement_type": "INCOME_STATEMENT"
+        },
+        {
+          "page_number": 3,
+          "statement_type": "BALANCE_SHEET"
+        },
+        {
+          "page_number": 4,
+          "statement_type": "EQUITY_STATEMENT"
+        },
+        {
+          "page_number": 5,
+          "statement_type": "CASH_FLOW"
+        }
+      ],
+      "min_verified_metrics": 12,
+      "min_aggregated_metrics": 12,
+      "expect_manual_review": false
+    },
+    {
+      "ticker": "AEL.N0000",
+      "company_name": "Access Engineering PLC",
+      "report_text_filter": "Interim Financial Statements",
+      "expected_pages": [
+        {
+          "page_number": 2,
+          "statement_type": "INCOME_STATEMENT"
+        },
+        {
+          "page_number": 3,
+          "statement_type": "INCOME_STATEMENT"
+        },
+        {
+          "page_number": 4,
+          "statement_type": "BALANCE_SHEET"
+        },
+        {
+          "page_number": 5,
+          "statement_type": "EQUITY_STATEMENT"
+        },
+        {
+          "page_number": 6,
+          "statement_type": "CASH_FLOW"
+        }
+      ],
+      "min_verified_metrics": 10,
+      "min_aggregated_metrics": 10,
+      "expect_manual_review": false
+    },
+    {
+      "ticker": "DIMO.N0000",
+      "company_name": "Diesel & Motor Engineering PLC",
+      "report_text_filter": "Interim Financial Statements",
+      "expected_pages": [
+        {
+          "page_number": 2,
+          "statement_type": "INCOME_STATEMENT"
+        },
+        {
+          "page_number": 3,
+          "statement_type": "INCOME_STATEMENT"
+        },
+        {
+          "page_number": 4,
+          "statement_type": "BALANCE_SHEET"
+        },
+        {
+          "page_number": 5,
+          "statement_type": "EQUITY_STATEMENT"
+        },
+        {
+          "page_number": 6,
+          "statement_type": "CASH_FLOW"
+        }
+      ],
+      "min_verified_metrics": 10,
+      "min_aggregated_metrics": 10,
+      "expect_manual_review": false
+    },
+    {
+      "ticker": "GLAS.N0000",
+      "company_name": "Lanka Milk Foods (CWE) PLC",
+      "report_text_filter": "Interim Financial Statements"
+    },
+    {
+      "ticker": "WATA.N0000",
+      "company_name": "Watawala Plantations PLC",
+      "report_text_filter": "Interim Financial Statements"
+    },
+    {
+      "ticker": "LALU.N0000",
+      "company_name": "Lanka Aluminium Industries PLC",
+      "report_text_filter": "Interim Financial Statements"
+    },
+    {
+      "ticker": "LDEV.N0000",
+      "company_name": "Lanka Development Finance Corporation PLC",
+      "report_text_filter": "Interim Financial Statements"
+    },
+    {
+      "ticker": "WIND.N0000",
+      "company_name": "WindForce PLC",
+      "report_text_filter": "Interim Financial Statements"
+    },
+    {
+      "ticker": "RENU.N0000",
+      "company_name": "Renuka Holdings PLC",
+      "report_text_filter": "Interim Financial Statements"
+    }
+  ]
+}

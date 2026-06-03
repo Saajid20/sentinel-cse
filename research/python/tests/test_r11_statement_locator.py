@@ -74,6 +74,47 @@ def test_classify_profit_loss_comprehensive_income_page_as_income_statement() ->
     assert match.confidence is R11ConfidenceLevel.HIGH
 
 
+def test_classify_profit_loss_statement_title_as_income_statement() -> None:
+    table = _make_table(
+        6,
+        [
+            "STATEMENT OF PROFIT OR LOSS",
+            "Revenue",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence is R11ConfidenceLevel.HIGH
+    assert "STATEMENT OF PROFIT OR LOSS" in match.matched_markers
+
+
+def test_classify_rwsl_style_profit_loss_rows_as_income_statement() -> None:
+    table = _make_table(
+        3,
+        [
+            "Revenue",
+            "Cost of sales",
+            "Gross profit",
+            "Profit before tax",
+            "Profit for the period",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.INCOME_STATEMENT
+    assert match.confidence is R11ConfidenceLevel.HIGH
+    assert match.matched_markers == [
+        "REVENUE",
+        "COST OF SALES",
+        "GROSS PROFIT",
+        "PROFIT BEFORE TAX",
+        "PROFIT FOR THE PERIOD",
+    ]
+
+
 def test_balance_sheet_markers_override_generic_profit_or_loss_line_item_text() -> None:
     table = _make_table(
         7,
@@ -203,6 +244,38 @@ def test_classify_cash_flow_page() -> None:
 
     assert match.statement_type is FinancialStatementType.CASH_FLOW
     assert match.confidence is R11ConfidenceLevel.HIGH
+
+
+def test_classify_cashflow_compound_title_as_cash_flow() -> None:
+    table = _make_table(
+        6,
+        [
+            "Statement of Cashflow",
+            "Profit / (Loss) before taxation",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.CASH_FLOW
+    assert match.confidence is R11ConfidenceLevel.HIGH
+    assert "STATEMENT OF CASHFLOW" in match.matched_markers
+
+
+def test_classify_singular_cash_flow_operating_activities_as_cash_flow() -> None:
+    table = _make_table(
+        6,
+        [
+            "Cash Flow From Operating Activities",
+            "Profit / (Loss) before taxation",
+        ],
+    )
+
+    match = classify_statement_page(table)
+
+    assert match.statement_type is FinancialStatementType.CASH_FLOW
+    assert match.confidence in {R11ConfidenceLevel.HIGH, R11ConfidenceLevel.MEDIUM}
+    assert "CASH FLOW FROM OPERATING ACTIVITIES" in match.matched_markers
 
 
 def test_classify_untitled_income_statement_from_strong_row_markers() -> None:

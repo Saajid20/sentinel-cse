@@ -11,10 +11,12 @@ from sentinel_research.agents.r11.schemas import (
 _CASH_FLOW_TITLE_MARKERS = [
     "STATEMENT OF CASH FLOWS",
     "STATEMENT OF CASH FLOW",
+    "STATEMENT OF CASHFLOW",
 ]
 
 _CASH_FLOW_STRUCTURE_MARKERS = [
     "CASH FLOWS FROM OPERATING ACTIVITIES",
+    "CASH FLOW FROM OPERATING ACTIVITIES",
     "OPERATING ACTIVITIES",
     "INTEREST RECEIPTS",
     "INTEREST PAYMENTS",
@@ -62,11 +64,15 @@ _BALANCE_SHEET_CONTINUATION_MARKERS = [
 
 _INCOME_STATEMENT_TITLE_MARKERS = [
     "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME",
+    "STATEMENT OF PROFIT OR LOSS",
     "INCOME STATEMENT",
     "STATEMENT OF COMPREHENSIVE INCOME",
 ]
 
 _INCOME_STATEMENT_ROW_MARKERS = [
+    "REVENUE",
+    "COST OF SALES",
+    "GROSS PROFIT",
     "GROSS INCOME",
     "INTEREST INCOME",
     "INTEREST EXPENSE",
@@ -77,6 +83,8 @@ _INCOME_STATEMENT_ROW_MARKERS = [
     "IMPAIRMENT CHARGE/(REVERSAL)",
     "IMPAIRMENT CHARGE",
     "TOTAL OPERATING EXPENSES",
+    "PROFIT BEFORE TAX",
+    "PROFIT BEFORE TAXATION",
     "PROFIT BEFORE INCOME TAX",
     "PROFIT FOR THE PERIOD",
 ]
@@ -160,9 +168,7 @@ def classify_statement_page(table: ExtractedFinancialTable) -> StatementPageMatc
     notes: str | None = None
 
     has_income_statement_title = "INCOME STATEMENT" in normalized_text
-    has_profit_or_loss_statement_title = (
-        "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME" in normalized_text
-    )
+    has_profit_or_loss_statement_title = "STATEMENT OF PROFIT OR LOSS" in normalized_text
     has_financial_position_title = "STATEMENT OF FINANCIAL POSITION" in normalized_text
     has_equity_title = "STATEMENT OF CHANGES IN EQUITY" in normalized_text
     has_assets = "ASSETS" in normalized_text
@@ -208,7 +214,7 @@ def classify_statement_page(table: ExtractedFinancialTable) -> StatementPageMatc
     elif has_profit_or_loss_statement_title:
         statement_type = FinancialStatementType.INCOME_STATEMENT
         confidence = R11ConfidenceLevel.HIGH
-        matched_markers.append("STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME")
+        matched_markers.extend(income_title_markers)
     elif has_income_statement_title:
         statement_type = FinancialStatementType.INCOME_STATEMENT
         matched_markers.append("INCOME STATEMENT")
@@ -293,7 +299,11 @@ def _find_present_markers(normalized_text: str, markers: list[str]) -> list[str]
 
 
 def _has_strong_cash_flow_structure(markers: list[str]) -> bool:
-    return len(markers) >= 2
+    return (
+        len(markers) >= 2
+        or "CASH FLOWS FROM OPERATING ACTIVITIES" in markers
+        or "CASH FLOW FROM OPERATING ACTIVITIES" in markers
+    )
 
 
 def _has_strong_equity_structure(markers: list[str]) -> bool:
