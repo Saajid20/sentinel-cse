@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -27,6 +28,31 @@ REQUIRED_VALIDATIONS = (
     "human_review_required",
 )
 _COMPANY_SUFFIXES = {"PLC", "LIMITED", "LTD"}
+CBSL_DEFERRED_REASON = (
+    "CBSL macro context is deferred unless an explicit macro-relevance rule exists."
+)
+
+
+@dataclass(frozen=True)
+class R10CandidateQueryPlan:
+    candidate_request_path: str
+    ticker: str
+    company_name: str | None
+    evidence_tier: str
+    review_status: str
+    requested_reviews: tuple[str, ...]
+    total_filtered_count: int
+    first_session: str | None
+    last_session: str | None
+    warnings: tuple[str, ...]
+    requested_source_types: tuple[str, ...]
+    query_terms: tuple[str, ...]
+    cbsl_context_included: bool
+    cbsl_context_reason: str
+    required_validations: tuple[str, ...]
+    runtime_root: str
+    session_stems: tuple[str, ...]
+    dossier_markdown_path: str | None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         required=True,
         help="Path to an existing CandidateContextRequest JSON file.",
+    )
+    parser.add_argument(
+        "--json-output",
+        help=(
+            "Optional dry-run query plan JSON export path, for example "
+            ".runtime-pipeline/r10-candidate-query-plans/PKME.N0000.json. "
+            "Runtime artifacts should not be committed."
+        ),
     )
     return parser
 
@@ -118,26 +152,50 @@ def build_query_terms(request: CandidateContextRequest) -> list[str]:
     )
 
 
-def render_request_plan(path: Path, request: CandidateContextRequest) -> str:
-    requested_reviews = ", ".join(item.value for item in request.requested_reviews)
-    warnings = request.warnings or ["none"]
-    query_terms = build_query_terms(request)
-    session_stems = request.artifact_refs.session_stems or []
-    dossier_markdown_path = request.artifact_refs.dossier_markdown_path or "n/a"
+def build_r10_candidate_query_plan(
+    path: Path,
+    request: CandidateContextRequest,
+) -> R10CandidateQueryPlan:
+    return R10CandidateQueryPlan(
+        candidate_request_path=str(path),
+        ticker=request.ticker,
+        company_name=request.company_name,
+        evidence_tier=request.evidence_tier.value,
+        review_status=request.review_status.value,
+        requested_reviews=tuple(item.value for item in request.requested_reviews),
+        total_filtered_count=request.technical_summary.total_filtered_count,
+        first_session=request.technical_summary.first_session,
+        last_session=request.technical_summary.last_session,
+        warnings=tuple(request.warnings),
+        requested_source_types=tuple(DEFAULT_SOURCE_TYPES),
+        query_terms=tuple(build_query_terms(request)),
+        cbsl_context_included=False,
+        cbsl_context_reason=CBSL_DEFERRED_REASON,
+        required_validations=tuple(REQUIRED_VALIDATIONS),
+        runtime_root=request.artifact_refs.runtime_root,
+        session_stems=tuple(request.artifact_refs.session_stems),
+        dossier_markdown_path=request.artifact_refs.dossier_markdown_path,
+    )
+
+
+def render_r10_candidate_query_plan(plan: R10CandidateQueryPlan) -> str:
+    requested_reviews = ", ".join(plan.requested_reviews)
+    warnings = plan.warnings or ("none",)
+    dossier_markdown_path = plan.dossier_markdown_path or "n/a"
 
     lines = [
         "R10 candidate context dry-run query plan",
         "",
         "Validated candidate request summary",
-        f"- input path: {path}",
-        f"- ticker: {request.ticker}",
-        f"- company_name: {request.company_name or 'n/a'}",
-        f"- evidence_tier: {request.evidence_tier.value}",
-        f"- review_status: {request.review_status.value}",
+        f"- input path: {plan.candidate_request_path}",
+        f"- ticker: {plan.ticker}",
+        f"- company_name: {plan.company_name or 'n/a'}",
+        f"- evidence_tier: {plan.evidence_tier}",
+        f"- review_status: {plan.review_status}",
         f"- requested_reviews: {requested_reviews}",
-        f"- total_filtered_count: {request.technical_summary.total_filtered_count}",
-        f"- first_session: {request.technical_summary.first_session or 'n/a'}",
-        f"- last_session: {request.technical_summary.last_session or 'n/a'}",
+        f"- total_filtered_count: {plan.total_filtered_count}",
+        f"- first_session: {plan.first_session or 'n/a'}",
+        f"- last_session: {plan.last_session or 'n/a'}",
         "- warnings:",
     ]
     lines.extend(f"  - {warning}" for warning in warnings)
@@ -145,22 +203,22 @@ def render_request_plan(path: Path, request: CandidateContextRequest) -> str:
         [
             "",
             "Proposed R10 source intent",
-            *[f"- {source_type}" for source_type in DEFAULT_SOURCE_TYPES],
-            "- CBSL macro context is deferred unless an explicit macro-relevance rule exists.",
+            *[f"- {source_type}" for source_type in plan.requested_source_types],
+            f"- {plan.cbsl_context_reason}",
             "",
             "Proposed query terms",
-            *[f"- {term}" for term in query_terms],
+            *[f"- {term}" for term in plan.query_terms],
             "",
             "Required validations",
-            *[f"- {validation}" for validation in REQUIRED_VALIDATIONS],
+            *[f"- {validation}" for validation in plan.required_validations],
             "",
             "Artifact refs",
-            f"- runtime_root: {request.artifact_refs.runtime_root}",
+            f"- runtime_root: {plan.runtime_root}",
             "- session_stems:",
         ]
     )
-    if session_stems:
-        lines.extend(f"  - {session_stem}" for session_stem in session_stems)
+    if plan.session_stems:
+        lines.extend(f"  - {session_stem}" for session_stem in plan.session_stems)
     else:
         lines.append("  - none")
     lines.extend(
@@ -178,6 +236,46 @@ def render_request_plan(path: Path, request: CandidateContextRequest) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def build_r10_candidate_query_plan_json(
+    plan: R10CandidateQueryPlan,
+) -> dict[str, object]:
+    return {
+        "schema_version": "r10-candidate-query-plan/v0.1",
+        "candidate_request_path": plan.candidate_request_path,
+        "ticker": plan.ticker,
+        "company_name": plan.company_name,
+        "evidence_tier": plan.evidence_tier,
+        "review_status": plan.review_status,
+        "requested_reviews": list(plan.requested_reviews),
+        "requested_source_types": list(plan.requested_source_types),
+        "query_terms": list(plan.query_terms),
+        "cbsl_context": {
+            "included": plan.cbsl_context_included,
+            "reason": plan.cbsl_context_reason,
+        },
+        "required_validations": list(plan.required_validations),
+        "artifact_refs": {
+            "runtime_root": plan.runtime_root,
+            "session_stems": list(plan.session_stems),
+            "dossier_markdown_path": plan.dossier_markdown_path,
+        },
+        "safety": {
+            "retrieval_intent_only": True,
+            "no_r10_execution": True,
+            "no_network": True,
+            "technical_evidence_is_not_source_evidence": True,
+            "not_financial_advice": True,
+            "not_live_execution_guidance": True,
+            "human_review_required": True,
+        },
+    }
+
+
+def write_r10_candidate_query_plan_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def print_fail_summary(path: Path, reasons: list[str]) -> None:
@@ -202,7 +300,13 @@ def main(argv: list[str] | None = None) -> int:
         print_fail_summary(input_path, [str(error)])
         return 2
 
-    print(render_request_plan(input_path, request))
+    plan = build_r10_candidate_query_plan(input_path, request)
+    if args.json_output:
+        write_r10_candidate_query_plan_json(
+            Path(args.json_output).expanduser(),
+            build_r10_candidate_query_plan_json(plan),
+        )
+    print(render_r10_candidate_query_plan(plan))
     return 0
 
 
