@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +62,17 @@ _QUARTER_PLUS_ANNUAL_HEADER_MARKERS = (
     "12 months ended",
     "twelve months ended",
     "year ended",
+)
+_MIXED_PAGE_PRIMARY_BALANCE_ITEMS = {
+    "total_assets",
+    "total_equity",
+    "total_liabilities",
+}
+_MIXED_PAGE_BALANCE_DATE_HEADER_PATTERN = re.compile(
+    r"\b\d{1,2}\.\d{1,2}\.\d{4}\s+"
+    r"\d{1,2}\.\d{1,2}\.\d{4}\s+"
+    r"\d{1,2}\.\d{1,2}\.\d{4}\s+"
+    r"\d{1,2}\.\d{1,2}\.\d{4}\b"
 )
 _INCOME_STATEMENT_METRIC_ITEMS = {
     "basic_eps",
@@ -661,19 +673,64 @@ def _prepare_mapped_items_for_metric_build(
     ):
         return mapped_items
 
+    prepared_items = _remap_mixed_page_balance_items_for_group_metrics(
+        mapped_items,
+        table=table,
+    )
+    mixed_page_balance_items = [
+        item
+        for item in prepared_items
+        if (
+            item.canonical_name in _MIXED_PAGE_PRIMARY_BALANCE_ITEMS
+            and item.statement_type is FinancialStatementType.BALANCE_SHEET
+        )
+    ]
+
     if _table_has_company_income_statement_markers(table):
-        return []
+        return mixed_page_balance_items
 
     if not _table_has_quarter_plus_annual_income_layout(table):
-        return mapped_items
+        return prepared_items
 
     if not _table_has_group_income_statement_title_markers(table):
-        return []
+        return mixed_page_balance_items
 
     return [
         _remap_quarter_plus_annual_income_item_for_group_metric(mapped_item)
+        for mapped_item in prepared_items
+    ]
+
+
+def _remap_mixed_page_balance_items_for_group_metrics(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    if not _table_has_mixed_page_primary_balance_section(table):
+        return mapped_items
+
+    return [
+        _remap_mixed_page_balance_item_as_balance_sheet(mapped_item)
         for mapped_item in mapped_items
     ]
+
+
+def _remap_mixed_page_balance_item_as_balance_sheet(
+    mapped_item: MappedLineItemValues,
+) -> MappedLineItemValues:
+    if mapped_item.canonical_name not in _MIXED_PAGE_PRIMARY_BALANCE_ITEMS:
+        return mapped_item
+
+    layout_note = "mixed_page_primary_balance_section"
+    notes = mapped_item.notes
+    notes = f"{notes}; {layout_note}" if notes else layout_note
+
+    return mapped_item.model_copy(
+        update={
+            "statement_type": FinancialStatementType.BALANCE_SHEET,
+            "notes": notes,
+        }
+    )
 
 
 def _remap_quarter_plus_annual_income_item_for_group_metric(
@@ -846,6 +903,33 @@ def _table_has_quarter_plus_annual_income_layout(table: ExtractedFinancialTable)
     table_text = " ".join(str(row.get("text", "")).strip().lower() for row in table.rows)
     return "quarter ended" in table_text and any(
         marker in table_text for marker in _QUARTER_PLUS_ANNUAL_HEADER_MARKERS
+    )
+
+
+def _table_has_mixed_page_primary_balance_section(table: ExtractedFinancialTable) -> bool:
+    row_texts = [
+        re.sub(r"\s+", " ", str(row.get("text", "")).strip().lower())
+        for row in table.rows
+    ]
+    row_texts = [text for text in row_texts if text]
+
+    has_group_company_header = any(text == "group company" for text in row_texts)
+    has_four_date_header = any(
+        _MIXED_PAGE_BALANCE_DATE_HEADER_PATTERN.search(text) is not None
+        for text in row_texts
+    )
+    has_total_assets = any(text.startswith("total assets ") for text in row_texts)
+    has_total_equity = any(text.startswith("total equity ") for text in row_texts)
+    has_total_liabilities = any(
+        text.startswith("total liabilities ") for text in row_texts
+    )
+
+    return (
+        has_group_company_header
+        and has_four_date_header
+        and has_total_assets
+        and has_total_equity
+        and has_total_liabilities
     )
 
 

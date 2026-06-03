@@ -547,6 +547,82 @@ def test_mixed_page_duplicate_company_income_section_does_not_produce_group_metr
     assert warnings == []
 
 
+def test_mixed_page_primary_balance_section_produces_balance_sheet_metrics_only() -> None:
+    table = _make_table(
+        5,
+        [
+            "WATAWALA PLANTATIONS PLC",
+            "Group Company",
+            "31.03.2026 31.03.2025 31.03.2026 31.03.2025",
+            "Assets",
+            "Total Assets 8,600,043 8,713,149 7,589,263 7,686,594",
+            "Equity and liabilities",
+            "Total Equity 3,010,438 3,747,239 2,995,459 3,498,436",
+            "Liabilities",
+            "Total Liabilities 5,589,606 4,965,910 4,593,804 4,188,158",
+            "Condensed Statement of Financial Position",
+            "Quarter ended 31 March 12 months ended 31 March",
+            "2026 2025 Change 2026 2025 Change",
+            "Profit for the period 217,326 (76,516) -384% 2,569,593 1,518,270 69%",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_5", 5): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_total_assets_growth",
+        "group_total_equity_growth",
+        "group_total_liabilities_growth",
+    ]
+    assert [result.calculated_change_percent for result in verified_results] == [
+        -1.3,
+        -19.66,
+        12.56,
+    ]
+    assert all(
+        result.audit_entry.inputs["current"] is not None
+        and result.audit_entry.inputs["previous"] is not None
+        for result in verified_results
+    )
+    assert warnings == []
+
+
+def test_fair_value_note_page_does_not_produce_primary_balance_sheet_metrics() -> None:
+    table = _make_table(
+        11,
+        [
+            "Notes to the Condensed Interim Financial Statements",
+            "Fair Value Measurement - Group",
+            "As at 31 March 2026",
+            "Financial assets not measured at fair value",
+            "Total financial assets - 1,528,018 - 1,528,018 - 748,439 779,579 1,528,018",
+            "Financial liabilities not measured at fair value",
+            "Total financial liabilities - 2,163,182 - 2,163,182 - 314,933 1,848,249 2,163,182",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_11", 11): SimpleNamespace(
+                statement_type=FinancialStatementType.BALANCE_SHEET
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
 def test_primary_balance_sheet_rows_still_produce_balance_sheet_growth_metrics() -> None:
     table = _make_table(
         10,
