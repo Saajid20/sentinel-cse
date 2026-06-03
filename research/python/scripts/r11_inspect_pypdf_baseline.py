@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,20 +34,91 @@ from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E
 from sentinel_research.agents.r11.schemas import (  # noqa: E402
     ExtractedFinancialTable,
     FinancialStatementType,
+    SourceTrace,
 )
 from sentinel_research.agents.r11.tables import (  # noqa: E402
     MappedLineItemValues,
     map_comb_six_column_items,
     normalize_parsed_financial_rows,
+    parse_financial_value,
 )
 
+_GROUP_INCOME_STATEMENT_TITLE_MARKERS = (
+    "consolidated income statement",
+    "consolidated statement of profit or loss",
+    "group income statement",
+)
 _GROUP_INCOME_STATEMENT_MARKERS = (
+    *_GROUP_INCOME_STATEMENT_TITLE_MARKERS,
     "non-controlling interest",
     "non controlling interest",
     "equity holders of the parent",
     "equity holders of the bank",
     "attributable to equity holders",
 )
+_COMPANY_INCOME_STATEMENT_MARKERS = (
+    "company income statement",
+    "company statement of profit or loss",
+)
+_QUARTER_PLUS_ANNUAL_HEADER_MARKERS = (
+    "12 months ended",
+    "twelve months ended",
+    "year ended",
+)
+_MIXED_PAGE_PRIMARY_BALANCE_ITEMS = {
+    "total_assets",
+    "total_equity",
+    "total_liabilities",
+}
+_MIXED_PAGE_BALANCE_DATE_HEADER_PATTERN = re.compile(
+    r"\b\d{1,2}\.\d{1,2}\.\d{4}\s+"
+    r"\d{1,2}\.\d{1,2}\.\d{4}\s+"
+    r"\d{1,2}\.\d{1,2}\.\d{4}\s+"
+    r"\d{1,2}\.\d{1,2}\.\d{4}\b"
+)
+_RENU_SIDE_BY_SIDE_VALUE_PATTERN = (
+    r"(?:\([0-9][0-9,]*(?:\.\d+)?\)|[0-9][0-9,]*(?:\.\d+)?|-)"
+)
+_RENU_SIDE_BY_SIDE_PROFIT_PATTERN = re.compile(
+    rf"\bprofit\s+for\s+the\s+period\s+"
+    rf"(?P<quarter_current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<quarter_previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<quarter_reported>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_reported>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
+)
+_RENU_SIDE_BY_SIDE_TOTAL_ASSETS_PATTERN = re.compile(
+    rf"^\s*total\s+assets\s+"
+    rf"(?P<current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
+)
+_RENU_SIDE_BY_SIDE_TOTAL_EQUITY_PATTERN = re.compile(
+    rf"^\s*total\s+equity\s+"
+    rf"(?P<current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
+)
+_INCOME_STATEMENT_METRIC_ITEMS = {
+    "basic_eps",
+    "diluted_eps",
+    "gross_income",
+    "impairment_charges_and_other_losses",
+    "interest_income",
+    "net_interest_income",
+    "operating_expenses",
+    "profit_for_the_period",
+    "total_operating_income",
+}
+_BALANCE_SHEET_METRIC_ITEMS = {
+    "customer_deposits",
+    "net_asset_value_per_share",
+    "total_assets",
+    "total_equity",
+    "total_liabilities",
+}
 
 
 def _validate_positive_int(value: int | str, name: str) -> int:
@@ -487,6 +559,17 @@ def _print_table_preview(
     mapped_items = []
     if show_mapped_values or show_verified_metrics:
         mapped_items = map_comb_six_column_items(normalized_rows)
+        mapped_items = _append_renu_side_by_side_recovered_items(
+            mapped_items,
+            table=table,
+            metric_entity=metric_entity,
+        )
+        mapped_items = _prepare_mapped_items_for_metric_build(
+            mapped_items,
+            table=table,
+            statement_match=statement_match,
+            metric_entity=metric_entity,
+        )
 
     if show_mapped_values:
         print(f"mapped semantic values: {len(mapped_items)}")
@@ -580,6 +663,8 @@ def _build_verified_metric_results_for_mapped_items(
     verified_results = []
     metric_build_warnings: list[str] = []
     for mapped_item in mapped_items:
+        if not _is_primary_statement_metric_candidate(mapped_item):
+            continue
         try:
             verification_result = build_growth_metric_for_item(
                 mapped_item,
@@ -594,6 +679,291 @@ def _build_verified_metric_results_for_mapped_items(
     return verified_results, metric_build_warnings
 
 
+def _is_primary_statement_metric_candidate(mapped_item: MappedLineItemValues) -> bool:
+    statement_type = getattr(mapped_item, "statement_type", None)
+    if statement_type is None:
+        return True
+    if mapped_item.canonical_name in _INCOME_STATEMENT_METRIC_ITEMS:
+        return statement_type is FinancialStatementType.INCOME_STATEMENT
+    if mapped_item.canonical_name in _BALANCE_SHEET_METRIC_ITEMS:
+        return statement_type is FinancialStatementType.BALANCE_SHEET
+    return True
+
+
+def _append_renu_side_by_side_recovered_items(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    if metric_entity != "group":
+        return mapped_items
+    if not _table_has_renu_side_by_side_combined_statement(table):
+        return mapped_items
+
+    recovered_items = _recover_renu_side_by_side_items(table)
+    if not recovered_items:
+        return mapped_items
+
+    existing_keys = {
+        (
+            mapped_item.canonical_name,
+            mapped_item.statement_type,
+            mapped_item.source_trace.raw_value if mapped_item.source_trace else None,
+        )
+        for mapped_item in mapped_items
+    }
+    unique_recovered_items = [
+        item
+        for item in recovered_items
+        if (
+            item.canonical_name,
+            item.statement_type,
+            item.source_trace.raw_value if item.source_trace else None,
+        )
+        not in existing_keys
+    ]
+    if not unique_recovered_items:
+        return mapped_items
+
+    return [*mapped_items, *unique_recovered_items]
+
+
+def _recover_renu_side_by_side_items(
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    recovered_items: list[MappedLineItemValues] = []
+    for row in table.rows:
+        raw_text = str(row.get("text", "")).strip()
+        if not raw_text:
+            continue
+        line_number = int(row.get("line_number", 0) or 0)
+        normalized_text = re.sub(r"\s+", " ", raw_text)
+
+        profit_match = _RENU_SIDE_BY_SIDE_PROFIT_PATTERN.search(normalized_text)
+        if profit_match is not None:
+            recovered = _build_recovered_renu_mapped_item(
+                table=table,
+                line_number=line_number,
+                raw_text=normalized_text,
+                canonical_name="profit_for_the_period",
+                original_label="Profit for the period",
+                statement_type=FinancialStatementType.INCOME_STATEMENT,
+                current_raw=profit_match.group("annual_current"),
+                previous_raw=profit_match.group("annual_previous"),
+                reported_raw=profit_match.group("annual_reported"),
+                notes="renu_side_by_side_profit_loss_recovery",
+            )
+            if recovered is not None:
+                recovered_items.append(recovered)
+
+        total_assets_match = _RENU_SIDE_BY_SIDE_TOTAL_ASSETS_PATTERN.search(
+            normalized_text
+        )
+        if total_assets_match is not None:
+            recovered = _build_recovered_renu_mapped_item(
+                table=table,
+                line_number=line_number,
+                raw_text=normalized_text,
+                canonical_name="total_assets",
+                original_label="Total Assets",
+                statement_type=FinancialStatementType.BALANCE_SHEET,
+                current_raw=total_assets_match.group("current"),
+                previous_raw=total_assets_match.group("previous"),
+                reported_raw=None,
+                notes="renu_side_by_side_balance_sheet_recovery",
+            )
+            if recovered is not None:
+                recovered_items.append(recovered)
+
+        total_equity_match = _RENU_SIDE_BY_SIDE_TOTAL_EQUITY_PATTERN.search(
+            normalized_text
+        )
+        if total_equity_match is not None:
+            recovered = _build_recovered_renu_mapped_item(
+                table=table,
+                line_number=line_number,
+                raw_text=normalized_text,
+                canonical_name="total_equity",
+                original_label="Total Equity",
+                statement_type=FinancialStatementType.BALANCE_SHEET,
+                current_raw=total_equity_match.group("current"),
+                previous_raw=total_equity_match.group("previous"),
+                reported_raw=None,
+                notes="renu_side_by_side_balance_sheet_recovery",
+            )
+            if recovered is not None:
+                recovered_items.append(recovered)
+
+    return recovered_items
+
+
+def _build_recovered_renu_mapped_item(
+    *,
+    table: ExtractedFinancialTable,
+    line_number: int,
+    raw_text: str,
+    canonical_name: str,
+    original_label: str,
+    statement_type: FinancialStatementType,
+    current_raw: str,
+    previous_raw: str,
+    reported_raw: str | None,
+    notes: str,
+) -> MappedLineItemValues | None:
+    current_value = parse_financial_value(current_raw)
+    previous_value = parse_financial_value(previous_raw)
+    if current_value.value is None or previous_value.value is None:
+        return None
+
+    raw_period_values: dict[str, str | int | float | None] = {
+        "value_1": current_raw,
+        "value_2": previous_raw,
+    }
+    mapped_values = {
+        "group_current": current_value,
+        "group_previous": previous_value,
+    }
+    if reported_raw is not None:
+        reported_value = parse_financial_value(reported_raw, is_percent=True)
+        raw_period_values["value_3"] = reported_raw
+        if reported_value.value is not None:
+            mapped_values["group_reported_change_percent"] = reported_value
+
+    return MappedLineItemValues(
+        canonical_name=canonical_name,
+        original_label=original_label,
+        statement_type=statement_type,
+        raw_period_values=raw_period_values,
+        mapped_values=mapped_values,
+        source_trace=SourceTrace(
+            local_file_path=table.source_trace.local_file_path
+            if table.source_trace
+            else None,
+            page_number=table.page_number,
+            table_id=table.table_id,
+            row_label=original_label,
+            raw_value=raw_text,
+            notes=f"{notes}; source_line={line_number}",
+        ),
+        notes=notes,
+    )
+
+
+def _prepare_mapped_items_for_metric_build(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+    statement_match: StatementPageMatch | None,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    if metric_entity != "group":
+        return mapped_items
+    if (
+        statement_match is None
+        or statement_match.statement_type is not FinancialStatementType.INCOME_STATEMENT
+    ):
+        return mapped_items
+
+    prepared_items = _remap_mixed_page_balance_items_for_group_metrics(
+        mapped_items,
+        table=table,
+    )
+    mixed_page_balance_items = [
+        item
+        for item in prepared_items
+        if (
+            item.canonical_name in _MIXED_PAGE_PRIMARY_BALANCE_ITEMS
+            and item.statement_type is FinancialStatementType.BALANCE_SHEET
+        )
+    ]
+
+    if _table_has_company_income_statement_markers(table):
+        return mixed_page_balance_items
+
+    if not _table_has_quarter_plus_annual_income_layout(table):
+        return prepared_items
+
+    if not _table_has_group_income_statement_title_markers(table):
+        return mixed_page_balance_items
+
+    return [
+        _remap_quarter_plus_annual_income_item_for_group_metric(mapped_item)
+        for mapped_item in prepared_items
+    ]
+
+
+def _remap_mixed_page_balance_items_for_group_metrics(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    if not _table_has_mixed_page_primary_balance_section(table):
+        return mapped_items
+
+    return [
+        _remap_mixed_page_balance_item_as_balance_sheet(mapped_item)
+        for mapped_item in mapped_items
+    ]
+
+
+def _remap_mixed_page_balance_item_as_balance_sheet(
+    mapped_item: MappedLineItemValues,
+) -> MappedLineItemValues:
+    if mapped_item.canonical_name not in _MIXED_PAGE_PRIMARY_BALANCE_ITEMS:
+        return mapped_item
+
+    layout_note = "mixed_page_primary_balance_section"
+    notes = mapped_item.notes
+    notes = f"{notes}; {layout_note}" if notes else layout_note
+
+    return mapped_item.model_copy(
+        update={
+            "statement_type": FinancialStatementType.BALANCE_SHEET,
+            "notes": notes,
+        }
+    )
+
+
+def _remap_quarter_plus_annual_income_item_for_group_metric(
+    mapped_item: MappedLineItemValues,
+) -> MappedLineItemValues:
+    if mapped_item.canonical_name not in _INCOME_STATEMENT_METRIC_ITEMS:
+        return mapped_item
+
+    raw_period_values = mapped_item.raw_period_values
+    is_four_value_layout = (
+        "value_1" in raw_period_values
+        and "value_2" in raw_period_values
+        and "value_3" in raw_period_values
+        and "value_4" in raw_period_values
+        and "value_5" not in raw_period_values
+        and "value_6" not in raw_period_values
+    )
+    if not is_four_value_layout:
+        return mapped_item
+
+    annual_current = mapped_item.mapped_values.get("bank_current")
+    annual_previous = mapped_item.mapped_values.get("bank_previous")
+    if annual_current is None or annual_previous is None:
+        return mapped_item
+
+    mapped_values = dict(mapped_item.mapped_values)
+    mapped_values["group_current"] = annual_current.model_copy()
+    mapped_values["group_previous"] = annual_previous.model_copy()
+
+    layout_note = "quarter_plus_annual_income_layout_group_annual_values"
+    notes = mapped_item.notes
+    notes = f"{notes}; {layout_note}" if notes else layout_note
+
+    return mapped_item.model_copy(
+        update={
+            "mapped_values": mapped_values,
+            "notes": notes,
+        }
+    )
+
+
 def _build_verified_metric_results_for_table(
     *,
     table: ExtractedFinancialTable,
@@ -606,6 +976,17 @@ def _build_verified_metric_results_for_table(
     )
     normalized_rows = normalize_parsed_financial_rows(parsed_rows)
     mapped_items = map_comb_six_column_items(normalized_rows)
+    mapped_items = _append_renu_side_by_side_recovered_items(
+        mapped_items,
+        table=table,
+        metric_entity=metric_entity,
+    )
+    mapped_items = _prepare_mapped_items_for_metric_build(
+        mapped_items,
+        table=table,
+        statement_match=statement_match,
+        metric_entity=metric_entity,
+    )
     mapped_items = _filter_redundant_metric_candidates(
         mapped_items,
         metric_entity=metric_entity,
@@ -691,6 +1072,78 @@ def _table_has_group_income_statement_markers(table: ExtractedFinancialTable) ->
         if any(marker in text for marker in _GROUP_INCOME_STATEMENT_MARKERS):
             return True
     return False
+
+
+def _table_has_group_income_statement_title_markers(
+    table: ExtractedFinancialTable,
+) -> bool:
+    for row in table.rows:
+        text = str(row.get("text", "")).strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _GROUP_INCOME_STATEMENT_TITLE_MARKERS):
+            return True
+    return False
+
+
+def _table_has_company_income_statement_markers(table: ExtractedFinancialTable) -> bool:
+    for row in table.rows:
+        text = str(row.get("text", "")).strip().lower()
+        if not text:
+            continue
+        if any(marker in text for marker in _COMPANY_INCOME_STATEMENT_MARKERS):
+            return True
+    return False
+
+
+def _table_has_quarter_plus_annual_income_layout(table: ExtractedFinancialTable) -> bool:
+    table_text = " ".join(str(row.get("text", "")).strip().lower() for row in table.rows)
+    return "quarter ended" in table_text and any(
+        marker in table_text for marker in _QUARTER_PLUS_ANNUAL_HEADER_MARKERS
+    )
+
+
+def _table_has_mixed_page_primary_balance_section(table: ExtractedFinancialTable) -> bool:
+    row_texts = [
+        re.sub(r"\s+", " ", str(row.get("text", "")).strip().lower())
+        for row in table.rows
+    ]
+    row_texts = [text for text in row_texts if text]
+
+    has_group_company_header = any(text == "group company" for text in row_texts)
+    has_four_date_header = any(
+        _MIXED_PAGE_BALANCE_DATE_HEADER_PATTERN.search(text) is not None
+        for text in row_texts
+    )
+    has_total_assets = any(text.startswith("total assets ") for text in row_texts)
+    has_total_equity = any(text.startswith("total equity ") for text in row_texts)
+    has_total_liabilities = any(
+        text.startswith("total liabilities ") for text in row_texts
+    )
+
+    return (
+        has_group_company_header
+        and has_four_date_header
+        and has_total_assets
+        and has_total_equity
+        and has_total_liabilities
+    )
+
+
+def _table_has_renu_side_by_side_combined_statement(
+    table: ExtractedFinancialTable,
+) -> bool:
+    table_text = " ".join(
+        re.sub(r"\s+", " ", str(row.get("text", "")).strip().lower())
+        for row in table.rows
+    )
+    return (
+        "statement of profit or loss" in table_text
+        and "statement of cash flows" in table_text
+        and "statement of financial position" in table_text
+        and "cash flow from operating activities" in table_text
+        and "total assets" in table_text
+    )
 
 
 def _filter_redundant_metric_candidates(

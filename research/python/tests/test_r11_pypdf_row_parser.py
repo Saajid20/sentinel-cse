@@ -59,6 +59,30 @@ def test_parse_numeric_tokens_extracts_comma_numbers_decimals_and_parenthesized_
     assert values == ["99,003,088", "12.47", "(55.49)", "(636)", "10.73"]
 
 
+def test_parse_numeric_tokens_rejects_unbalanced_parentheses() -> None:
+    text = "Total comprehensive income (52,2620 2,312,829 note 7) (52,262)"
+
+    values = parse_numeric_tokens(text)
+
+    assert "(52,2620" not in values
+    assert "7)" not in values
+    assert "(52,262)" in values
+    assert "2,312,829" in values
+
+
+def test_percent_tokens_clean_labels_without_becoming_values() -> None:
+    parsed = parse_financial_row_text(
+        "Revenue 100 90 11% 400 360 (11%)",
+        page_number=3,
+        table_id="pypdf_page_3",
+        line_number=8,
+    )
+
+    assert parsed is not None
+    assert parsed.label == "Revenue"
+    assert parsed.values == ["100", "90", "400", "360"]
+
+
 def test_parse_financial_row_text_parses_net_interest_income_row_into_label_and_six_values() -> None:
     parsed = parse_financial_row_text(
         "Net interest income 38,813,847 34,214,823 13.44 37,339,338 33,251,596 12.29",
@@ -125,6 +149,58 @@ def test_parse_financial_row_text_returns_none_when_fewer_than_two_values() -> N
     )
 
     assert parsed is None
+
+
+def test_wata_profit_row_strips_percent_and_numeric_tail_from_label() -> None:
+    parsed = parse_financial_row_text(
+        "Profit for the period 146,379 412,352 -65% 2,330,446 1,884,909 24%",
+        page_number=3,
+        table_id="pypdf_page_3",
+        line_number=21,
+        statement_type=FinancialStatementType.INCOME_STATEMENT,
+    )
+
+    assert parsed is not None
+    assert parsed.label == "Profit for the period"
+    assert parsed.values == ["146,379", "412,352", "2,330,446", "1,884,909"]
+
+
+def test_wata_revenue_row_strips_percent_and_numeric_tail_from_label() -> None:
+    parsed = parse_financial_row_text(
+        "Revenue 2,174,903 1,878,853 16% 9,442,172 7,800,043 21%",
+        page_number=3,
+        table_id="pypdf_page_3",
+        line_number=8,
+        statement_type=FinancialStatementType.INCOME_STATEMENT,
+    )
+
+    assert parsed is not None
+    assert parsed.label == "Revenue"
+    assert parsed.values == ["2,174,903", "1,878,853", "9,442,172", "7,800,043"]
+
+
+def test_parse_financial_row_text_rejects_notes_heading_with_unmatched_close_parenthesis() -> None:
+    parsed = parse_financial_row_text(
+        "7) Share Information Public Shareholders 1,268",
+        page_number=3,
+        table_id="pypdf_page_3",
+        line_number=5,
+    )
+
+    assert parsed is None
+
+
+def test_parse_financial_row_text_omits_malformed_unmatched_open_parenthesis_value() -> None:
+    parsed = parse_financial_row_text(
+        "Total comprehensive income for the period 2,365,092 2,365,092 (52,2620 2,312,829",
+        page_number=6,
+        table_id="pypdf_page_6",
+        line_number=24,
+    )
+
+    assert parsed is not None
+    assert "(52,2620" not in parsed.values
+    assert parsed.values == ["2,365,092", "2,365,092", "2,312,829"]
 
 
 def test_parsed_financial_row_validates_positive_page_and_line() -> None:
