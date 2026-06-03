@@ -431,6 +431,94 @@ def test_primary_income_statement_profit_row_still_produces_profit_growth_metric
     assert warnings == []
 
 
+def test_ldev_quarter_year_variance_income_row_recovers_group_profit_metric() -> None:
+    table = _make_table(
+        2,
+        [
+            "Lanka Developments PLC",
+            "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME-GROUP",
+            "Quarter Quarter Year Year",
+            "31.03.2026 31.03.2025 Variance 31.03.2026 31.03.2025 Variance",
+            "Rs.'000 Rs.'000 % Rs.'000 Rs.'000 %",
+            "Profit/(Loss) for the Period (31,447) (168,393) + (81) 240,389 730,682 - 67",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_profit_for_the_period_yoy_growth"
+    ]
+    assert verified_results[0].audit_entry.inputs["current"] == 240389.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 730682.0
+    assert verified_results[0].calculated_change_percent == -67.1
+    assert verified_results[0].reported_change_percent == -67.0
+    assert verified_results[0].matches_reported is False
+    assert warnings == []
+
+
+def test_ldev_quarter_year_variance_income_row_uses_annual_not_quarter_values() -> None:
+    table = _make_table(
+        2,
+        [
+            "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME-GROUP",
+            "Quarter Quarter Year Year",
+            "31.03.2026 31.03.2025 Variance 31.03.2026 31.03.2025 Variance",
+            "Profit/(Loss) for the Period 10 5 + 100 300 200 + 50",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert len(verified_results) == 1
+    assert verified_results[0].audit_entry.inputs["current"] == 300.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 200.0
+    assert verified_results[0].calculated_change_percent == 50.0
+    assert verified_results[0].reported_change_percent == 50.0
+    assert warnings == []
+
+
+def test_ldev_company_income_statement_does_not_produce_group_profit_metric() -> None:
+    table = _make_table(
+        3,
+        [
+            "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME-COMPANY",
+            "Quarter Quarter Year Year",
+            "31.03.2026 31.03.2025 Variance 31.03.2026 31.03.2025 Variance",
+            "Profit/(Loss) for the Period (31,447) (168,393) + (81) 240,389 730,682 - 67",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
 def test_quarter_plus_annual_consolidated_income_row_uses_annual_group_values() -> None:
     table = _make_table(
         3,

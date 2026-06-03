@@ -101,6 +101,31 @@ _RENU_SIDE_BY_SIDE_TOTAL_EQUITY_PATTERN = re.compile(
     rf"(?P<previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
     re.IGNORECASE,
 )
+_LDEV_VARIANCE_VALUE_PATTERN = (
+    r"(?:\([0-9][0-9,]*(?:\.\d+)?\)|[0-9][0-9,]*(?:\.\d+)?|-)"
+)
+_LDEV_PROFIT_FOR_PERIOD_PATTERN = re.compile(
+    rf"\bprofit\s*/\s*\(\s*loss\s*\)\s*for\s+the\s+period\s+"
+    rf"(?P<quarter_current>{_LDEV_VARIANCE_VALUE_PATTERN})\s+"
+    rf"(?P<quarter_previous>{_LDEV_VARIANCE_VALUE_PATTERN})\s+"
+    rf"(?:(?P<quarter_sign>[+-])\s+)?"
+    rf"(?P<quarter_reported>{_LDEV_VARIANCE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_current>{_LDEV_VARIANCE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_previous>{_LDEV_VARIANCE_VALUE_PATTERN})\s+"
+    rf"(?:(?P<annual_sign>[+-])\s+)?"
+    rf"(?P<annual_reported>{_LDEV_VARIANCE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
+)
+_LDEV_GROUP_INCOME_TITLE_PATTERN = re.compile(
+    r"\bstatement\s+of\s+profit\s+or\s+loss\s+and\s+other\s+"
+    r"comprehensive\s+income\s*-\s*group\b",
+    re.IGNORECASE,
+)
+_LDEV_COMPANY_INCOME_TITLE_PATTERN = re.compile(
+    r"\bstatement\s+of\s+profit\s+or\s+loss\s+and\s+other\s+"
+    r"comprehensive\s+income\s*-\s*company\b",
+    re.IGNORECASE,
+)
 _INCOME_STATEMENT_METRIC_ITEMS = {
     "basic_eps",
     "diluted_eps",
@@ -742,7 +767,7 @@ def _recover_renu_side_by_side_items(
 
         profit_match = _RENU_SIDE_BY_SIDE_PROFIT_PATTERN.search(normalized_text)
         if profit_match is not None:
-            recovered = _build_recovered_renu_mapped_item(
+            recovered = _build_recovered_mapped_item(
                 table=table,
                 line_number=line_number,
                 raw_text=normalized_text,
@@ -761,7 +786,7 @@ def _recover_renu_side_by_side_items(
             normalized_text
         )
         if total_assets_match is not None:
-            recovered = _build_recovered_renu_mapped_item(
+            recovered = _build_recovered_mapped_item(
                 table=table,
                 line_number=line_number,
                 raw_text=normalized_text,
@@ -780,7 +805,7 @@ def _recover_renu_side_by_side_items(
             normalized_text
         )
         if total_equity_match is not None:
-            recovered = _build_recovered_renu_mapped_item(
+            recovered = _build_recovered_mapped_item(
                 table=table,
                 line_number=line_number,
                 raw_text=normalized_text,
@@ -798,7 +823,93 @@ def _recover_renu_side_by_side_items(
     return recovered_items
 
 
-def _build_recovered_renu_mapped_item(
+def _append_ldev_variance_income_recovered_items(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    if metric_entity != "group":
+        return mapped_items
+    if not _table_has_ldev_quarter_year_variance_group_income_layout(table):
+        return mapped_items
+
+    recovered_items = _recover_ldev_variance_income_items(table)
+    if not recovered_items:
+        return mapped_items
+
+    existing_keys = {
+        (
+            mapped_item.canonical_name,
+            mapped_item.statement_type,
+            mapped_item.source_trace.raw_value if mapped_item.source_trace else None,
+        )
+        for mapped_item in mapped_items
+    }
+    unique_recovered_items = [
+        item
+        for item in recovered_items
+        if (
+            item.canonical_name,
+            item.statement_type,
+            item.source_trace.raw_value if item.source_trace else None,
+        )
+        not in existing_keys
+    ]
+    if not unique_recovered_items:
+        return mapped_items
+
+    return [*mapped_items, *unique_recovered_items]
+
+
+def _recover_ldev_variance_income_items(
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    recovered_items: list[MappedLineItemValues] = []
+    for row in table.rows:
+        raw_text = str(row.get("text", "")).strip()
+        if not raw_text:
+            continue
+        line_number = int(row.get("line_number", 0) or 0)
+        normalized_text = re.sub(r"\s+", " ", raw_text)
+
+        profit_match = _LDEV_PROFIT_FOR_PERIOD_PATTERN.search(normalized_text)
+        if profit_match is None:
+            continue
+
+        reported_raw = _signed_variance_raw(
+            sign=profit_match.group("annual_sign"),
+            value_raw=profit_match.group("annual_reported"),
+        )
+        recovered = _build_recovered_mapped_item(
+            table=table,
+            line_number=line_number,
+            raw_text=normalized_text,
+            canonical_name="profit_for_the_period",
+            original_label="Profit/(Loss) for the Period",
+            statement_type=FinancialStatementType.INCOME_STATEMENT,
+            current_raw=profit_match.group("annual_current"),
+            previous_raw=profit_match.group("annual_previous"),
+            reported_raw=reported_raw,
+            notes="ldev_quarter_year_variance_income_recovery",
+        )
+        if recovered is not None:
+            recovered_items.append(recovered)
+
+    return recovered_items
+
+
+def _signed_variance_raw(*, sign: str | None, value_raw: str) -> str:
+    if sign != "-":
+        return value_raw
+    if value_raw.startswith("(") and value_raw.endswith(")"):
+        return value_raw
+    if value_raw == "-":
+        return value_raw
+    return f"({value_raw})"
+
+
+def _build_recovered_mapped_item(
     *,
     table: ExtractedFinancialTable,
     line_number: int,
@@ -981,6 +1092,11 @@ def _build_verified_metric_results_for_table(
         table=table,
         metric_entity=metric_entity,
     )
+    mapped_items = _append_ldev_variance_income_recovered_items(
+        mapped_items,
+        table=table,
+        metric_entity=metric_entity,
+    )
     mapped_items = _prepare_mapped_items_for_metric_build(
         mapped_items,
         table=table,
@@ -1143,6 +1259,33 @@ def _table_has_renu_side_by_side_combined_statement(
         and "statement of financial position" in table_text
         and "cash flow from operating activities" in table_text
         and "total assets" in table_text
+    )
+
+
+def _table_has_ldev_quarter_year_variance_group_income_layout(
+    table: ExtractedFinancialTable,
+) -> bool:
+    table_text = " ".join(
+        re.sub(r"\s+", " ", str(row.get("text", "")).strip())
+        for row in table.rows
+    )
+    table_text_lower = table_text.lower()
+
+    has_group_income_title = (
+        _LDEV_GROUP_INCOME_TITLE_PATTERN.search(table_text) is not None
+    )
+    has_company_income_title = (
+        _LDEV_COMPANY_INCOME_TITLE_PATTERN.search(table_text) is not None
+    )
+    has_quarter_year_header = (
+        "quarter quarter year year" in table_text_lower
+        and "variance" in table_text_lower
+    )
+
+    return (
+        has_group_income_title
+        and not has_company_income_title
+        and has_quarter_year_header
     )
 
 
