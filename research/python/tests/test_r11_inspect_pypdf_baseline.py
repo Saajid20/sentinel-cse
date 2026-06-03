@@ -623,6 +623,129 @@ def test_fair_value_note_page_does_not_produce_primary_balance_sheet_metrics() -
     assert warnings == []
 
 
+def test_renu_side_by_side_profit_row_recovers_annual_income_metric() -> None:
+    table = _make_table(
+        1,
+        [
+            "Audited STATEMENT OF PROFIT OR LOSS AND OTHER 12 Months to Audited STATEMENT OF CASH FLOWS Audited",
+            "31-Mar-26 31-Mar-25 COMPREHENSIVE INCOME 31-Mar-26 31-Mar-25 Change FOR THE 12 MONTHS ENDED 31-Mar-26 31-Mar-25",
+            "ASSETS Revenue 88,491 65,835 34 233,191 261,590 (11) Cash Flow from Operating Activities",
+            "TOTAL ASSETS 12,629,424 10,790,151 1,392,360 Marketing expenses (1,670) (2,491) (33)",
+            "Retained earnings 11,142,295 9,812,441 - Profit for the period 407,066 258,428 58 1,357,854 689,830 97 Net Cash Flow from Operating Activities",
+            "Total Equity 12,485,306 10,655,410 Other Comprehansive Income",
+            "STATEMENT OF FINANCIAL POSITION Quarter Ended",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_1", 1): SimpleNamespace(
+                statement_type=FinancialStatementType.CASH_FLOW
+            )
+        },
+        metric_entity="group",
+    )
+
+    profit_result = next(
+        result
+        for result in verified_results
+        if result.metric.metric_name == "group_profit_for_the_period_yoy_growth"
+    )
+
+    assert profit_result.audit_entry.inputs["current"] == 1357854.0
+    assert profit_result.audit_entry.inputs["previous"] == 689830.0
+    assert profit_result.reported_change_percent == 97.0
+    assert profit_result.calculated_change_percent == 96.84
+    assert warnings == []
+
+
+def test_renu_side_by_side_balance_rows_recover_without_liability_synthesis() -> None:
+    table = _make_table(
+        1,
+        [
+            "Audited STATEMENT OF PROFIT OR LOSS AND OTHER 12 Months to Audited STATEMENT OF CASH FLOWS Audited",
+            "31-Mar-26 31-Mar-25 COMPREHENSIVE INCOME 31-Mar-26 31-Mar-25 Change FOR THE 12 MONTHS ENDED 31-Mar-26 31-Mar-25",
+            "ASSETS Revenue 88,491 65,835 34 233,191 261,590 (11) Cash Flow from Operating Activities",
+            "TOTAL ASSETS 12,629,424 10,790,151 1,392,360 Marketing expenses (1,670) (2,491) (33)",
+            "Total Equity 12,485,306 10,655,410 Other Comprehansive Income",
+            "TOTAL EQUITY & LIABILITIES 12,629,424 10,790,151",
+            "STATEMENT OF FINANCIAL POSITION Quarter Ended",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_1", 1): SimpleNamespace(
+                statement_type=FinancialStatementType.CASH_FLOW
+            )
+        },
+        metric_entity="group",
+    )
+
+    metric_names = [result.metric.metric_name for result in verified_results]
+
+    assert metric_names == [
+        "group_total_assets_growth",
+        "group_total_equity_growth",
+    ]
+    assert verified_results[0].audit_entry.inputs["current"] == 12629424.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 10790151.0
+    assert verified_results[1].audit_entry.inputs["current"] == 12485306.0
+    assert verified_results[1].audit_entry.inputs["previous"] == 10655410.0
+    assert "group_total_liabilities_growth" not in metric_names
+    assert warnings == []
+
+
+def test_equity_statement_net_profit_rows_do_not_produce_group_profit_metric() -> None:
+    table = _make_table(
+        2,
+        [
+            "STATEMENT OF CHANGES IN EQUITY",
+            "Balance as at 01st April 2024 110,000 255,234 9,135,006 9,500,239",
+            "Net Profit for the period - - 689,830 689,830",
+            "Balance as at 31st March 2025 110,000 732,969 9,812,441 10,655,410",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.EQUITY_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
+def test_notes_share_information_unmatched_close_token_does_not_create_metric() -> None:
+    table = _make_table(
+        3,
+        [
+            "Notes to the financial statements (Continued) 10) Public Shareholdings",
+            "7) Share Information Public Shareholders 1,268",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.NOTES
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
 def test_primary_balance_sheet_rows_still_produce_balance_sheet_growth_metrics() -> None:
     table = _make_table(
         10,

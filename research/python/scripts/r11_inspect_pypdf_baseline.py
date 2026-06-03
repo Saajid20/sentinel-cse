@@ -34,11 +34,13 @@ from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E
 from sentinel_research.agents.r11.schemas import (  # noqa: E402
     ExtractedFinancialTable,
     FinancialStatementType,
+    SourceTrace,
 )
 from sentinel_research.agents.r11.tables import (  # noqa: E402
     MappedLineItemValues,
     map_comb_six_column_items,
     normalize_parsed_financial_rows,
+    parse_financial_value,
 )
 
 _GROUP_INCOME_STATEMENT_TITLE_MARKERS = (
@@ -73,6 +75,31 @@ _MIXED_PAGE_BALANCE_DATE_HEADER_PATTERN = re.compile(
     r"\d{1,2}\.\d{1,2}\.\d{4}\s+"
     r"\d{1,2}\.\d{1,2}\.\d{4}\s+"
     r"\d{1,2}\.\d{1,2}\.\d{4}\b"
+)
+_RENU_SIDE_BY_SIDE_VALUE_PATTERN = (
+    r"(?:\([0-9][0-9,]*(?:\.\d+)?\)|[0-9][0-9,]*(?:\.\d+)?|-)"
+)
+_RENU_SIDE_BY_SIDE_PROFIT_PATTERN = re.compile(
+    rf"\bprofit\s+for\s+the\s+period\s+"
+    rf"(?P<quarter_current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<quarter_previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<quarter_reported>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<annual_reported>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
+)
+_RENU_SIDE_BY_SIDE_TOTAL_ASSETS_PATTERN = re.compile(
+    rf"^\s*total\s+assets\s+"
+    rf"(?P<current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
+)
+_RENU_SIDE_BY_SIDE_TOTAL_EQUITY_PATTERN = re.compile(
+    rf"^\s*total\s+equity\s+"
+    rf"(?P<current>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\s+"
+    rf"(?P<previous>{_RENU_SIDE_BY_SIDE_VALUE_PATTERN})\b",
+    re.IGNORECASE,
 )
 _INCOME_STATEMENT_METRIC_ITEMS = {
     "basic_eps",
@@ -532,6 +559,11 @@ def _print_table_preview(
     mapped_items = []
     if show_mapped_values or show_verified_metrics:
         mapped_items = map_comb_six_column_items(normalized_rows)
+        mapped_items = _append_renu_side_by_side_recovered_items(
+            mapped_items,
+            table=table,
+            metric_entity=metric_entity,
+        )
         mapped_items = _prepare_mapped_items_for_metric_build(
             mapped_items,
             table=table,
@@ -656,6 +688,166 @@ def _is_primary_statement_metric_candidate(mapped_item: MappedLineItemValues) ->
     if mapped_item.canonical_name in _BALANCE_SHEET_METRIC_ITEMS:
         return statement_type is FinancialStatementType.BALANCE_SHEET
     return True
+
+
+def _append_renu_side_by_side_recovered_items(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    if metric_entity != "group":
+        return mapped_items
+    if not _table_has_renu_side_by_side_combined_statement(table):
+        return mapped_items
+
+    recovered_items = _recover_renu_side_by_side_items(table)
+    if not recovered_items:
+        return mapped_items
+
+    existing_keys = {
+        (
+            mapped_item.canonical_name,
+            mapped_item.statement_type,
+            mapped_item.source_trace.raw_value if mapped_item.source_trace else None,
+        )
+        for mapped_item in mapped_items
+    }
+    unique_recovered_items = [
+        item
+        for item in recovered_items
+        if (
+            item.canonical_name,
+            item.statement_type,
+            item.source_trace.raw_value if item.source_trace else None,
+        )
+        not in existing_keys
+    ]
+    if not unique_recovered_items:
+        return mapped_items
+
+    return [*mapped_items, *unique_recovered_items]
+
+
+def _recover_renu_side_by_side_items(
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    recovered_items: list[MappedLineItemValues] = []
+    for row in table.rows:
+        raw_text = str(row.get("text", "")).strip()
+        if not raw_text:
+            continue
+        line_number = int(row.get("line_number", 0) or 0)
+        normalized_text = re.sub(r"\s+", " ", raw_text)
+
+        profit_match = _RENU_SIDE_BY_SIDE_PROFIT_PATTERN.search(normalized_text)
+        if profit_match is not None:
+            recovered = _build_recovered_renu_mapped_item(
+                table=table,
+                line_number=line_number,
+                raw_text=normalized_text,
+                canonical_name="profit_for_the_period",
+                original_label="Profit for the period",
+                statement_type=FinancialStatementType.INCOME_STATEMENT,
+                current_raw=profit_match.group("annual_current"),
+                previous_raw=profit_match.group("annual_previous"),
+                reported_raw=profit_match.group("annual_reported"),
+                notes="renu_side_by_side_profit_loss_recovery",
+            )
+            if recovered is not None:
+                recovered_items.append(recovered)
+
+        total_assets_match = _RENU_SIDE_BY_SIDE_TOTAL_ASSETS_PATTERN.search(
+            normalized_text
+        )
+        if total_assets_match is not None:
+            recovered = _build_recovered_renu_mapped_item(
+                table=table,
+                line_number=line_number,
+                raw_text=normalized_text,
+                canonical_name="total_assets",
+                original_label="Total Assets",
+                statement_type=FinancialStatementType.BALANCE_SHEET,
+                current_raw=total_assets_match.group("current"),
+                previous_raw=total_assets_match.group("previous"),
+                reported_raw=None,
+                notes="renu_side_by_side_balance_sheet_recovery",
+            )
+            if recovered is not None:
+                recovered_items.append(recovered)
+
+        total_equity_match = _RENU_SIDE_BY_SIDE_TOTAL_EQUITY_PATTERN.search(
+            normalized_text
+        )
+        if total_equity_match is not None:
+            recovered = _build_recovered_renu_mapped_item(
+                table=table,
+                line_number=line_number,
+                raw_text=normalized_text,
+                canonical_name="total_equity",
+                original_label="Total Equity",
+                statement_type=FinancialStatementType.BALANCE_SHEET,
+                current_raw=total_equity_match.group("current"),
+                previous_raw=total_equity_match.group("previous"),
+                reported_raw=None,
+                notes="renu_side_by_side_balance_sheet_recovery",
+            )
+            if recovered is not None:
+                recovered_items.append(recovered)
+
+    return recovered_items
+
+
+def _build_recovered_renu_mapped_item(
+    *,
+    table: ExtractedFinancialTable,
+    line_number: int,
+    raw_text: str,
+    canonical_name: str,
+    original_label: str,
+    statement_type: FinancialStatementType,
+    current_raw: str,
+    previous_raw: str,
+    reported_raw: str | None,
+    notes: str,
+) -> MappedLineItemValues | None:
+    current_value = parse_financial_value(current_raw)
+    previous_value = parse_financial_value(previous_raw)
+    if current_value.value is None or previous_value.value is None:
+        return None
+
+    raw_period_values: dict[str, str | int | float | None] = {
+        "value_1": current_raw,
+        "value_2": previous_raw,
+    }
+    mapped_values = {
+        "group_current": current_value,
+        "group_previous": previous_value,
+    }
+    if reported_raw is not None:
+        reported_value = parse_financial_value(reported_raw, is_percent=True)
+        raw_period_values["value_3"] = reported_raw
+        if reported_value.value is not None:
+            mapped_values["group_reported_change_percent"] = reported_value
+
+    return MappedLineItemValues(
+        canonical_name=canonical_name,
+        original_label=original_label,
+        statement_type=statement_type,
+        raw_period_values=raw_period_values,
+        mapped_values=mapped_values,
+        source_trace=SourceTrace(
+            local_file_path=table.source_trace.local_file_path
+            if table.source_trace
+            else None,
+            page_number=table.page_number,
+            table_id=table.table_id,
+            row_label=original_label,
+            raw_value=raw_text,
+            notes=f"{notes}; source_line={line_number}",
+        ),
+        notes=notes,
+    )
 
 
 def _prepare_mapped_items_for_metric_build(
@@ -784,6 +976,11 @@ def _build_verified_metric_results_for_table(
     )
     normalized_rows = normalize_parsed_financial_rows(parsed_rows)
     mapped_items = map_comb_six_column_items(normalized_rows)
+    mapped_items = _append_renu_side_by_side_recovered_items(
+        mapped_items,
+        table=table,
+        metric_entity=metric_entity,
+    )
     mapped_items = _prepare_mapped_items_for_metric_build(
         mapped_items,
         table=table,
@@ -930,6 +1127,22 @@ def _table_has_mixed_page_primary_balance_section(table: ExtractedFinancialTable
         and has_total_assets
         and has_total_equity
         and has_total_liabilities
+    )
+
+
+def _table_has_renu_side_by_side_combined_statement(
+    table: ExtractedFinancialTable,
+) -> bool:
+    table_text = " ".join(
+        re.sub(r"\s+", " ", str(row.get("text", "")).strip().lower())
+        for row in table.rows
+    )
+    return (
+        "statement of profit or loss" in table_text
+        and "statement of cash flows" in table_text
+        and "statement of financial position" in table_text
+        and "cash flow from operating activities" in table_text
+        and "total assets" in table_text
     )
 
 
