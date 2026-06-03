@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from candidate_evidence_dossier import (  # noqa: E402
     build_candidate_evidence_dossier,
+    parse_args,
     run_candidate_evidence_dossier,
 )
 from universe_candidate_report import UniverseCandidateFilters  # noqa: E402
@@ -676,5 +677,303 @@ def test_per_session_raw_vs_filtered_counts_render_correctly() -> None:
 
         assert report.filtered_signal_rows[0].raw_variant_signal_count == 3
         assert report.filtered_signal_rows[0].filtered_ticker_count == 1
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_cli_parses_markdown_output_flag() -> None:
+    args = parse_args(["--ticker", "KEEP.N0000", "--markdown-output", "out/report.md"])
+
+    assert args.ticker == "KEEP.N0000"
+    assert args.markdown_output == "out/report.md"
+
+
+def test_no_markdown_file_is_written_without_flag() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        output = io.StringIO()
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            output=output,
+        )
+
+        assert not any(directory.rglob("*.md"))
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_markdown_output_writes_expected_sections_and_keeps_terminal_output() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        markdown_path = directory / ".runtime-pipeline" / "candidate-dossiers" / "KEEP.N0000.md"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "replay-diagnostics.json",
+            build_replay_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                signals_generated=1,
+                per_ticker_rows=[
+                    build_replay_ticker_row(
+                        "KEEP.N0000",
+                        snapshots=2,
+                        history_pass=1,
+                        strategy_ready=0,
+                        spread_pass=2,
+                        vwap_available=2,
+                        price_above_vwap=1,
+                        first_high_available=1,
+                        momentum_pass=1,
+                        volume_ratio_available=1,
+                        volume_ratio_pass=1,
+                        imbalance_available=2,
+                        imbalance_pass=1,
+                        signals=1,
+                        top_blockers=["momentum trigger blocked"],
+                    )
+                ],
+            ),
+        )
+
+        output = io.StringIO()
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            markdown_output=markdown_path,
+            output=output,
+        )
+
+        text = output.getvalue()
+        markdown = markdown_path.read_text(encoding="utf-8")
+
+        assert "Dossier header" in text
+        assert "# Candidate Evidence Dossier - KEEP.N0000" in markdown
+        assert "## Safety notice" in markdown
+        assert "## Dossier header" in markdown
+        assert "## Session evidence table" in markdown
+        assert "## Filtered signal evidence table" in markdown
+        assert "## Variant interpretation" in markdown
+        assert "## Blocker context table" in markdown
+        assert "## R10/R11 readiness placeholders" in markdown
+        assert "## Warnings / limitations" in markdown
+        assert "## Generated-from/runtime source notes" in markdown
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_markdown_output_creates_parent_directory_and_includes_safety_notice() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        markdown_path = directory / "nested" / "dossiers" / "KEEP.N0000.md"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            markdown_output=markdown_path,
+            output=io.StringIO(),
+        )
+
+        markdown = markdown_path.read_text(encoding="utf-8")
+        assert markdown_path.is_file()
+        assert "research-only" in markdown
+        assert "not financial advice" in markdown
+        assert "not a buy/sell/hold recommendation" in markdown
+        assert "not live execution guidance" in markdown
+        assert "Human review is required." in markdown
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_markdown_output_contains_no_uppercase_trading_action_language() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        markdown_path = directory / "KEEP.N0000.md"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[build_snapshot("KEEP.N0000", 1, company_name="Keep PLC")],
+                diagnostics=build_diagnostics_rows("store_reconstructed", [25]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=1,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=1,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            markdown_output=markdown_path,
+            output=io.StringIO(),
+        )
+
+        markdown = markdown_path.read_text(encoding="utf-8")
+        for token in ("BUY", "SELL", "HOLD", "ENTRY", "EXIT", "TRADE"):
+            assert token not in markdown
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_no_surviving_evidence_still_exports_markdown_dossier() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        markdown_path = directory / "KEEP.N0000.md"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[build_snapshot("KEEP.N0000", 1, company_name="Keep PLC")],
+                diagnostics=build_diagnostics_rows("store_reconstructed", [25]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=1,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=1,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(min_snapshots=2),
+            markdown_output=markdown_path,
+            output=io.StringIO(),
+        )
+
+        markdown = markdown_path.read_text(encoding="utf-8")
+        assert "INSUFFICIENT_EVIDENCE" in markdown
+        assert "ticker did not survive active research filters" in markdown
     finally:
         shutil.rmtree(directory, ignore_errors=True)
