@@ -3,15 +3,21 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
+
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 from candidate_evidence_review import (
     REVIEW_STATUS_BY_TIER,
     build_candidate_evidence_review,
     lower_bound_session_variants,
 )
+from sentinel_research.agents.context_bridge import CandidateContextRequest
 from filtered_signal_ticker_report import (
     DEFAULT_RUNTIME_DIR,
     EXPECTED_VARIANTS,
@@ -985,9 +991,9 @@ def build_context_request_payload(
     }
 
 
-def write_context_request_json(path: Path, payload: dict[str, object]) -> None:
+def write_context_request_json(path: Path, request: CandidateContextRequest) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.write_text(request.model_dump_json(indent=2), encoding="utf-8")
 
 
 def format_table(title: str, rows: list[object], columns: list[tuple[str, int, object]]) -> str:
@@ -1047,20 +1053,33 @@ def run_candidate_evidence_dossier(
         input_paths=input_paths,
         filters=filters,
     )
+    markdown_content: str | None = None
     if markdown_output is not None:
         markdown_content = render_markdown_report(
             report,
             runtime_root=runtime_root,
             input_paths=input_paths,
         )
-        write_markdown_report(markdown_output, markdown_content)
+    validated_context_request: CandidateContextRequest | None = None
     if context_request_json_output is not None:
         context_request_payload = build_context_request_payload(
             report,
             runtime_root=runtime_root,
             markdown_output=markdown_output,
         )
-        write_context_request_json(context_request_json_output, context_request_payload)
+        validated_context_request = CandidateContextRequest.model_validate(
+            context_request_payload
+        )
+    if markdown_output is not None and markdown_content is not None:
+        write_markdown_report(markdown_output, markdown_content)
+    if (
+        context_request_json_output is not None
+        and validated_context_request is not None
+    ):
+        write_context_request_json(
+            context_request_json_output,
+            validated_context_request,
+        )
     print(render_report(report), file=handle)
     if output is None:
         print(handle.getvalue(), end="")

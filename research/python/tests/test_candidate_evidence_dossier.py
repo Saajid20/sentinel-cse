@@ -5,11 +5,16 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = PYTHON_ROOT / "scripts"
 TEST_TMP_ROOT = PYTHON_ROOT / ".tmp-test-output"
+sys.path.insert(0, str(PYTHON_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from candidate_evidence_dossier import (  # noqa: E402
@@ -17,6 +22,7 @@ from candidate_evidence_dossier import (  # noqa: E402
     parse_args,
     run_candidate_evidence_dossier,
 )
+from sentinel_research.agents.context_bridge import CandidateContextRequest  # noqa: E402
 from universe_candidate_report import UniverseCandidateFilters  # noqa: E402
 
 
@@ -1105,6 +1111,7 @@ def test_context_request_json_creates_parent_directory_and_contains_required_fie
         )
 
         payload = json.loads(json_path.read_text(encoding="utf-8"))
+        validated = CandidateContextRequest.model_validate(payload)
         assert json_path.is_file()
         assert payload["schema_version"] == "candidate-context-request/v0.1"
         assert payload["request_id"] is None
@@ -1115,6 +1122,7 @@ def test_context_request_json_creates_parent_directory_and_contains_required_fie
         assert payload["artifact_refs"]["runtime_root"] == str(runtime_root)
         assert payload["artifact_refs"]["dossier_markdown_path"] is None
         assert payload["artifact_refs"]["session_stems"] == ["session-a"]
+        assert validated.review_status.value == payload["review_status"]
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
@@ -1332,8 +1340,105 @@ def test_no_surviving_evidence_still_exports_safe_context_request_json() -> None
         )
 
         payload = json.loads(json_path.read_text(encoding="utf-8"))
+        validated = CandidateContextRequest.model_validate(payload)
         assert payload["review_status"] == "INSUFFICIENT_EVIDENCE"
         assert payload["technical_summary"]["total_filtered_count"] == 0
         assert "ticker did not survive active research filters" in payload["warnings"]
+        assert validated.review_status.value == "INSUFFICIENT_EVIDENCE"
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_context_request_validation_failure_prevents_writing_json() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        json_path = directory / "KEEP.N0000.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        with patch(
+            "candidate_evidence_dossier.build_context_request_payload",
+            return_value={
+                "schema_version": "candidate-context-request/v0.1",
+                "request_id": None,
+                "ticker": "KEEP.N0000",
+                "company_name": "Keep PLC",
+                "generated_from_dossier": True,
+                "evidence_tier": "Tier A",
+                "review_status": "MANUAL_REVIEW",
+                "sessions_seen": 1,
+                "strong_full_grid_sessions": 1,
+                "partial_coverage_sessions": 0,
+                "baseline_count": 1,
+                "diagnostic_count": 0,
+                "variants_seen": ["base"],
+                "technical_summary": {
+                    "total_filtered_count": 1,
+                    "first_session": "session-a",
+                    "last_session": "session-a",
+                    "best_median_spread_percent": 0.1,
+                    "best_bid_ask_coverage_ratio": 1.0,
+                    "max_latest_turnover": 1000.0,
+                },
+                "warnings": ["buy now"],
+                "requested_reviews": [
+                    "R10_CONTEXT_RISK",
+                    "R11_FINANCIAL_STATEMENT",
+                    "CSE_DISCLOSURE",
+                    "HUMAN_NOTES",
+                ],
+                "artifact_refs": {
+                    "runtime_root": str(runtime_root),
+                    "dossier_markdown_path": None,
+                    "session_stems": ["session-a"],
+                },
+                "safety": {
+                    "research_only": True,
+                    "not_financial_advice": True,
+                    "not_buy_sell_hold_recommendation": True,
+                    "not_live_execution_guidance": True,
+                    "human_review_required": True,
+                },
+            },
+        ):
+            with pytest.raises(ValidationError):
+                run_candidate_evidence_dossier(
+                    "KEEP.N0000",
+                    runtime_root,
+                    [],
+                    UniverseCandidateFilters(),
+                    context_request_json_output=json_path,
+                    output=io.StringIO(),
+                )
+
+        assert not json_path.exists()
     finally:
         shutil.rmtree(directory, ignore_errors=True)
