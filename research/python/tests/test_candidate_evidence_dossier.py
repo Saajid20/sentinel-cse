@@ -688,6 +688,20 @@ def test_cli_parses_markdown_output_flag() -> None:
     assert args.markdown_output == "out/report.md"
 
 
+def test_cli_parses_context_request_json_output_flag() -> None:
+    args = parse_args(
+        [
+            "--ticker",
+            "KEEP.N0000",
+            "--context-request-json-output",
+            "out/request.json",
+        ]
+    )
+
+    assert args.ticker == "KEEP.N0000"
+    assert args.context_request_json_output == "out/request.json"
+
+
 def test_no_markdown_file_is_written_without_flag() -> None:
     directory = make_temp_dir()
     try:
@@ -732,6 +746,59 @@ def test_no_markdown_file_is_written_without_flag() -> None:
         )
 
         assert not any(directory.rglob("*.md"))
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_no_context_request_json_is_written_without_flag() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        json_path = (
+            directory
+            / ".runtime-pipeline"
+            / "candidate-context-requests"
+            / "KEEP.N0000.json"
+        )
+        session_path = directory / "session-a.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            output=io.StringIO(),
+        )
+
+        assert not json_path.exists()
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
@@ -975,5 +1042,298 @@ def test_no_surviving_evidence_still_exports_markdown_dossier() -> None:
         markdown = markdown_path.read_text(encoding="utf-8")
         assert "INSUFFICIENT_EVIDENCE" in markdown
         assert "ticker did not survive active research filters" in markdown
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_context_request_json_creates_parent_directory_and_contains_required_fields() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        json_path = directory / "nested" / "requests" / "KEEP.N0000.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot(
+                        "KEEP.N0000",
+                        1,
+                        company_name="Keep PLC",
+                        best_bid=9.95,
+                        best_ask=10.0,
+                        turnover=10_000,
+                    ),
+                    build_snapshot(
+                        "KEEP.N0000",
+                        2,
+                        company_name="Keep PLC",
+                        best_bid=9.96,
+                        best_ask=10.0,
+                        turnover=25_000,
+                    ),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            context_request_json_output=json_path,
+            output=io.StringIO(),
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert json_path.is_file()
+        assert payload["schema_version"] == "candidate-context-request/v0.1"
+        assert payload["request_id"] is None
+        assert payload["ticker"] == "KEEP.N0000"
+        assert payload["company_name"] == "Keep PLC"
+        assert payload["generated_from_dossier"] is True
+        assert payload["technical_summary"]["total_filtered_count"] == 1
+        assert payload["artifact_refs"]["runtime_root"] == str(runtime_root)
+        assert payload["artifact_refs"]["dossier_markdown_path"] is None
+        assert payload["artifact_refs"]["session_stems"] == ["session-a"]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_context_request_json_safety_and_requested_reviews_are_allowed() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        json_path = directory / "KEEP.N0000.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            context_request_json_output=json_path,
+            output=io.StringIO(),
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert payload["safety"] == {
+            "research_only": True,
+            "not_financial_advice": True,
+            "not_buy_sell_hold_recommendation": True,
+            "not_live_execution_guidance": True,
+            "human_review_required": True,
+        }
+        assert payload["requested_reviews"] == [
+            "R10_CONTEXT_RISK",
+            "R11_FINANCIAL_STATEMENT",
+            "CSE_DISCLOSURE",
+            "HUMAN_NOTES",
+        ]
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_context_request_json_contains_no_uppercase_trading_action_language() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        json_path = directory / "KEEP.N0000.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[build_snapshot("KEEP.N0000", 1, company_name="Keep PLC")],
+                diagnostics=build_diagnostics_rows("store_reconstructed", [25]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=1,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=1,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            context_request_json_output=json_path,
+            output=io.StringIO(),
+        )
+
+        dumped = json_path.read_text(encoding="utf-8")
+        for token in ("BUY", "SELL", "HOLD", "ENTRY", "EXIT", "TRADE"):
+            assert token not in dumped
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_context_request_json_keeps_terminal_output_and_can_coexist_with_markdown() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        markdown_path = directory / ".runtime-pipeline" / "candidate-dossiers" / "KEEP.N0000.md"
+        json_path = (
+            directory
+            / ".runtime-pipeline"
+            / "candidate-context-requests"
+            / "KEEP.N0000.json"
+        )
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[
+                    build_snapshot("KEEP.N0000", 1, company_name="Keep PLC"),
+                    build_snapshot("KEEP.N0000", 2, company_name="Keep PLC"),
+                ],
+                diagnostics=build_diagnostics_rows("store_fallback_scroll", [500, 505]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=2,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=2,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        output = io.StringIO()
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(),
+            markdown_output=markdown_path,
+            context_request_json_output=json_path,
+            output=output,
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "Dossier header" in output.getvalue()
+        assert markdown_path.is_file()
+        assert json_path.is_file()
+        assert payload["artifact_refs"]["dossier_markdown_path"] == str(markdown_path)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_no_surviving_evidence_still_exports_safe_context_request_json() -> None:
+    directory = make_temp_dir()
+    try:
+        runtime_root = directory / ".runtime-pipeline" / "multi-session-validation"
+        session_path = directory / "session-a.json"
+        json_path = directory / "KEEP.N0000.json"
+        write_json(
+            session_path,
+            build_session_payload(
+                "session-a-id",
+                snapshots=[build_snapshot("KEEP.N0000", 1, company_name="Keep PLC")],
+                diagnostics=build_diagnostics_rows("store_reconstructed", [25]),
+            ),
+        )
+        write_json(
+            runtime_root / "session-a" / "variant-comparison.json",
+            build_variant_export(
+                str(session_path),
+                session_id="session-a-id",
+                total_snapshots=1,
+                unique_tickers=1,
+                variant_rows=[
+                    build_variant_row(
+                        "baseline",
+                        replayed_snapshots=1,
+                        signals_generated=1,
+                        signal_ticker_counts=[("KEEP.N0000", 1)],
+                    )
+                ],
+            ),
+        )
+
+        run_candidate_evidence_dossier(
+            "KEEP.N0000",
+            runtime_root,
+            [],
+            UniverseCandidateFilters(min_snapshots=2),
+            context_request_json_output=json_path,
+            output=io.StringIO(),
+        )
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert payload["review_status"] == "INSUFFICIENT_EVIDENCE"
+        assert payload["technical_summary"]["total_filtered_count"] == 0
+        assert "ticker did not survive active research filters" in payload["warnings"]
     finally:
         shutil.rmtree(directory, ignore_errors=True)
