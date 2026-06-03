@@ -47,6 +47,24 @@ _GROUP_INCOME_STATEMENT_MARKERS = (
     "equity holders of the bank",
     "attributable to equity holders",
 )
+_INCOME_STATEMENT_METRIC_ITEMS = {
+    "basic_eps",
+    "diluted_eps",
+    "gross_income",
+    "impairment_charges_and_other_losses",
+    "interest_income",
+    "net_interest_income",
+    "operating_expenses",
+    "profit_for_the_period",
+    "total_operating_income",
+}
+_BALANCE_SHEET_METRIC_ITEMS = {
+    "customer_deposits",
+    "net_asset_value_per_share",
+    "total_assets",
+    "total_equity",
+    "total_liabilities",
+}
 
 
 def _validate_positive_int(value: int | str, name: str) -> int:
@@ -580,6 +598,8 @@ def _build_verified_metric_results_for_mapped_items(
     verified_results = []
     metric_build_warnings: list[str] = []
     for mapped_item in mapped_items:
+        if not _is_primary_statement_metric_candidate(mapped_item):
+            continue
         try:
             verification_result = build_growth_metric_for_item(
                 mapped_item,
@@ -592,6 +612,17 @@ def _build_verified_metric_results_for_mapped_items(
             continue
         verified_results.append(verification_result)
     return verified_results, metric_build_warnings
+
+
+def _is_primary_statement_metric_candidate(mapped_item: MappedLineItemValues) -> bool:
+    statement_type = getattr(mapped_item, "statement_type", None)
+    if statement_type is None:
+        return True
+    if mapped_item.canonical_name in _INCOME_STATEMENT_METRIC_ITEMS:
+        return statement_type is FinancialStatementType.INCOME_STATEMENT
+    if mapped_item.canonical_name in _BALANCE_SHEET_METRIC_ITEMS:
+        return statement_type is FinancialStatementType.BALANCE_SHEET
+    return True
 
 
 def _build_verified_metric_results_for_table(

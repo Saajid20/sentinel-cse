@@ -355,6 +355,116 @@ def test_group_metric_source_selection_keeps_all_income_statement_tables_without
     assert warnings == []
 
 
+def test_equity_statement_profit_rows_do_not_produce_profit_growth_metric() -> None:
+    table = _make_table(
+        6,
+        [
+            "Condensed Statement of changes in equity - Group",
+            "Profit for the period 1,917,871 1,917,871 (32,962) 1,884,909",
+            "Profit for the period 2,365,092 2,365,092 (52,262) 2,312,829",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_6", 6): SimpleNamespace(
+                statement_type=FinancialStatementType.EQUITY_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
+def test_unknown_segmental_analysis_profit_rows_do_not_produce_profit_growth_metric() -> None:
+    table = _make_table(
+        9,
+        [
+            "Segmental Analysis - Group",
+            "Palm Oil Dairy Others Inter Segment Total",
+            "Profit/(loss) for the year 2,735,648 1,953,250 (576,687) (327,038) (166,055) (434,980) 337,540 693,677 2,330,446 1,884,909",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_9", 9): SimpleNamespace(
+                statement_type=FinancialStatementType.UNKNOWN
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
+def test_primary_income_statement_profit_row_still_produces_profit_growth_metric() -> None:
+    table = _make_table(
+        5,
+        [
+            "Income Statement",
+            "Profit for the period 100 80 25",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_5", 5): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_profit_for_the_period_yoy_growth"
+    ]
+    assert verified_results[0].calculated_change_percent == 25.0
+    assert verified_results[0].reported_change_percent == 25.0
+    assert verified_results[0].matches_reported is True
+    assert warnings == []
+
+
+def test_primary_balance_sheet_rows_still_produce_balance_sheet_growth_metrics() -> None:
+    table = _make_table(
+        10,
+        [
+            "Statement of Financial Position",
+            "Total Assets 120 100 20",
+            "Total Liabilities 80 70 14.29",
+            "Total Equity 40 30 33.33",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_10", 10): SimpleNamespace(
+                statement_type=FinancialStatementType.BALANCE_SHEET
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_total_assets_growth",
+        "group_total_liabilities_growth",
+        "group_total_equity_growth",
+    ]
+    assert [result.calculated_change_percent for result in verified_results] == [
+        20.0,
+        14.29,
+        33.33,
+    ]
+    assert warnings == []
+
+
 def test_analysis_payload_records_metric_build_warnings() -> None:
     table = _make_table(1, ["Income Statement", "Profit after tax"])
     payload = _build_deterministic_analysis_payload(
