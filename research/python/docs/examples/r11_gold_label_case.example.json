@@ -1,0 +1,234 @@
+{
+  "schema_version": "r11_gold_label_case_v1",
+  "case_id": "synthetic_non_bank_q1_2026",
+  "ticker": "SYNTH.N0000",
+  "company_name": "Synthetic Manufacturing PLC",
+  "sector_hint": "synthetic_non_bank_manufacturing",
+  "source_type": "SYNTHETIC_EXAMPLE",
+  "source_url_or_document_id": "synthetic://example/r11-gold-label-case",
+  "local_runtime_pdf_path_optional": null,
+  "benchmark_level": "CLEAN_SCORECARD",
+  "expected_statement_pages": [
+    {
+      "page_number": 2,
+      "statement_type": "INCOME_STATEMENT",
+      "confidence_requirement": "HIGH",
+      "required_markers": [
+        "STATEMENT OF PROFIT OR LOSS"
+      ],
+      "optional_markers": [
+        "REVENUE",
+        "PROFIT FOR THE PERIOD"
+      ],
+      "accepted_aliases": [
+        "Statement of Profit or Loss",
+        "Income Statement",
+        "Statement of Comprehensive Income"
+      ]
+    },
+    {
+      "page_number": 3,
+      "statement_type": "BALANCE_SHEET",
+      "confidence_requirement": "HIGH",
+      "required_markers": [
+        "STATEMENT OF FINANCIAL POSITION",
+        "TOTAL ASSETS"
+      ],
+      "optional_markers": [
+        "ASSETS",
+        "LIABILITIES",
+        "TOTAL EQUITY"
+      ],
+      "accepted_aliases": [
+        "Statement of Financial Position",
+        "Balance Sheet"
+      ]
+    },
+    {
+      "page_number": 4,
+      "statement_type": "EQUITY_STATEMENT",
+      "confidence_requirement": "HIGH",
+      "required_markers": [
+        "STATEMENT OF CHANGES IN EQUITY"
+      ],
+      "optional_markers": [
+        "STATED CAPITAL",
+        "RETAINED EARNINGS"
+      ],
+      "accepted_aliases": [
+        "Statement of Changes in Equity"
+      ]
+    },
+    {
+      "page_number": 5,
+      "statement_type": "CASH_FLOW",
+      "confidence_requirement": "HIGH",
+      "required_markers": [
+        "STATEMENT OF CASH FLOWS"
+      ],
+      "optional_markers": [
+        "CASH FLOWS FROM OPERATING ACTIVITIES",
+        "NET CASH FROM OPERATING ACTIVITIES"
+      ],
+      "accepted_aliases": [
+        "Statement of Cash Flows",
+        "Statement of Cash Flow",
+        "Statement of Cashflow"
+      ]
+    }
+  ],
+  "expected_line_items": [
+    {
+      "statement_type": "INCOME_STATEMENT",
+      "page_number": 2,
+      "canonical_item": "revenue",
+      "label_aliases": [
+        "Revenue",
+        "Revenue from contracts with customers"
+      ],
+      "entity_scope": "group",
+      "period_scope": "current_year_to_date",
+      "expected_current_value": 1250000,
+      "expected_previous_value": 1000000,
+      "unit": "LKR",
+      "tolerance": 1,
+      "extraction_required": true
+    },
+    {
+      "statement_type": "INCOME_STATEMENT",
+      "page_number": 2,
+      "canonical_item": "profit_for_the_period",
+      "label_aliases": [
+        "Profit for the period",
+        "Profit / (Loss) for the period"
+      ],
+      "entity_scope": "group",
+      "period_scope": "current_year_to_date",
+      "expected_current_value": 180000,
+      "expected_previous_value": 150000,
+      "unit": "LKR",
+      "tolerance": 1,
+      "extraction_required": true
+    },
+    {
+      "statement_type": "BALANCE_SHEET",
+      "page_number": 3,
+      "canonical_item": "total_assets",
+      "label_aliases": [
+        "Total Assets",
+        "Total assets"
+      ],
+      "entity_scope": "group",
+      "period_scope": "as_at_period_end",
+      "expected_current_value": 2400000,
+      "expected_previous_value": 2000000,
+      "unit": "LKR",
+      "tolerance": 1,
+      "extraction_required": true
+    },
+    {
+      "statement_type": "BALANCE_SHEET",
+      "page_number": 3,
+      "canonical_item": "total_liabilities",
+      "label_aliases": [
+        "Total Liabilities",
+        "Total liabilities"
+      ],
+      "entity_scope": "group",
+      "period_scope": "as_at_period_end",
+      "expected_current_value": 900000,
+      "expected_previous_value": 800000,
+      "unit": "LKR",
+      "tolerance": 1,
+      "extraction_required": true
+    },
+    {
+      "statement_type": "BALANCE_SHEET",
+      "page_number": 3,
+      "canonical_item": "total_equity",
+      "label_aliases": [
+        "Total Equity",
+        "Total equity"
+      ],
+      "entity_scope": "group",
+      "period_scope": "as_at_period_end",
+      "expected_current_value": 1500000,
+      "expected_previous_value": 1200000,
+      "unit": "LKR",
+      "tolerance": 1,
+      "extraction_required": true
+    }
+  ],
+  "expected_metrics": [
+    {
+      "metric_name": "group_revenue_growth",
+      "source_canonical_item": "revenue",
+      "entity_scope": "group",
+      "current_value": 1250000,
+      "previous_value": 1000000,
+      "calculated_value": 0.25,
+      "reported_value_optional": null,
+      "tolerance": 0.0001,
+      "conflict_expected": false,
+      "manual_review_if_missing": true
+    },
+    {
+      "metric_name": "group_profit_for_the_period_yoy_growth",
+      "source_canonical_item": "profit_for_the_period",
+      "entity_scope": "group",
+      "current_value": 180000,
+      "previous_value": 150000,
+      "calculated_value": 0.2,
+      "reported_value_optional": null,
+      "tolerance": 0.0001,
+      "conflict_expected": false,
+      "manual_review_if_missing": true
+    },
+    {
+      "metric_name": "group_total_assets_growth",
+      "source_canonical_item": "total_assets",
+      "entity_scope": "group",
+      "current_value": 2400000,
+      "previous_value": 2000000,
+      "calculated_value": 0.2,
+      "reported_value_optional": null,
+      "tolerance": 0.0001,
+      "conflict_expected": false,
+      "manual_review_if_missing": true
+    },
+    {
+      "metric_name": "group_total_liabilities_growth",
+      "source_canonical_item": "total_liabilities",
+      "entity_scope": "group",
+      "current_value": 900000,
+      "previous_value": 800000,
+      "calculated_value": 0.125,
+      "reported_value_optional": null,
+      "tolerance": 0.0001,
+      "conflict_expected": false,
+      "manual_review_if_missing": true
+    },
+    {
+      "metric_name": "group_total_equity_growth",
+      "source_canonical_item": "total_equity",
+      "entity_scope": "group",
+      "current_value": 1500000,
+      "previous_value": 1200000,
+      "calculated_value": 0.25,
+      "reported_value_optional": null,
+      "tolerance": 0.0001,
+      "conflict_expected": false,
+      "manual_review_if_missing": true
+    }
+  ],
+  "expected_scorecard": {
+    "earnings_quality": "IMPROVING",
+    "revenue_trend": "IMPROVING",
+    "balance_sheet_risk": "LOW",
+    "capital_strength": "STRONG",
+    "manual_review_required": false
+  },
+  "known_gaps": [],
+  "manual_review_expected": false,
+  "notes": "Synthetic schema example only. This fixture does not represent a real company, real CSE report, real PDF, analysis JSON, validation manifest, or runtime artifact."
+}
