@@ -359,6 +359,13 @@ Implement a gold-label validator against existing analysis JSON.
 
 The validator should compare expected statement pages, expected line items, expected metrics, scorecard expectations, and known gaps. It should report precise triage categories rather than generic pass/fail output.
 
+The initial R11.13C validator lives at:
+
+- `research/python/scripts/r11_validate_gold_label.py`
+- `research/python/sentinel_research/agents/r11/validation/gold_label.py`
+
+The validator compares a gold-label JSON file against an R11 analysis JSON file and emits a structured `PASS`, `FAIL`, or `MANUAL_REVIEW` result. Real gold-label files should be added later only as local/runtime labels or as curated checked-in fixtures after manual review. Real PDFs, real runtime analysis JSONs, validation reports, and manifests remain outside source control.
+
 ### R11.13D
 
 Manually create local runtime gold labels for:
