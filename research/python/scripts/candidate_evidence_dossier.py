@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -128,6 +129,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Optional Markdown export path, for example "
             ".runtime-pipeline/candidate-dossiers/PKME.N0000.md. "
+            "Runtime outputs should not be committed."
+        ),
+    )
+    parser.add_argument(
+        "--context-request-json-output",
+        help=(
+            "Optional CandidateContextRequest JSON export path, for example "
+            ".runtime-pipeline/candidate-context-requests/PKME.N0000.json. "
             "Runtime outputs should not be committed."
         ),
     )
@@ -910,6 +919,77 @@ def write_markdown_report(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def build_context_request_payload(
+    report: CandidateEvidenceDossier,
+    *,
+    runtime_root: Path,
+    markdown_output: Path | None,
+) -> dict[str, object]:
+    median_spreads = [
+        row.median_spread_percent
+        for row in report.session_rows
+        if row.median_spread_percent is not None
+    ]
+    bid_ask_coverages = [
+        row.bid_ask_coverage_ratio
+        for row in report.session_rows
+        if row.bid_ask_coverage_ratio is not None
+    ]
+    latest_turnovers = [
+        row.latest_turnover
+        for row in report.session_rows
+        if row.latest_turnover is not None
+    ]
+    session_stems = sorted({row.session_stem for row in report.session_rows})
+    return {
+        "schema_version": "candidate-context-request/v0.1",
+        "request_id": None,
+        "ticker": report.header.ticker,
+        "company_name": report.header.company_name,
+        "generated_from_dossier": True,
+        "evidence_tier": report.header.evidence_tier,
+        "review_status": report.header.review_status,
+        "sessions_seen": report.header.sessions_seen,
+        "strong_full_grid_sessions": report.header.strong_full_grid_sessions,
+        "partial_coverage_sessions": report.header.partial_coverage_sessions,
+        "baseline_count": report.header.baseline_count,
+        "diagnostic_count": report.header.diagnostic_count,
+        "variants_seen": list(report.header.variants_seen),
+        "technical_summary": {
+            "total_filtered_count": report.header.total_filtered_count,
+            "first_session": report.header.first_session,
+            "last_session": report.header.last_session,
+            "best_median_spread_percent": min(median_spreads) if median_spreads else None,
+            "best_bid_ask_coverage_ratio": max(bid_ask_coverages) if bid_ask_coverages else None,
+            "max_latest_turnover": max(latest_turnovers) if latest_turnovers else None,
+        },
+        "warnings": list(report.warnings),
+        "requested_reviews": [
+            "R10_CONTEXT_RISK",
+            "R11_FINANCIAL_STATEMENT",
+            "CSE_DISCLOSURE",
+            "HUMAN_NOTES",
+        ],
+        "artifact_refs": {
+            "runtime_root": str(runtime_root),
+            "dossier_markdown_path": str(markdown_output) if markdown_output is not None else None,
+            "session_stems": session_stems,
+        },
+        "safety": {
+            "research_only": True,
+            "not_financial_advice": True,
+            "not_buy_sell_hold_recommendation": True,
+            "not_live_execution_guidance": True,
+            "human_review_required": True,
+        },
+    }
+
+
+def write_context_request_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def format_table(title: str, rows: list[object], columns: list[tuple[str, int, object]]) -> str:
     header = " ".join(fit_cell(name, width) for name, width, _getter in columns)
     divider = " ".join("-" * width for _name, width, _getter in columns)
@@ -957,6 +1037,7 @@ def run_candidate_evidence_dossier(
     input_paths: list[Path],
     filters: UniverseCandidateFilters | None = None,
     markdown_output: Path | None = None,
+    context_request_json_output: Path | None = None,
     output: TextIO | None = None,
 ) -> int:
     handle = output or io.StringIO()
@@ -973,6 +1054,13 @@ def run_candidate_evidence_dossier(
             input_paths=input_paths,
         )
         write_markdown_report(markdown_output, markdown_content)
+    if context_request_json_output is not None:
+        context_request_payload = build_context_request_payload(
+            report,
+            runtime_root=runtime_root,
+            markdown_output=markdown_output,
+        )
+        write_context_request_json(context_request_json_output, context_request_payload)
     print(render_report(report), file=handle)
     if output is None:
         print(handle.getvalue(), end="")
@@ -996,6 +1084,11 @@ def parse_args_and_run(argv: list[str] | None = None) -> int:
         input_paths=flatten_inputs(args.input),
         filters=filters,
         markdown_output=Path(args.markdown_output) if args.markdown_output else None,
+        context_request_json_output=(
+            Path(args.context_request_json_output)
+            if args.context_request_json_output
+            else None
+        ),
     )
 
 
