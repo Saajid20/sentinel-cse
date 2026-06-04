@@ -126,6 +126,20 @@ _LDEV_COMPANY_INCOME_TITLE_PATTERN = re.compile(
     r"comprehensive\s+income\s*-\s*company\b",
     re.IGNORECASE,
 )
+_WIND_VALUE_CELL_PATTERN = re.compile(
+    r"^(?:\(?[0-9][0-9,]*(?:\.\d+)?\)?|-)$"
+)
+_WIND_SECTION_LABELS = {
+    "assets",
+    "non-current assets",
+    "non current assets",
+    "current assets",
+    "equity and liabilities",
+    "capital and reserves",
+    "non-current liabilities",
+    "non current liabilities",
+    "current liabilities",
+}
 _INCOME_STATEMENT_METRIC_ITEMS = {
     "basic_eps",
     "diluted_eps",
@@ -909,6 +923,205 @@ def _signed_variance_raw(*, sign: str | None, value_raw: str) -> str:
     return f"({value_raw})"
 
 
+def _append_wind_block_recovered_items(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+    metric_entity: str,
+) -> list[MappedLineItemValues]:
+    if metric_entity != "group":
+        return mapped_items
+
+    recovered_items = _recover_wind_block_items(table)
+    if not recovered_items:
+        return mapped_items
+
+    existing_keys = {
+        (
+            mapped_item.canonical_name,
+            mapped_item.statement_type,
+            mapped_item.source_trace.raw_value if mapped_item.source_trace else None,
+        )
+        for mapped_item in mapped_items
+    }
+    unique_recovered_items = [
+        item
+        for item in recovered_items
+        if (
+            item.canonical_name,
+            item.statement_type,
+            item.source_trace.raw_value if item.source_trace else None,
+        )
+        not in existing_keys
+    ]
+    if not unique_recovered_items:
+        return mapped_items
+
+    return [*mapped_items, *unique_recovered_items]
+
+
+def _recover_wind_block_items(
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    recovered_items: list[MappedLineItemValues] = []
+    income_item = _recover_wind_income_block_profit_item(table)
+    if income_item is not None:
+        recovered_items.append(income_item)
+    recovered_items.extend(_recover_wind_balance_block_items(table))
+    return recovered_items
+
+
+def _recover_wind_income_block_profit_item(
+    table: ExtractedFinancialTable,
+) -> MappedLineItemValues | None:
+    if not _table_has_wind_consolidated_income_block(table):
+        return None
+
+    rows = _rows_with_normalized_text(table)
+    title_index = _find_row_index(rows, "consolidated income statement")
+    profit_label_index = _find_row_index(rows, "profit after taxation")
+    revenue_label_index = _find_row_index(rows, "revenue")
+    if (
+        title_index is None
+        or profit_label_index is None
+        or revenue_label_index is None
+        or not revenue_label_index < profit_label_index < title_index
+    ):
+        return None
+
+    profit_position = _value_label_position_between_rows(
+        rows,
+        start_index=revenue_label_index,
+        end_index=profit_label_index,
+    )
+    if profit_position is None:
+        return None
+
+    value_cells = _wind_value_cells_before_first_percent(rows, start_index=title_index + 1)
+    current_index = profit_position + profit_position - 1
+    previous_index = len(value_cells) - 1
+    if current_index >= len(value_cells) or previous_index <= current_index:
+        return None
+
+    current_line, current_raw = value_cells[current_index]
+    previous_line, previous_raw = value_cells[previous_index]
+
+    return _build_recovered_block_mapped_item(
+        table=table,
+        label_line=int(rows[profit_label_index][0]),
+        current_line=current_line,
+        previous_line=previous_line,
+        canonical_name="profit_for_the_period",
+        original_label="Profit after Taxation",
+        statement_type=FinancialStatementType.INCOME_STATEMENT,
+        current_raw=current_raw,
+        previous_raw=previous_raw,
+        notes="wind_consolidated_income_block_recovery",
+    )
+
+
+def _recover_wind_balance_block_items(
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    if not _table_has_wind_consolidated_balance_block(table):
+        return []
+
+    rows = _rows_with_normalized_text(table)
+    assets_index = _find_row_index(rows, "assets")
+    first_as_at_index = _find_row_index(rows, "as at 31.03.2026")
+    if assets_index is None or first_as_at_index is None or first_as_at_index <= assets_index:
+        return []
+
+    labels = _wind_balance_value_labels(
+        rows,
+        start_index=assets_index + 1,
+        end_index=first_as_at_index,
+    )
+    value_cells = _wind_value_cells_after_balance_header(rows, start_index=first_as_at_index)
+    label_count = len(labels)
+    if label_count == 0 or len(value_cells) < label_count * 2:
+        return []
+
+    recovered_items: list[MappedLineItemValues] = []
+    for canonical_name, original_label in (
+        ("total_assets", "Total Assets"),
+        ("total_equity", "Total Equity"),
+    ):
+        label_position = _find_wind_label_position(labels, original_label)
+        if label_position is None:
+            continue
+
+        current_line, current_raw = value_cells[label_position]
+        previous_line, previous_raw = value_cells[label_count + label_position]
+        recovered = _build_recovered_block_mapped_item(
+            table=table,
+            label_line=labels[label_position][0],
+            current_line=current_line,
+            previous_line=previous_line,
+            canonical_name=canonical_name,
+            original_label=original_label,
+            statement_type=FinancialStatementType.BALANCE_SHEET,
+            current_raw=current_raw,
+            previous_raw=previous_raw,
+            notes="wind_consolidated_balance_block_recovery",
+        )
+        if recovered is not None:
+            recovered_items.append(recovered)
+
+    return recovered_items
+
+
+def _build_recovered_block_mapped_item(
+    *,
+    table: ExtractedFinancialTable,
+    label_line: int,
+    current_line: int,
+    previous_line: int,
+    canonical_name: str,
+    original_label: str,
+    statement_type: FinancialStatementType,
+    current_raw: str,
+    previous_raw: str,
+    notes: str,
+) -> MappedLineItemValues | None:
+    current_value = parse_financial_value(current_raw)
+    previous_value = parse_financial_value(previous_raw)
+    if current_value.value is None or previous_value.value is None:
+        return None
+
+    raw_text = (
+        f"{original_label} | current_line={current_line} {current_raw} | "
+        f"previous_line={previous_line} {previous_raw}"
+    )
+    return MappedLineItemValues(
+        canonical_name=canonical_name,
+        original_label=original_label,
+        statement_type=statement_type,
+        raw_period_values={
+            "value_1": current_raw,
+            "value_2": previous_raw,
+        },
+        mapped_values={
+            "group_current": current_value,
+            "group_previous": previous_value,
+        },
+        source_trace=SourceTrace(
+            local_file_path=table.source_trace.local_file_path
+            if table.source_trace
+            else None,
+            page_number=table.page_number,
+            table_id=table.table_id,
+            row_label=original_label,
+            raw_value=raw_text,
+            notes=(
+                f"{notes}; label_line={label_line}; current_line={current_line}; "
+                f"previous_line={previous_line}"
+            ),
+        ),
+        notes=notes,
+    )
+
+
 def _build_recovered_mapped_item(
     *,
     table: ExtractedFinancialTable,
@@ -1093,6 +1306,11 @@ def _build_verified_metric_results_for_table(
         metric_entity=metric_entity,
     )
     mapped_items = _append_ldev_variance_income_recovered_items(
+        mapped_items,
+        table=table,
+        metric_entity=metric_entity,
+    )
+    mapped_items = _append_wind_block_recovered_items(
         mapped_items,
         table=table,
         metric_entity=metric_entity,
@@ -1287,6 +1505,134 @@ def _table_has_ldev_quarter_year_variance_group_income_layout(
         and not has_company_income_title
         and has_quarter_year_header
     )
+
+
+def _table_has_wind_consolidated_income_block(table: ExtractedFinancialTable) -> bool:
+    table_text = _normalized_table_text(table)
+    return (
+        "consolidated income statement" in table_text
+        and "profit after taxation" in table_text
+        and "three months ended 31st march twelve months ended 31st march" in table_text
+        and "change % change %" in table_text
+        and "company income statement" not in table_text
+    )
+
+
+def _table_has_wind_consolidated_balance_block(table: ExtractedFinancialTable) -> bool:
+    table_text = _normalized_table_text(table)
+    return (
+        "consolidated statement of financial position" in table_text
+        and "total assets" in table_text
+        and "total equity" in table_text
+        and "as at 31.03.2026" in table_text
+        and "as at 31.03.2025" in table_text
+        and "company statement of financial position" not in table_text
+    )
+
+
+def _normalized_table_text(table: ExtractedFinancialTable) -> str:
+    return " ".join(
+        re.sub(r"\s+", " ", str(row.get("text", "")).strip().lower())
+        for row in table.rows
+    )
+
+
+def _rows_with_normalized_text(
+    table: ExtractedFinancialTable,
+) -> list[tuple[int, str, str]]:
+    rows: list[tuple[int, str, str]] = []
+    for row in table.rows:
+        raw_text = re.sub(r"\s+", " ", str(row.get("text", "")).strip())
+        if not raw_text:
+            continue
+        line_number = int(row.get("line_number", 0) or 0)
+        rows.append((line_number, raw_text, raw_text.lower()))
+    return rows
+
+
+def _find_row_index(rows: list[tuple[int, str, str]], text: str) -> int | None:
+    normalized_text = text.lower()
+    for index, (_, _, row_text) in enumerate(rows):
+        if row_text == normalized_text:
+            return index
+    return None
+
+
+def _value_label_position_between_rows(
+    rows: list[tuple[int, str, str]],
+    *,
+    start_index: int,
+    end_index: int,
+) -> int | None:
+    position = 0
+    for _, _, row_text in rows[start_index : end_index + 1]:
+        if row_text.endswith(":"):
+            continue
+        position += 1
+    return position if position > 0 else None
+
+
+def _wind_value_cells_before_first_percent(
+    rows: list[tuple[int, str, str]],
+    *,
+    start_index: int,
+) -> list[tuple[int, str]]:
+    cells: list[tuple[int, str]] = []
+    for line_number, raw_text, row_text in rows[start_index:]:
+        if _is_wind_percent_cell(row_text):
+            break
+        if _is_wind_value_cell(row_text):
+            cells.append((line_number, raw_text))
+    return cells
+
+
+def _wind_value_cells_after_balance_header(
+    rows: list[tuple[int, str, str]],
+    *,
+    start_index: int,
+) -> list[tuple[int, str]]:
+    cells: list[tuple[int, str]] = []
+    for line_number, raw_text, row_text in rows[start_index:]:
+        if row_text.startswith("windforce plc"):
+            break
+        if _is_wind_value_cell(row_text):
+            cells.append((line_number, raw_text))
+    return cells
+
+
+def _wind_balance_value_labels(
+    rows: list[tuple[int, str, str]],
+    *,
+    start_index: int,
+    end_index: int,
+) -> list[tuple[int, str]]:
+    labels: list[tuple[int, str]] = []
+    for line_number, raw_text, row_text in rows[start_index:end_index]:
+        if row_text in _WIND_SECTION_LABELS:
+            continue
+        labels.append((line_number, raw_text))
+    return labels
+
+
+def _find_wind_label_position(
+    labels: list[tuple[int, str]],
+    text: str,
+) -> int | None:
+    normalized_text = text.lower()
+    for index, (_, label_text) in enumerate(labels):
+        if label_text.lower() == normalized_text:
+            return index
+    return None
+
+
+def _is_wind_value_cell(text: str) -> bool:
+    if text == "lkr" or "%" in text:
+        return False
+    return _WIND_VALUE_CELL_PATTERN.fullmatch(text) is not None
+
+
+def _is_wind_percent_cell(text: str) -> bool:
+    return re.fullmatch(r"-?\d[\d,]*(?:\.\d+)?%", text) is not None
 
 
 def _filter_redundant_metric_candidates(
