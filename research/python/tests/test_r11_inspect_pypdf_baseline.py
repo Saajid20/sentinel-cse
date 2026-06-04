@@ -431,6 +431,381 @@ def test_primary_income_statement_profit_row_still_produces_profit_growth_metric
     assert warnings == []
 
 
+def test_ldev_quarter_year_variance_income_row_recovers_group_profit_metric() -> None:
+    table = _make_table(
+        2,
+        [
+            "Lanka Developments PLC",
+            "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME-GROUP",
+            "Quarter Quarter Year Year",
+            "31.03.2026 31.03.2025 Variance 31.03.2026 31.03.2025 Variance",
+            "Rs.'000 Rs.'000 % Rs.'000 Rs.'000 %",
+            "Profit/(Loss) for the Period (31,447) (168,393) + (81) 240,389 730,682 - 67",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_profit_for_the_period_yoy_growth"
+    ]
+    assert verified_results[0].audit_entry.inputs["current"] == 240389.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 730682.0
+    assert verified_results[0].calculated_change_percent == -67.1
+    assert verified_results[0].reported_change_percent == -67.0
+    assert verified_results[0].matches_reported is False
+    assert warnings == []
+
+
+def test_ldev_quarter_year_variance_income_row_uses_annual_not_quarter_values() -> None:
+    table = _make_table(
+        2,
+        [
+            "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME-GROUP",
+            "Quarter Quarter Year Year",
+            "31.03.2026 31.03.2025 Variance 31.03.2026 31.03.2025 Variance",
+            "Profit/(Loss) for the Period 10 5 + 100 300 200 + 50",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert len(verified_results) == 1
+    assert verified_results[0].audit_entry.inputs["current"] == 300.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 200.0
+    assert verified_results[0].calculated_change_percent == 50.0
+    assert verified_results[0].reported_change_percent == 50.0
+    assert warnings == []
+
+
+def test_ldev_company_income_statement_does_not_produce_group_profit_metric() -> None:
+    table = _make_table(
+        3,
+        [
+            "STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME-COMPANY",
+            "Quarter Quarter Year Year",
+            "31.03.2026 31.03.2025 Variance 31.03.2026 31.03.2025 Variance",
+            "Profit/(Loss) for the Period (31,447) (168,393) + (81) 240,389 730,682 - 67",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_3", 3): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
+def test_wind_income_block_recovers_profit_after_taxation_metric() -> None:
+    table = _make_table(
+        5,
+        [
+            "WINDFORCE PLC | INTERIM CONDENSED FINANCIAL STATEMENT",
+            "Revenue",
+            "Billing under the Standardized Power Purchase Agreement",
+            "Direct Cost",
+            "Gross Profit",
+            "Other Operating Income",
+            "Gain on Disposal of Rooftop solar panels",
+            "Administration Expenses",
+            "Goodwill Impairment",
+            "Selling and Distribution Expenses",
+            "Profit from Operating Activities",
+            "Finance Income",
+            "Finance Costs",
+            "Profit from Ordinary Activities before taxation",
+            "Share of results of equity accounted investee",
+            "Profit before Taxation",
+            "Income Tax Expenses",
+            "Dividend Tax",
+            "Profit after Taxation",
+            "Attributable to:",
+            "Non-controlling interests",
+            "Equity holders of the parent",
+            "Other Comprehensive Income for the Year",
+            "Acturial gain/ (loss) on retirement benefit obligation",
+            "Deferred Tax effect on acturial gain",
+            "Net exchange diffrences on translation of foreign operations",
+            "Net gain/(loss) on cash flow hedges",
+            "Attributable to:",
+            "Non-controlling interests",
+            "Equity holders of the parent",
+            "Earning per share",
+            "CONSOLIDATED INCOME STATEMENT",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "108",
+            "109",
+            "110",
+            "111",
+            "112",
+            "113",
+            "114",
+            "115",
+            "116",
+            "117",
+            "2,099,532,182",
+            "2,249,689,817",
+            "-7%",
+            "Three Months Ended 31st March Twelve Months Ended 31st March",
+            "Change % Change %",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_5", 5): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_profit_for_the_period_yoy_growth"
+    ]
+    assert verified_results[0].audit_entry.inputs["current"] == 2099532182.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 2249689817.0
+    assert verified_results[0].calculated_change_percent == -6.67
+    assert warnings == []
+
+
+def test_wind_income_block_uses_annual_values_not_initial_summary_block() -> None:
+    table = _make_table(
+        5,
+        [
+            "Revenue",
+            "Billing under the Standardized Power Purchase Agreement",
+            "Direct Cost",
+            "Gross Profit",
+            "Other Operating Income",
+            "Gain on Disposal of Rooftop solar panels",
+            "Administration Expenses",
+            "Goodwill Impairment",
+            "Selling and Distribution Expenses",
+            "Profit from Operating Activities",
+            "Finance Income",
+            "Finance Costs",
+            "Profit from Ordinary Activities before taxation",
+            "Share of results of equity accounted investee",
+            "Profit before Taxation",
+            "Income Tax Expenses",
+            "Dividend Tax",
+            "Profit after Taxation",
+            "CONSOLIDATED INCOME STATEMENT",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "999",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "108",
+            "109",
+            "110",
+            "111",
+            "112",
+            "113",
+            "114",
+            "115",
+            "116",
+            "117",
+            "300",
+            "200",
+            "50%",
+            "Three Months Ended 31st March Twelve Months Ended 31st March",
+            "Change % Change %",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_5", 5): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert len(verified_results) == 1
+    assert verified_results[0].audit_entry.inputs["current"] == 300.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 200.0
+    assert verified_results[0].calculated_change_percent == 50.0
+    assert warnings == []
+
+
+def test_wind_balance_block_recovers_total_assets_and_total_equity_only() -> None:
+    table = _make_table(
+        6,
+        [
+            "CONSOLIDATED STATEMENT OF FINANCIAL POSITION",
+            "ASSETS",
+            "Non-Current Assets",
+            "Property, Plant and Equipment",
+            "Total Non-Current Assets",
+            "Current Assets",
+            "Total Assets",
+            "EQUITY AND LIABILITIES",
+            "Capital and Reserves",
+            "Stated Capital",
+            "Total Equity",
+            "Non Current Liabilities",
+            "Total Non-Current Liabilities",
+            "Current Liabilities",
+            "Total Current Liabilities",
+            "Total Equity and Liabilities",
+            "Net assets per share (LKR)",
+            "As at 31.03.2026",
+            "Unaudited",
+            "As at 31.03.2025",
+            "Audited",
+            "10",
+            "20",
+            "44,093,742,608",
+            "30",
+            "28,931,465,458",
+            "40",
+            "50",
+            "60",
+            "18.72",
+            "11",
+            "22",
+            "39,424,451,622",
+            "33",
+            "26,399,272,168",
+            "44",
+            "55",
+            "66",
+            "17.22",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_6", 6): SimpleNamespace(
+                statement_type=FinancialStatementType.BALANCE_SHEET
+            )
+        },
+        metric_entity="group",
+    )
+
+    metric_names = [result.metric.metric_name for result in verified_results]
+
+    assert metric_names == [
+        "group_total_assets_growth",
+        "group_total_equity_growth",
+    ]
+    assert verified_results[0].audit_entry.inputs["current"] == 44093742608.0
+    assert verified_results[0].audit_entry.inputs["previous"] == 39424451622.0
+    assert verified_results[0].calculated_change_percent == 11.84
+    assert verified_results[1].audit_entry.inputs["current"] == 28931465458.0
+    assert verified_results[1].audit_entry.inputs["previous"] == 26399272168.0
+    assert verified_results[1].calculated_change_percent == 9.59
+    assert "group_total_liabilities_growth" not in metric_names
+    assert warnings == []
+
+
+def test_wind_company_balance_block_does_not_produce_group_metrics() -> None:
+    table = _make_table(
+        10,
+        [
+            "COMPANY STATEMENT OF FINANCIAL POSITION",
+            "ASSETS",
+            "Total Assets",
+            "EQUITY AND LIABILITIES",
+            "Total Equity",
+            "As at 31.03.2026",
+            "Unaudited",
+            "As at 31.03.2025",
+            "Audited",
+            "25,590,148,559",
+            "23,066,409,839",
+            "22,418,201,331",
+            "21,442,986,932",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_10", 10): SimpleNamespace(
+                statement_type=FinancialStatementType.BALANCE_SHEET
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+
+
 def test_quarter_plus_annual_consolidated_income_row_uses_annual_group_values() -> None:
     table = _make_table(
         3,
