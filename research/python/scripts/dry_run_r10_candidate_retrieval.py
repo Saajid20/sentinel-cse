@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -21,12 +23,43 @@ from validate_r10_candidate_query_plan import (  # noqa: E402
 )
 
 DEFAULT_LIMIT = 10
+JSON_SCHEMA_VERSION = "r10-local-retrieval-dry-run/v0.1"
 QUERY_PLAN_TO_SOURCE_TYPE = {
     "CSE_DISCLOSURE": SourceType.CSE_DISCLOSURE,
     "CSE_ANNOUNCEMENT": SourceType.CSE_DISCLOSURE,
     "CSE_FINANCIAL_DISCLOSURE": SourceType.CSE_DISCLOSURE,
     "CBSL_CONTEXT": SourceType.CBSL,
 }
+
+
+@dataclass(frozen=True)
+class RetrievalPlanSummary:
+    ticker: str
+    company_name: str | None
+    schema_version: str
+    requested_source_labels: tuple[str, ...]
+    query_terms: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MatchedDocumentSummary:
+    document_id: str
+    source_type: str
+    title: str
+    reference: str | None
+    score: float
+    matched_reasons: tuple[str, ...]
+    tickers_hint: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class R10LocalRetrievalDryRunResult:
+    query_plan_path: str
+    document_store_path: str
+    query_plan_summary: RetrievalPlanSummary
+    document_query: DocumentQuery
+    matched_documents: tuple[MatchedDocumentSummary, ...]
+    warnings: tuple[str, ...]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +78,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--document-store",
         required=True,
         help="Path to an existing LocalDocumentStore JSONL file.",
+    )
+    parser.add_argument(
+        "--json-output",
+        help=(
+            "Optional dry-run JSON export path, for example "
+            ".runtime-pipeline/r10-local-retrieval/PKME.N0000.json. "
+            "Runtime artifacts should not be committed."
+        ),
     )
     return parser
 
@@ -118,6 +159,11 @@ def reference_for_result(result: RetrievalResult) -> str:
     return "unavailable"
 
 
+def reference_value_for_result(result: RetrievalResult) -> str | None:
+    reference = reference_for_result(result)
+    return None if reference == "unavailable" else reference
+
+
 def build_warnings(documents_count: int, results: list[RetrievalResult]) -> list[str]:
     warnings: list[str] = []
     if documents_count == 0:
@@ -132,70 +178,107 @@ def build_warnings(documents_count: int, results: list[RetrievalResult]) -> list
     return warnings
 
 
-def render_report(
+def build_dry_run_result(
     query_plan_path: Path,
     document_store_path: Path,
     payload: dict[str, object],
     query: DocumentQuery,
     results: list[RetrievalResult],
     warnings: list[str],
+) -> R10LocalRetrievalDryRunResult:
+    requested_source_labels = tuple(
+        str(item).strip()
+        for item in payload.get("requested_source_types", [])
+        if isinstance(item, str) and item.strip()
+    )
+    query_terms = tuple(
+        str(item).strip()
+        for item in payload.get("query_terms", [])
+        if isinstance(item, str) and item.strip()
+    )
+    matched_documents = tuple(
+        MatchedDocumentSummary(
+            document_id=result.document.document_id,
+            source_type=result.document.source_type.value,
+            title=result.document.title,
+            reference=reference_value_for_result(result),
+            score=result.score,
+            matched_reasons=tuple(result.matched_reasons),
+            tickers_hint=tuple(result.document.tickers_hint),
+        )
+        for result in results
+    )
+    return R10LocalRetrievalDryRunResult(
+        query_plan_path=str(query_plan_path),
+        document_store_path=str(document_store_path),
+        query_plan_summary=RetrievalPlanSummary(
+            ticker=str(payload.get("ticker")),
+            company_name=(
+                str(payload.get("company_name")).strip()
+                if isinstance(payload.get("company_name"), str)
+                and str(payload.get("company_name")).strip()
+                else None
+            ),
+            schema_version=str(payload.get("schema_version")),
+            requested_source_labels=requested_source_labels,
+            query_terms=query_terms,
+        ),
+        document_query=query,
+        matched_documents=matched_documents,
+        warnings=tuple(warnings),
+    )
+
+
+def render_report(
+    result: R10LocalRetrievalDryRunResult,
 ) -> str:
-    requested_source_labels = payload.get("requested_source_types", [])
-    query_terms = payload.get("query_terms", [])
-    source_label_text = (
-        ", ".join(str(item) for item in requested_source_labels)
-        if isinstance(requested_source_labels, list) and requested_source_labels
-        else "none"
+    source_label_text = ", ".join(result.query_plan_summary.requested_source_labels) or "none"
+    query_terms_text = ", ".join(result.query_plan_summary.query_terms) or "none"
+    mapped_source_types = (
+        ", ".join(source_type.value for source_type in result.document_query.source_types) or "none"
     )
-    query_terms_text = (
-        ", ".join(str(item) for item in query_terms)
-        if isinstance(query_terms, list) and query_terms
-        else "none"
-    )
-    mapped_source_types = ", ".join(source_type.value for source_type in query.source_types) or "none"
 
     lines = [
         "R10 local retrieval dry-run",
         "",
         "Query plan summary",
-        f"- query_plan: {query_plan_path}",
-        f"- document_store: {document_store_path}",
-        f"- ticker: {payload.get('ticker')}",
-        f"- company_name: {payload.get('company_name') or 'unavailable'}",
-        f"- schema_version: {payload.get('schema_version')}",
+        f"- query_plan: {result.query_plan_path}",
+        f"- document_store: {result.document_store_path}",
+        f"- ticker: {result.query_plan_summary.ticker}",
+        f"- company_name: {result.query_plan_summary.company_name or 'unavailable'}",
+        f"- schema_version: {result.query_plan_summary.schema_version}",
         f"- requested source labels: {source_label_text}",
         f"- query terms: {query_terms_text}",
         "",
         "Local DocumentQuery summary",
-        f"- tickers: {', '.join(query.tickers) or 'none'}",
-        f"- keywords: {', '.join(query.keywords) or 'none'}",
+        f"- tickers: {', '.join(result.document_query.tickers) or 'none'}",
+        f"- keywords: {', '.join(result.document_query.keywords) or 'none'}",
         f"- mapped SourceType values: {mapped_source_types}",
-        f"- limit: {query.limit}",
+        f"- limit: {result.document_query.limit}",
         "",
         "Retrieval results",
-        f"- matched document count: {len(results)}",
+        f"- matched document count: {len(result.matched_documents)}",
     ]
 
-    for index, result in enumerate(results, start=1):
-        document = result.document
+    for index, document in enumerate(result.matched_documents, start=1):
         lines.extend(
             [
                 f"- document {index}",
                 f"  document_id: {document.document_id}",
-                f"  source_type: {document.source_type.value}",
+                f"  source_type: {document.source_type}",
                 f"  title: {document.title}",
-                f"  reference: {reference_for_result(result)}",
-                f"  score: {result.score}",
+                f"  reference: {document.reference or 'unavailable'}",
+                f"  score: {document.score}",
                 "  matched_reasons: "
-                + (", ".join(result.matched_reasons) if result.matched_reasons else "unavailable"),
+                + (", ".join(document.matched_reasons) if document.matched_reasons else "unavailable"),
                 "  tickers_hint: "
                 + (", ".join(document.tickers_hint) if document.tickers_hint else "unavailable"),
             ]
         )
 
     lines.extend(["", "Warnings"])
-    if warnings:
-        lines.extend(f"- {warning}" for warning in warnings)
+    if result.warnings:
+        lines.extend(f"- {warning}" for warning in result.warnings)
     else:
         lines.append("- none")
 
@@ -214,6 +297,57 @@ def render_report(
         ]
     )
     return "\n".join(lines)
+
+
+def build_dry_run_result_json(
+    result: R10LocalRetrievalDryRunResult,
+) -> dict[str, object]:
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "query_plan_path": result.query_plan_path,
+        "document_store_path": result.document_store_path,
+        "query_plan_summary": {
+            "ticker": result.query_plan_summary.ticker,
+            "company_name": result.query_plan_summary.company_name,
+            "requested_source_labels": list(result.query_plan_summary.requested_source_labels),
+            "query_terms": list(result.query_plan_summary.query_terms),
+        },
+        "document_query": {
+            "tickers": list(result.document_query.tickers),
+            "keywords": list(result.document_query.keywords),
+            "source_types": [source_type.value for source_type in result.document_query.source_types],
+            "limit": result.document_query.limit,
+        },
+        "matched_document_count": len(result.matched_documents),
+        "matched_documents": [
+            {
+                "document_id": document.document_id,
+                "source_type": document.source_type,
+                "title": document.title,
+                "reference": document.reference,
+                "score": document.score,
+                "matched_reasons": list(document.matched_reasons),
+                "tickers_hint": list(document.tickers_hint),
+            }
+            for document in result.matched_documents
+        ],
+        "warnings": list(result.warnings),
+        "safety": {
+            "local_retrieval_only": True,
+            "no_context_agent": True,
+            "no_llm": True,
+            "no_network": True,
+            "no_new_ingestion": True,
+            "no_policy_output": True,
+            "technical_evidence_is_not_source_evidence": True,
+            "human_review_required": True,
+        },
+    }
+
+
+def write_dry_run_result_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def print_fail_summary(query_plan_path: Path, reasons: list[str]) -> None:
@@ -249,7 +383,20 @@ def main(argv: list[str] | None = None) -> int:
     query = build_document_query_from_payload(payload)
     results = SimpleDocumentRetriever(documents).search(query)
     warnings = build_warnings(len(documents), results)
-    print(render_report(query_plan_path, document_store_path, payload, query, results, warnings))
+    dry_run_result = build_dry_run_result(
+        query_plan_path,
+        document_store_path,
+        payload,
+        query,
+        results,
+        warnings,
+    )
+    if args.json_output:
+        write_dry_run_result_json(
+            Path(args.json_output).expanduser(),
+            build_dry_run_result_json(dry_run_result),
+        )
+    print(render_report(dry_run_result))
     return 0
 
 

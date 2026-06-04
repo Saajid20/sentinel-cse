@@ -21,6 +21,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from dry_run_r10_candidate_retrieval import (  # noqa: E402
     build_document_query_from_payload,
+    build_parser,
     main,
     map_query_plan_source_types,
 )
@@ -123,17 +124,43 @@ def write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def run_cli(query_plan_path: Path, document_store_path: Path) -> tuple[int, str]:
+    return run_cli_with_optional_json(query_plan_path, document_store_path, None)
+
+
+def run_cli_with_optional_json(
+    query_plan_path: Path,
+    document_store_path: Path,
+    json_output_path: Path | None,
+) -> tuple[int, str]:
     buffer = io.StringIO()
+    argv = [
+        "--query-plan",
+        str(query_plan_path),
+        "--document-store",
+        str(document_store_path),
+    ]
+    if json_output_path is not None:
+        argv.extend(["--json-output", str(json_output_path)])
     with redirect_stdout(buffer):
-        exit_code = main(
-            [
-                "--query-plan",
-                str(query_plan_path),
-                "--document-store",
-                str(document_store_path),
-            ]
-        )
+        exit_code = main(argv)
     return exit_code, buffer.getvalue()
+
+
+def test_cli_parses_json_output_flag() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "--query-plan",
+            "query-plan.json",
+            "--document-store",
+            "documents.jsonl",
+            "--json-output",
+            "output.json",
+        ]
+    )
+
+    assert args.json_output == "output.json"
 
 
 def test_valid_query_plan_builds_deterministic_document_query() -> None:
@@ -308,6 +335,236 @@ def test_no_files_written(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert before == after
+
+
+def test_no_json_file_written_unless_json_output_passed(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "out" / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli(query_plan_path, store_path)
+
+    assert exit_code == 0
+    assert not json_output_path.exists()
+
+
+def test_json_output_parent_directory_created_automatically(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "nested" / "retrieval" / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+
+    assert exit_code == 0
+    assert json_output_path.exists()
+
+
+def test_json_output_contains_expected_top_level_fields(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload = json.loads(json_output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["schema_version"] == "r10-local-retrieval-dry-run/v0.1"
+    assert payload["query_plan_path"] == str(query_plan_path)
+    assert payload["document_store_path"] == str(store_path)
+    assert set(payload) == {
+        "schema_version",
+        "query_plan_path",
+        "document_store_path",
+        "query_plan_summary",
+        "document_query",
+        "matched_document_count",
+        "matched_documents",
+        "warnings",
+        "safety",
+    }
+
+
+def test_json_output_includes_query_plan_summary(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload = json.loads(json_output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["query_plan_summary"] == {
+        "ticker": "PKME.N0000",
+        "company_name": "DIGITAL MOBILITY SOLUTIONS LANKA PLC",
+        "requested_source_labels": [
+            "CSE_DISCLOSURE",
+            "CSE_ANNOUNCEMENT",
+            "CSE_FINANCIAL_DISCLOSURE",
+        ],
+        "query_terms": [
+            "PKME.N0000",
+            "PKME",
+            "DIGITAL MOBILITY SOLUTIONS LANKA PLC",
+            "DIGITAL MOBILITY SOLUTIONS LANKA",
+        ],
+    }
+
+
+def test_json_output_includes_document_query_summary(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload = json.loads(json_output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["document_query"] == {
+        "tickers": ["PKME.N0000"],
+        "keywords": [
+            "PKME",
+            "DIGITAL MOBILITY SOLUTIONS LANKA PLC",
+            "DIGITAL MOBILITY SOLUTIONS LANKA",
+        ],
+        "source_types": ["CSE_DISCLOSURE"],
+        "limit": 10,
+    }
+
+
+def test_json_output_includes_matched_local_documents_with_confirmed_fields(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload = json.loads(json_output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["matched_document_count"] == 1
+    assert payload["matched_documents"] == [
+        {
+            "document_id": "doc-001",
+            "source_type": "CSE_DISCLOSURE",
+            "title": "PKME issuer update",
+            "reference": "C:/docs/pkme-update.pdf",
+            "score": 5.25,
+            "matched_reasons": [
+                "keyword:PKME",
+                "keyword:DIGITAL MOBILITY SOLUTIONS LANKA PLC",
+                "keyword:DIGITAL MOBILITY SOLUTIONS LANKA",
+                "ticker:PKME.N0000",
+                "source_type:CSE_DISCLOSURE",
+            ],
+            "tickers_hint": ["PKME.N0000"],
+        }
+    ]
+
+
+def test_empty_local_store_exports_zero_matches_with_warning(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    store_path.write_text("", encoding="utf-8")
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload = json.loads(json_output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["matched_document_count"] == 0
+    assert payload["matched_documents"] == []
+    assert payload["warnings"] == ["empty local store: no SourceDocument records found"]
+
+
+def test_no_matches_exports_zero_matches_with_warning(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(
+        make_document(
+            document_id="doc-other",
+            tickers_hint=["OTHER.N0000"],
+            raw_text="Unrelated issuer update.",
+            normalized_text="Unrelated issuer update.",
+            title="Other issuer update",
+        )
+    )
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload = json.loads(json_output_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert payload["matched_document_count"] == 0
+    assert payload["matched_documents"] == []
+    assert payload["warnings"] == ["no local documents matched the mapped retrieval query"]
+
+
+def test_invalid_query_plan_does_not_write_json(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload(schema_version="bad-version"))
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+
+    assert exit_code == 2
+    assert not json_output_path.exists()
+
+
+def test_invalid_document_store_does_not_write_json(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    store_path.write_text("{not-json}\n", encoding="utf-8")
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+
+    assert exit_code == 2
+    assert not json_output_path.exists()
+
+
+def test_terminal_output_still_prints_when_json_export_used(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, output = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+
+    assert exit_code == 0
+    assert "R10 local retrieval dry-run" in output
+    assert "matched document count: 1" in output
+    assert json_output_path.exists()
+
+
+def test_generated_json_contains_no_trading_action_language_tokens(tmp_path: Path) -> None:
+    query_plan_path = tmp_path / "query-plan.json"
+    store_path = tmp_path / "documents.jsonl"
+    json_output_path = tmp_path / "result.json"
+    write_json(query_plan_path, make_query_plan_payload())
+    LocalDocumentStore(store_path).append(make_document())
+
+    exit_code, _ = run_cli_with_optional_json(query_plan_path, store_path, json_output_path)
+    payload_text = json_output_path.read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert re.search(r"\b(?:BUY|SELL|HOLD|ENTRY|EXIT|TRADE)\b", payload_text) is None
 
 
 def test_no_trading_action_language_in_output(tmp_path: Path) -> None:
