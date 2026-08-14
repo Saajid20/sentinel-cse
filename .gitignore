@@ -45,8 +45,15 @@ research/python/.venv/
 __pycache__/
 .pytest_cache/
 research/python/.tmp-test-output/
-research/python/.r10_runtime/
 research/python/tmp*/
+
+# Local research runtime artifacts (analysis JSON, gold labels, validation
+# reports, retrieval results, source PDFs). These are local evidence/output,
+# never source-controlled. Do not stage.
+.runtime-pipeline/
+research/python/.r10_runtime/
+research/python/.r11_runtime/
+research/python/.pytest_tmp*/
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
