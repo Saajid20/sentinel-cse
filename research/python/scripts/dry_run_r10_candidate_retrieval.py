@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--json-output",
         help=(
             "Optional dry-run JSON export path, for example "
-            ".runtime-pipeline/r10-local-retrieval/PKME.N0000.json. "
+            ".runtime-pipeline/r10-local-retrieval-results/PKME.N0000.json. "
             "Runtime artifacts should not be committed."
         ),
     )
