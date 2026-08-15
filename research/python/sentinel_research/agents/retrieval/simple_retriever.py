@@ -152,11 +152,16 @@ class SimpleDocumentRetriever:
 
     @staticmethod
     def _build_searchable_text(document: SourceDocument) -> str:
+        # tickers_hint is an annotation this system writes at ingestion, not source
+        # document content. Folding it in here made keyword matches fire off our own
+        # annotation, so a ticker keyword and a ticker filter both scored the same
+        # internal value and appeared in matched_reasons as independent corroboration.
+        # Ticker matching itself is unaffected: _matches_exact_or_text still checks
+        # tickers_hint directly.
         parts = [
             document.title,
             document.raw_text,
             document.normalized_text or "",
-            " ".join(document.tickers_hint),
             " ".join(document.sectors_hint),
         ]
         return " ".join(parts).lower()
