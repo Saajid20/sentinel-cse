@@ -146,6 +146,44 @@ def test_ticker_search_matches_raw_text_occurrence() -> None:
     assert [result.document.document_id for result in results] == ["doc-raw"]
 
 
+def test_keyword_search_does_not_match_ticker_present_only_in_tickers_hint() -> None:
+    retriever = SimpleDocumentRetriever(
+        [
+            make_document(
+                document_id="doc-hint-only",
+                title="Company disclosure",
+                raw_text="Company update with limited text.",
+                normalized_text="Company update with limited text.",
+                tickers_hint=["COMB.N0000"],
+            )
+        ]
+    )
+
+    results = retriever.search(DocumentQuery(keywords=["COMB"]))
+
+    assert results == []
+
+
+def test_ticker_search_still_matches_hint_after_hint_removed_from_keyword_text() -> None:
+    retriever = SimpleDocumentRetriever(
+        [
+            make_document(
+                document_id="doc-hint-only",
+                title="Company disclosure",
+                raw_text="Company update with limited text.",
+                normalized_text="Company update with limited text.",
+                tickers_hint=["COMB.N0000"],
+            )
+        ]
+    )
+
+    results = retriever.search(DocumentQuery(tickers=["COMB.N0000"]))
+
+    assert [result.document.document_id for result in results] == ["doc-hint-only"]
+    assert results[0].matched_reasons == ["ticker:COMB.N0000"]
+    assert results[0].score == 2.0
+
+
 def test_sector_search_matches_sectors_hint() -> None:
     retriever = make_retriever()
 
