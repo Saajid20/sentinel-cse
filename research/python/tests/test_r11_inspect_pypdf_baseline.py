@@ -836,6 +836,85 @@ def test_quarter_plus_annual_consolidated_income_row_uses_annual_group_values() 
     assert warnings == []
 
 
+def test_three_months_plus_year_ended_consolidated_income_row_uses_annual_group_values() -> None:
+    # ACME page 2 shape: the quarter block is worded "For the three months ended"
+    # and pypdf splits the parenthesised percent cells as "( 63%)".
+    table = _make_table(
+        2,
+        [
+            "ACME PRINTING & PACKAGING PLC",
+            "CONSOLIDATED STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME",
+            "2026 2025 % Change 2026 2025 % Change",
+            "Profit / (Loss) for the Period (313,538) (192,078) ( 63%) "
+            "(462,860) (405,923) ( 14%)",
+            "For the year ended",
+            "For the three months ended",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert [result.metric.metric_name for result in verified_results] == [
+        "group_profit_for_the_period_yoy_growth"
+    ]
+    # Annual block, not the quarter block.
+    assert verified_results[0].audit_entry.inputs["current"] == -462860.0
+    assert verified_results[0].audit_entry.inputs["previous"] == -405923.0
+    assert verified_results[0].calculated_change_percent == -14.03
+    assert warnings == []
+
+
+def test_unresolved_quarter_phrasing_drops_income_candidates_instead_of_reporting_quarter_growth() -> None:
+    """Safety guard: an unrecognised quarter block must fail missing, not wrong.
+
+    This page has an annual marker ("for the year ended") and four-value income
+    rows, but its quarter block is worded in a way the explicit quarter markers do
+    not cover. Which period block occupies value_1/value_2 is therefore unknown.
+    COMB_FOUR_COLUMN_DUAL_SCOPE_MAP would map them to group_current/group_previous
+    regardless, publishing a QUARTER movement as an annual group YoY growth. With
+    no company page present there is no conflict to catch it, so the false value
+    would look entirely legitimate.
+
+    The correct outcome is no group metric at all.
+    """
+    table = _make_table(
+        2,
+        [
+            "CONSOLIDATED STATEMENT OF PROFIT OR LOSS AND OTHER COMPREHENSIVE INCOME",
+            "2026 2025 % Change 2026 2025 % Change",
+            "Profit / (Loss) for the Period (313,538) (192,078) ( 63%) "
+            "(462,860) (405,923) ( 14%)",
+            "For the year ended",
+            "For the period from 1 January to 31 March",
+        ],
+    )
+
+    verified_results, warnings = _build_verified_metric_results_for_tables(
+        tables=[table],
+        statement_matches_by_key={
+            ("pypdf_page_2", 2): SimpleNamespace(
+                statement_type=FinancialStatementType.INCOME_STATEMENT
+            )
+        },
+        metric_entity="group",
+    )
+
+    assert verified_results == []
+    assert warnings == []
+    # Specifically: the quarter movement must never surface as an annual metric.
+    assert "group_profit_for_the_period_yoy_growth" not in [
+        result.metric.metric_name for result in verified_results
+    ]
+
+
 def test_quarter_plus_annual_wata_page_three_profit_row_produces_group_annual_metric() -> None:
     table = _make_table(
         3,
