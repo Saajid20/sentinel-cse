@@ -18,6 +18,11 @@ _STRIPPABLE_VALUE_TOKEN_PATTERN = re.compile(
     r"^(?:(?:\d[\d,]*(?:\.\d+)?)|(?:\(\d[\d,]*(?:\.\d+)?\))|(?:-?\d[\d,]*(?:\.\d+)?%)|(?:\(-?\d[\d,]*(?:\.\d+)?%\))|-|(?:Rs\.\d[\d,]*(?:\.\d+)?))$",
     re.IGNORECASE,
 )
+# pypdf sometimes emits a parenthesised percent cell with an internal space, so
+# "(63%)" arrives as "( 63%)" and tokenizes as "(" + "63%)". Neither half matches
+# _STRIPPABLE_VALUE_TOKEN_PATTERN, which strands the whole row tail inside the label.
+# This collapses only that pypdf-inserted space, and only for label derivation.
+_SPLIT_PERCENT_CELL_PATTERN = re.compile(r"\(\s+(?=-?\d[\d,]*(?:\.\d+)?%\))")
 _DATE_HEADER_PATTERN = re.compile(
     r"\b(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)\b",
     re.IGNORECASE,
@@ -76,6 +81,15 @@ def parse_numeric_tokens(text: str) -> list[str]:
     return [token for token in tokens if _VALUE_TOKEN_PATTERN.fullmatch(token)]
 
 
+def _collapse_split_percent_cells(text: str) -> str:
+    """Rejoin pypdf-split parenthesised percent cells: "( 63%)" -> "(63%)".
+
+    Label-derivation helper only. It never widens value recognition: percent cells
+    are not financial values, and raw_text is left untouched for source-trace fidelity.
+    """
+    return _SPLIT_PERCENT_CELL_PATTERN.sub("(", text)
+
+
 def strip_numeric_tokens_from_label(text: str, values: list[str]) -> str:
     if not values:
         return re.sub(r"\s+", " ", text.strip())
@@ -112,7 +126,10 @@ def parse_financial_row_text(
     if len(values) < 2:
         return None
 
-    label = strip_numeric_tokens_from_label(normalized_text, values)
+    label = strip_numeric_tokens_from_label(
+        _collapse_split_percent_cells(normalized_text),
+        values,
+    )
     if not label:
         return None
 

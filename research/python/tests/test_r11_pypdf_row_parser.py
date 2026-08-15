@@ -83,6 +83,26 @@ def test_percent_tokens_clean_labels_without_becoming_values() -> None:
     assert parsed.values == ["100", "90", "400", "360"]
 
 
+def test_pypdf_split_percent_cells_do_not_strand_the_row_tail_in_the_label() -> None:
+    # ACME page 2: pypdf emits "( 14%)" instead of "(14%)". The split "(" + "14%)"
+    # tokens used to defeat trailing-value stripping, so the whole row became the label.
+    parsed = parse_financial_row_text(
+        "Profit / (Loss) for the Period (313,538) (192,078) ( 63%) "
+        "(462,860) (405,923) ( 14%)",
+        page_number=2,
+        table_id="pypdf_page_2",
+        line_number=39,
+    )
+
+    assert parsed is not None
+    assert parsed.label == "Profit / (Loss) for the Period"
+    assert parsed.values == ["(313,538)", "(192,078)", "(462,860)", "(405,923)"]
+    # Percent cells stay out of the financial values, split or not.
+    assert not any("%" in value for value in parsed.values)
+    # raw_text keeps the pypdf spacing for source-trace fidelity.
+    assert "( 14%)" in parsed.raw_text
+
+
 def test_parse_financial_row_text_parses_net_interest_income_row_into_label_and_six_values() -> None:
     parsed = parse_financial_row_text(
         "Net interest income 38,813,847 34,214,823 13.44 37,339,338 33,251,596 12.29",

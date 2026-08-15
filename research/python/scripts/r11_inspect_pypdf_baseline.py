@@ -65,6 +65,13 @@ _QUARTER_PLUS_ANNUAL_HEADER_MARKERS = (
     "twelve months ended",
     "year ended",
 )
+# Explicit quarter-block phrasings. Filings word the quarter column block
+# differently ("Quarter ended" vs "For the three months ended"); each accepted
+# phrasing is listed literally rather than matched by a widened pattern.
+_QUARTER_PLUS_ANNUAL_QUARTER_MARKERS = (
+    "quarter ended",
+    "three months ended",
+)
 _MIXED_PAGE_PRIMARY_BALANCE_ITEMS = {
     "total_assets",
     "total_equity",
@@ -1206,7 +1213,10 @@ def _prepare_mapped_items_for_metric_build(
         return mixed_page_balance_items
 
     if not _table_has_quarter_plus_annual_income_layout(table):
-        return prepared_items
+        return _drop_unresolved_annual_column_block_income_candidates(
+            prepared_items,
+            table=table,
+        )
 
     if not _table_has_group_income_statement_title_markers(table):
         return mixed_page_balance_items
@@ -1215,6 +1225,57 @@ def _prepare_mapped_items_for_metric_build(
         _remap_quarter_plus_annual_income_item_for_group_metric(mapped_item)
         for mapped_item in prepared_items
     ]
+
+
+def _drop_unresolved_annual_column_block_income_candidates(
+    mapped_items: list[MappedLineItemValues],
+    *,
+    table: ExtractedFinancialTable,
+) -> list[MappedLineItemValues]:
+    """Drop income candidates whose period block could not be resolved.
+
+    A group income page carrying an annual period marker together with four-value
+    income rows has two period blocks (quarter and annual). If the
+    quarter-plus-annual gate did not fire, this filing words its quarter block in a
+    way the explicit markers do not cover, so which block occupies value_1/value_2
+    is unknown.
+
+    COMB_FOUR_COLUMN_DUAL_SCOPE_MAP assigns value_1/value_2 -> group_current/
+    group_previous unconditionally. On such a page those are the QUARTER figures,
+    so letting them through would report a quarter movement as an annual group YoY
+    growth. With no company page to raise a conflict, that false value would look
+    entirely legitimate.
+
+    Dropping the candidate leaves the metric missing and the case in manual review.
+    Missing is acceptable; wrong is not.
+    """
+    if not _table_has_annual_income_column_block_marker(table):
+        return mapped_items
+
+    return [
+        mapped_item
+        for mapped_item in mapped_items
+        if not _is_unresolved_annual_column_block_income_candidate(mapped_item)
+    ]
+
+
+def _is_unresolved_annual_column_block_income_candidate(
+    mapped_item: MappedLineItemValues,
+) -> bool:
+    if mapped_item.canonical_name not in _INCOME_STATEMENT_METRIC_ITEMS:
+        return False
+    if mapped_item.statement_type is not FinancialStatementType.INCOME_STATEMENT:
+        return False
+
+    raw_period_values = mapped_item.raw_period_values
+    return (
+        "value_1" in raw_period_values
+        and "value_2" in raw_period_values
+        and "value_3" in raw_period_values
+        and "value_4" in raw_period_values
+        and "value_5" not in raw_period_values
+        and "value_6" not in raw_period_values
+    )
 
 
 def _remap_mixed_page_balance_items_for_group_metrics(
@@ -1431,10 +1492,23 @@ def _table_has_company_income_statement_markers(table: ExtractedFinancialTable) 
 
 
 def _table_has_quarter_plus_annual_income_layout(table: ExtractedFinancialTable) -> bool:
-    table_text = " ".join(str(row.get("text", "")).strip().lower() for row in table.rows)
-    return "quarter ended" in table_text and any(
+    table_text = _quarter_plus_annual_table_text(table)
+    return any(
+        marker in table_text for marker in _QUARTER_PLUS_ANNUAL_QUARTER_MARKERS
+    ) and any(marker in table_text for marker in _QUARTER_PLUS_ANNUAL_HEADER_MARKERS)
+
+
+def _table_has_annual_income_column_block_marker(
+    table: ExtractedFinancialTable,
+) -> bool:
+    table_text = _quarter_plus_annual_table_text(table)
+    return any(
         marker in table_text for marker in _QUARTER_PLUS_ANNUAL_HEADER_MARKERS
     )
+
+
+def _quarter_plus_annual_table_text(table: ExtractedFinancialTable) -> str:
+    return " ".join(str(row.get("text", "")).strip().lower() for row in table.rows)
 
 
 def _table_has_mixed_page_primary_balance_section(table: ExtractedFinancialTable) -> bool:
