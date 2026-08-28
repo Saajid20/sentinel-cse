@@ -9,11 +9,19 @@ import {
   type SentinelDashboardRuntime,
   type SentinelDashboardSummary
 } from './sentinelDashboard.js';
+import {
+  createResearchConsoleConfig,
+  runResearchConsole,
+  type ResearchConsoleConfig,
+  type ResearchConsoleRuntime,
+  type ResearchConsoleSummary
+} from './researchConsole.js';
 
 export interface DashboardServerConfig extends SentinelDashboardConfig {
   port: number;
   host: string;
   staticDir: string;
+  research: ResearchConsoleConfig;
 }
 
 export interface DashboardCommandSnippet {
@@ -39,7 +47,8 @@ export function createDashboardServerConfig(args: string[] = []): DashboardServe
     ...createSentinelDashboardConfig(args),
     port: readIntegerFlag(args, '--port', DEFAULT_DASHBOARD_PORT),
     host: readFlagValue(args, '--host') ?? DEFAULT_DASHBOARD_HOST,
-    staticDir: readFlagValue(args, '--static-dir') ?? DEFAULT_STATIC_DIR
+    staticDir: readFlagValue(args, '--static-dir') ?? DEFAULT_STATIC_DIR,
+    research: createResearchConsoleConfig(args)
   };
 }
 
@@ -52,6 +61,13 @@ export async function buildDashboardApiResponse(
     ...summary,
     commandSnippets: buildDashboardCommandSnippets(summary)
   };
+}
+
+export async function buildResearchApiResponse(
+  config: DashboardServerConfig = createDashboardServerConfig(),
+  runtime?: ResearchConsoleRuntime
+): Promise<ResearchConsoleSummary> {
+  return runResearchConsole(config.research, runtime);
 }
 
 export function buildDashboardCommandSnippets(
@@ -130,8 +146,25 @@ async function handleDashboardRequest(
     return;
   }
 
-  const assetPath = url.pathname === '/' ? '/index.html' : url.pathname;
+  if (url.pathname === '/api/research') {
+    sendJson(response, 200, await buildResearchApiResponse(config));
+    return;
+  }
+
+  const assetPath = resolveAssetPath(url.pathname);
   await serveStaticAsset(response, config.staticDir, assetPath);
+}
+
+function resolveAssetPath(pathname: string): string {
+  if (pathname === '/') {
+    return '/index.html';
+  }
+  // The research console is the review surface, so it gets a clean path rather
+  // than requiring the .html suffix.
+  if (pathname === '/research' || pathname === '/research/') {
+    return '/research.html';
+  }
+  return pathname;
 }
 
 async function serveStaticAsset(
