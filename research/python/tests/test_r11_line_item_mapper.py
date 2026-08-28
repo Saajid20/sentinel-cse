@@ -127,6 +127,30 @@ def test_map_line_item_label_maps_total_assets_high() -> None:
     assert mapping.confidence is R11ConfidenceLevel.HIGH
 
 
+def test_map_line_item_label_maps_hva_combined_equity_caption_to_total_equity() -> None:
+    """The caption only exists once the wrapped label has been rejoined."""
+    mapping = map_line_item_label(
+        "Total Equity attributable to the equity holders of the Company/Total equity",
+        FinancialStatementType.BALANCE_SHEET,
+    )
+
+    assert mapping is not None
+    assert mapping.canonical_name == "total_equity"
+    assert mapping.confidence is R11ConfidenceLevel.HIGH
+
+
+def test_map_line_item_label_does_not_map_the_unjoined_wrap_fragment() -> None:
+    """The wrap artifact must never become a canonical financial name."""
+    mapping = map_line_item_label(
+        "holders of the Company/Total equity",
+        FinancialStatementType.BALANCE_SHEET,
+    )
+
+    assert mapping is not None
+    assert mapping.canonical_name != "total_equity"
+    assert mapping.confidence is R11ConfidenceLevel.LOW
+
+
 def test_map_line_item_label_maps_profit_loss_for_the_period_to_profit_for_the_period() -> None:
     mapping = map_line_item_label(
         "Profit/(loss) for the period",

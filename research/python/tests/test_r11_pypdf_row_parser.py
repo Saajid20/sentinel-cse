@@ -15,7 +15,11 @@ from sentinel_research.agents.r11.extraction import (  # noqa: E402
     parse_financial_rows_from_tables,
     parse_numeric_tokens,
 )
-from sentinel_research.agents.r11.extraction.pypdf_row_parser import ParsedFinancialRow  # noqa: E402
+from sentinel_research.agents.r11.extraction.pypdf_row_parser import (  # noqa: E402
+    ParsedFinancialRow,
+    is_wrapped_label_prefix_line,
+    is_wrapped_label_continuation,
+)
 from sentinel_research.agents.r11.schemas import (  # noqa: E402
     ExtractedFinancialTable,
     FinancialStatementType,
@@ -299,6 +303,145 @@ def test_parse_financial_rows_from_tables_flattens_multiple_tables() -> None:
 
     assert [row.page_number for row in parsed_rows] == [5, 7]
     assert [row.label for row in parsed_rows] == ["Profit for the period", "Total Assets"]
+
+
+_HVA_BALANCE_SHEET_LINES = [
+    "Retained Earnings (1,033,100,953)    (1,040,779,187)      (1,032,503,652)    (1,040,224,886)",
+    "Total Equity attributable to the equity",
+    "holders of the Company/Total equity (64,290,676)          (70,799,910)           (63,693,376)         (70,245,609)",
+    "Non-Current Liabilities",
+    "Employee benefits 17,395,004           12,282,207             17,395,004           12,282,207",
+]
+
+
+def test_is_wrapped_label_prefix_line_accepts_a_caption_cut_mid_phrase() -> None:
+    assert is_wrapped_label_prefix_line("Total Equity attributable to the equity") is True
+    assert is_wrapped_label_prefix_line("Share of results of equity-accounted investees, net of") is True
+
+
+def test_is_wrapped_label_prefix_line_rejects_headings_values_and_headers() -> None:
+    # Complete section headings end on a capitalised word.
+    assert is_wrapped_label_prefix_line("Equity and Liabilities") is False
+    assert is_wrapped_label_prefix_line("Non-Current Liabilities") is False
+    assert is_wrapped_label_prefix_line("ASSETS") is False
+    assert is_wrapped_label_prefix_line("Current Assets") is False
+    # Not a label-only line, or not a caption at all.
+    assert is_wrapped_label_prefix_line("   ") is False
+    assert is_wrapped_label_prefix_line("Employee benefits 17,395,004 12,282,207") is False
+    assert is_wrapped_label_prefix_line("Statement of Financial Position") is False
+    assert is_wrapped_label_prefix_line("As at 31st March 2026") is False
+
+
+def test_is_wrapped_label_continuation_only_matches_lowercase_opening_labels() -> None:
+    assert is_wrapped_label_continuation("holders of the Company/Total equity") is True
+    assert is_wrapped_label_continuation("Total Equity") is False
+    assert is_wrapped_label_continuation("Non-Current Liabilities") is False
+    assert is_wrapped_label_continuation("") is False
+
+
+def test_wrapped_balance_sheet_label_is_joined_to_its_value_line() -> None:
+    """HVA.N0000 page 5: the caption wraps and the values sit on the second line."""
+    table = _make_table(
+        5,
+        _HVA_BALANCE_SHEET_LINES,
+        statement_type=FinancialStatementType.BALANCE_SHEET,
+    )
+
+    parsed_rows = parse_financial_rows_from_table(table)
+
+    labels = [row.label for row in parsed_rows]
+    assert (
+        "Total Equity attributable to the equity holders of the Company/Total equity"
+        in labels
+    )
+    assert "holders of the Company/Total equity" not in labels
+
+    joined = next(
+        row
+        for row in parsed_rows
+        if row.label.startswith("Total Equity attributable")
+    )
+    assert joined.values == [
+        "(64,290,676)",
+        "(70,799,910)",
+        "(63,693,376)",
+        "(70,245,609)",
+    ]
+    assert joined.line_number == 3
+    assert joined.source_trace is not None
+    assert "continuation join from line 2" in (joined.source_trace.notes or "")
+
+
+def test_wrapped_label_join_does_not_swallow_complete_section_headings() -> None:
+    table = _make_table(
+        5,
+        _HVA_BALANCE_SHEET_LINES,
+        statement_type=FinancialStatementType.BALANCE_SHEET,
+    )
+
+    parsed_rows = parse_financial_rows_from_table(table)
+
+    # "Non-Current Liabilities" precedes a value row but is a complete heading,
+    # so the row beneath it must keep its own label.
+    assert "Employee benefits" in [row.label for row in parsed_rows]
+
+
+def test_wrapped_label_join_is_scoped_to_balance_sheet_pages() -> None:
+    """Income-statement OCI captions wrap the same way and are left alone."""
+    income_lines = [
+        "Total Other Comprehensive Income for the",
+        "period 1,234,567 2,345,678 3,456,789 4,567,890",
+    ]
+    balance_sheet_table = _make_table(
+        5,
+        income_lines,
+        statement_type=FinancialStatementType.BALANCE_SHEET,
+    )
+    income_statement_table = _make_table(
+        2,
+        income_lines,
+        statement_type=FinancialStatementType.INCOME_STATEMENT,
+    )
+
+    assert [row.label for row in parse_financial_rows_from_table(balance_sheet_table)] == [
+        "Total Other Comprehensive Income for the period"
+    ]
+    assert [
+        row.label for row in parse_financial_rows_from_table(income_statement_table)
+    ] == ["period"]
+
+
+def test_wrapped_label_join_does_not_glue_a_complete_heading_onto_the_row_below() -> None:
+    table = _make_table(
+        5,
+        [
+            "Equity and Liabilities",
+            "holders of the Company/Total equity (64,290,676) (70,799,910)",
+        ],
+        statement_type=FinancialStatementType.BALANCE_SHEET,
+    )
+
+    parsed_rows = parse_financial_rows_from_table(table)
+
+    # "Equity and Liabilities" ends on a capitalised word, so it is a heading,
+    # not a caption cut mid-phrase. The row below keeps its own label.
+    assert [row.label for row in parsed_rows] == ["holders of the Company/Total equity"]
+
+
+def test_wrapped_label_join_never_removes_a_row_the_value_line_produced() -> None:
+    table = _make_table(
+        5,
+        [
+            "Statement of Financial Position",
+            "holders of the Company/Total equity (64,290,676) (70,799,910)",
+        ],
+        statement_type=FinancialStatementType.BALANCE_SHEET,
+    )
+
+    parsed_rows = parse_financial_rows_from_table(table)
+
+    # The preceding line is a statement header, never a caption prefix.
+    assert [row.label for row in parsed_rows] == ["holders of the Company/Total equity"]
 
 
 def test_no_test_calls_deepseek_or_network() -> None:

@@ -17,6 +17,9 @@ from sentinel_research.agents.r11.analysis import (  # noqa: E402
     find_aggregated_metric,
     metric_value,
 )
+from sentinel_research.agents.r11.analysis.scorecard_builder import (  # noqa: E402
+    metric_current_value,
+)
 from sentinel_research.agents.r11.schemas import (  # noqa: E402
     FinancialMetric,
     FundamentalScorecard,
@@ -47,6 +50,8 @@ def _make_aggregated_metric(
     conflict: bool = False,
     manual_review_required: bool | None = None,
     occurrence_count: int = 1,
+    current: float = 120.0,
+    previous: float = 100.0,
 ) -> AggregatedMetricResult:
     source_trace = _make_source_trace(metric_name)
     metric = FinancialMetric(
@@ -66,7 +71,7 @@ def _make_aggregated_metric(
         operation="calculate_yoy_growth",
         metric_name=metric_name,
         formula="(current - previous) / abs(previous) * 100",
-        inputs={"current": 120.0, "previous": 100.0},
+        inputs={"current": current, "previous": previous},
         output=value,
         generated_at=datetime(2026, 5, 26, 12, 0, tzinfo=UTC),
         source_traces=[source_trace],
@@ -231,6 +236,154 @@ def test_summary_does_not_contain_trading_recommendation_language() -> None:
     lowered = summary.lower()
     for forbidden in ("buy", "sell", "hold", "order", "target", "entry", "exit"):
         assert forbidden not in lowered
+
+
+def test_metric_current_value_reads_selected_audit_entry_current_input() -> None:
+    metric = _make_aggregated_metric(
+        "group_total_equity_growth",
+        9.19,
+        current=-64_300_000.0,
+        previous=-70_800_000.0,
+    )
+
+    assert metric_current_value(metric) == -64_300_000.0
+    assert metric_current_value(None) is None
+
+
+def _replace_equity_metric(
+    aggregated: list[AggregatedMetricResult],
+    equity_metric: AggregatedMetricResult,
+) -> list[AggregatedMetricResult]:
+    return [
+        equity_metric if metric.metric_name == "group_total_equity_growth" else metric
+        for metric in aggregated
+    ]
+
+
+def test_capital_strength_is_not_scored_when_current_equity_is_negative() -> None:
+    """HVA-shaped case: -70,800,000 -> -64,300,000 is roughly +9.2% growth.
+
+    Growth alone would return HIGH and report a book-insolvent company as
+    capital-strong. The guard must refuse to score and force manual review.
+    """
+    aggregated = _replace_equity_metric(
+        _make_comb_like_aggregated_metrics(),
+        _make_aggregated_metric(
+            "group_total_equity_growth",
+            9.19,
+            current=-64_300_000.0,
+            previous=-70_800_000.0,
+        ),
+    )
+
+    result = build_fundamental_scorecard_from_aggregated_metrics(aggregated)
+
+    assert result.scorecard.capital_strength is None
+    assert result.scorecard.manual_review_required is True
+    assert any(
+        "capital strength was not scored" in reason.lower()
+        for reason in result.manual_review_reasons
+    )
+    # The metric is still missing-free: it aggregated fine, it just cannot be scored.
+    assert "group_total_equity_growth" not in result.missing_expected_metrics
+
+
+def test_capital_strength_is_not_scored_when_current_equity_is_exactly_zero() -> None:
+    aggregated = _replace_equity_metric(
+        _make_comb_like_aggregated_metrics(),
+        _make_aggregated_metric(
+            "group_total_equity_growth",
+            100.0,
+            current=0.0,
+            previous=-50_000.0,
+        ),
+    )
+
+    result = build_fundamental_scorecard_from_aggregated_metrics(aggregated)
+
+    assert result.scorecard.capital_strength is None
+    assert result.scorecard.manual_review_required is True
+
+
+def test_capital_strength_is_still_low_when_equity_is_positive_but_shrinking() -> None:
+    aggregated = _replace_equity_metric(
+        _make_comb_like_aggregated_metrics(),
+        _make_aggregated_metric(
+            "group_total_equity_growth",
+            -19.66,
+            current=3_010_438.0,
+            previous=3_747_167.0,
+        ),
+    )
+
+    result = build_fundamental_scorecard_from_aggregated_metrics(aggregated)
+
+    assert result.scorecard.capital_strength is R11ConfidenceLevel.LOW
+    assert not any(
+        "capital strength was not scored" in reason.lower()
+        for reason in result.manual_review_reasons
+    )
+
+
+def test_capital_strength_is_still_high_when_equity_is_positive_and_growing() -> None:
+    aggregated = _replace_equity_metric(
+        _make_comb_like_aggregated_metrics(),
+        _make_aggregated_metric(
+            "group_total_equity_growth",
+            9.21,
+            current=16_860_840.0,
+            previous=15_439_000.0,
+        ),
+    )
+
+    result = build_fundamental_scorecard_from_aggregated_metrics(aggregated)
+
+    assert result.scorecard.capital_strength is R11ConfidenceLevel.HIGH
+    assert result.scorecard.manual_review_required is False
+
+
+def test_capital_strength_preserves_prior_behaviour_when_current_equity_is_unknown() -> None:
+    """An absent current value is not evidence of a negative one.
+
+    The guard must not fire on missing data; behaviour stays exactly as it was
+    before the guard existed.
+    """
+    equity_metric = _make_aggregated_metric("group_total_equity_growth", 9.19)
+    equity_metric.selected_audit_entry.inputs.pop("current")
+    aggregated = _replace_equity_metric(
+        _make_comb_like_aggregated_metrics(),
+        equity_metric,
+    )
+
+    result = build_fundamental_scorecard_from_aggregated_metrics(aggregated)
+
+    assert metric_current_value(equity_metric) is None
+    assert result.scorecard.capital_strength is R11ConfidenceLevel.HIGH
+    assert result.scorecard.manual_review_required is False
+
+
+def test_negative_equity_guard_does_not_suppress_existing_manual_review_reasons() -> None:
+    aggregated = _replace_equity_metric(
+        _make_comb_like_aggregated_metrics(),
+        _make_aggregated_metric(
+            "group_total_equity_growth",
+            9.19,
+            current=-64_300_000.0,
+            previous=-70_800_000.0,
+            conflict=True,
+        ),
+    )
+
+    result = build_fundamental_scorecard_from_aggregated_metrics(aggregated)
+
+    assert result.scorecard.capital_strength is None
+    assert result.scorecard.manual_review_required is True
+    assert result.scorecard.accounting_risk is RedFlagSeverity.MEDIUM
+    assert any("conflicts" in reason.lower() for reason in result.manual_review_reasons)
+    assert any(
+        "capital strength was not scored" in reason.lower()
+        for reason in result.manual_review_reasons
+    )
 
 
 def test_no_test_calls_deepseek_or_network() -> None:
