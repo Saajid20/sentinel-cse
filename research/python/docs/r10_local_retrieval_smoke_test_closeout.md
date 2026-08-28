@@ -27,33 +27,82 @@ store was built.
 This is the most important content in this document. The smoke test succeeded, but it
 succeeded over an evidence base that is narrower than it looks.
 
-### 2.1 `getFinancialAnnouncement` appears to be a rolling recent feed, not an archive
+The two blind spots below are **not the same kind of claim**, and the difference matters
+more than the similarity. 2.2 is a demonstrated limitation: a real error path, triggered
+repeatedly, with a recorded ID split behind it. 2.1 is an **untested question** — the
+client has never issued the request that would answer it. Do not read them as two
+findings of equal standing.
 
-**Status: inference, not established fact.**
+### 2.1 `getFinancialAnnouncement` has never been asked for a specific company
+
+**Status: open question. The constraint has not been located, and may not be in the
+endpoint at all.**
+
+The earlier framing of this section — "`getFinancialAnnouncement` appears to be a rolling
+recent feed, not an archive" — placed the limitation in the endpoint. The evidence does
+not support that attribution. It supports a narrower, more actionable statement about the
+client.
 
 `CseApiClient.get_financial_reports()`
-(`research/python/sentinel_research/agents/ingestion/cse_api.py`) POSTs
-`/getFinancialAnnouncement` with an **empty form payload** — no symbol, no date window,
-no offset, no page parameter. The response is a single flat list, and
-`r10_lookup_cse_financial_reports.py` filters that list client-side.
+(`research/python/sentinel_research/agents/ingestion/cse_api.py:391`) POSTs
+`/getFinancialAnnouncement` with `form_payload={}` (line 396) — an **empty payload**: no
+symbol, no date window, no offset, no page parameter. The response is a single flat list,
+and `r10_lookup_cse_financial_reports.py` filters that list client-side.
 
-The observed behaviour is consistent with the endpoint returning a rolling window of
-recent filings rather than a historical archive. If that reading is right, historical
-interim and annual filings are simply unreachable through this endpoint: there is no
-parameter with which to ask for them.
+So `--ticker PKME` returning 0 rows is a statement about **our client-side filter**, not
+about the endpoint. The client has never asked the endpoint for PKME. A zero result under
+those conditions is *uninformative*: it cannot distinguish
 
-The evidence for this inference is weak and must be treated as such:
+- "the endpoint only serves a rolling recent window", from
+- "the endpoint would serve PKME's history if asked, and we never asked".
 
-- it rests on a 5-row sample out of the 204 rows returned,
-- the client sends no pagination or date arguments, so "not returned" and "does not
-  exist" cannot be distinguished from the tooling's behaviour alone.
+"Rolling feed" remains one possible explanation. It is not the evidenced one. The only
+thing actually established is that the client sends no query parameters, and that the
+5-row PKME-relevant sample came out of 204 unfiltered rows.
 
-Confirming or refuting this requires a deliberate, separately authorized probe of the
-endpoint's parameters. It has not been done.
+A sibling endpoint in the same API family does accept a company parameter.
+`CseApiClient.get_announcements_by_company()`
+(`research/python/sentinel_research/agents/ingestion/cse_api.py:283`) POSTs
+`/getAnnouncementByCompany` with a `symbol` form field (line 304, alongside `fromDate`
+and `toDate` on lines 305-306), and the CSE matches server-side. That is the mechanism by
+which real PKME material was actually reached: `r10_lookup_cse_announcements.py` with
+`--ticker PKME.N0000` and a date window returned 47 announcements spanning the company's
+listed life — from the same API host that returned 0 rows through the financial path.
+
+**This does not establish that `/getFinancialAnnouncement` accepts a `symbol` field.** It
+has not been tried, and a sibling endpoint's contract is not evidence of this one's. The
+honest position is that whether this endpoint can be queried per company is **unknown and
+untested** — and that testing it costs one request.
+
+#### Open experiment (unresolved; cheap; requires separate network authorization)
+
+> POST `/getFinancialAnnouncement` once with a non-empty form payload — start with
+> `{"symbol": "PKME.N0000"}`, then try a `fromDate`/`toDate` window — and compare the
+> returned row count and date range against the current empty-payload call (204 rows). A
+> changed response settles the question in one call; a byte-identical response is itself
+> the first real evidence for the rolling-feed reading.
+
+Until that probe runs, treat the filing-history gap as **unexplained**, not as an
+established endpoint limitation.
+
+**Why the distinction is not pedantic.** A reader who takes the old framing at face value
+concludes historical filings are structurally unreachable and designs around it: a
+poll-and-accumulate ingestion layer that repeatedly captures the "rolling" feed and
+persists it so history accretes over time. That is a standing component, with scheduling,
+storage and dedupe, built to route around a wall nobody has confirmed exists. The correct
+next step is one probe request, not an architecture.
 
 ### 2.2 `getGeneralAnnouncementById` serves only "general" announcements
 
-`CseApiClient.get_announcement_detail()` POSTs `/getGeneralAnnouncementById` and raises
+**Status: demonstrated. This one is firm, and nothing in 2.1 weakens it.**
+
+Unlike 2.1, this is not an untested inference. There is a real error path in the client,
+it was exercised deliberately, and the pass/fail split falls along announcement class
+rather than at random.
+
+`CseApiClient.get_announcement_detail()`
+(`research/python/sentinel_research/agents/ingestion/cse_api.py:340`) POSTs
+`/getGeneralAnnouncementById` and raises
 `missing reqBaseAnnouncement object` when the response has no `reqBaseAnnouncement` key.
 
 Probing announcement IDs by hand produced a clean split:
@@ -65,17 +114,29 @@ Probing announcement IDs by hand produced a clean split:
 
 The failing IDs correspond to CASH DIVIDEND, CHANGE OF COMPANY NAME,
 DEALINGS/RELEVANT INTEREST and ESOS announcements. These are not transient errors and
-not malformed IDs. Corporate-action announcement classes live behind an endpoint the
-current tooling does not implement.
+not malformed IDs — the error is raised at
+`research/python/sentinel_research/agents/ingestion/cse_api.py:355`, where the response
+carries no `reqBaseAnnouncement` object at all. Corporate-action announcement classes
+live behind an endpoint the current tooling does not implement.
+
+The epistemic difference from 2.1 is the whole point: here the request *was* made, with
+the parameter the endpoint takes, and it was refused by announcement class. That is a
+located constraint, not a gap in our probing.
 
 ### 2.3 Consequence — state this plainly
 
-**R10 currently cannot see dividends, company name changes, or any past interim filing.**
+**R10 currently cannot see dividends or company name changes** — 2.2, demonstrated — **and
+currently does not retrieve past interim filings, for a reason that has not been
+identified** — 2.1, untested.
 
 Anyone building analysis on this retrieval chain must not assume the evidence base is
 complete. An empty R10 result for a corporate action means "R10 cannot reach this class
 of announcement", not "no such announcement exists". Absence of evidence here is a
 tooling limit, not a finding.
+
+The same caution applies to the filing-history gap, with one addition: there the tooling
+limit has not even been characterised yet, so it must not be quoted downstream as a
+property of the CSE API. Cite 2.2 as a limitation. Cite 2.1 as an open experiment.
 
 ## 3. Smoke test method, and why controls mattered
 
