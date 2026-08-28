@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sentinel-CSE Evidence Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="/research.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">SC</div>
+          <div>
+            <p class="eyebrow">Sentinel-CSE</p>
+            <h1>Evidence Console</h1>
+          </div>
+        </div>
+
+        <div class="mode-pill">RESEARCH &middot; READ-ONLY</div>
+
+        <nav class="rail-nav" aria-label="Sections">
+          <a class="is-current" href="#overview">Overview</a>
+          <a href="#queue">Review Queue</a>
+          <a href="#blind">Cannot See</a>
+          <a href="#retrieval">Retrieval Quality</a>
+          <a href="/">Operations dashboard</a>
+        </nav>
+
+        <div class="rail-foot">
+          Local artifacts only. No ATrad connection, no orders, no network calls from this view.
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="page-head">
+          <div>
+            <p class="eyebrow">R10 context &middot; R11 financial analyst</p>
+            <h2>Evidence requiring human judgement</h2>
+            <p class="sub">
+              Every figure traces to a source page in a real CSE filing. Nothing here is a
+              recommendation, a rating, or a ranking.
+            </p>
+          </div>
+          <div class="head-actions">
+            <div class="refresh-meta">
+              <span>Artifacts read</span>
+              <strong id="refresh-state">loading&hellip;</strong>
+            </div>
+            <button type="button" class="btn" id="refresh-button">Refresh</button>
+          </div>
+        </header>
+
+        <div id="load-error" hidden></div>
+
+        <section class="section" id="overview">
+          <div class="section-head">
+            <h3>Overview</h3>
+            <p class="section-note">Denominators shown deliberately &mdash; coverage is partial.</p>
+          </div>
+          <div class="stat-grid" id="stat-grid"></div>
+          <div class="posture" id="posture"></div>
+        </section>
+
+        <section class="section" id="queue">
+          <div class="section-head">
+            <h3>Review queue</h3>
+            <p class="section-note">Ordered by whether a human decision can change the outcome.</p>
+          </div>
+          <div class="filters" id="filters" role="group" aria-label="Filter review queue"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Ticker</th>
+                  <th scope="col">Metrics</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Why it is here</th>
+                  <th scope="col">Actionable</th>
+                  <th scope="col"><span class="sr-only">Evidence</span></th>
+                </tr>
+              </thead>
+              <tbody id="queue-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" id="blind">
+          <div class="notice">
+            <div class="notice-head">
+              <h3>What this system cannot see</h3>
+              <p class="section-note">Absence of a finding is not evidence of absence.</p>
+            </div>
+            <div class="blind-list" id="blind-list"></div>
+          </div>
+        </section>
+
+        <section class="section" id="retrieval">
+          <div class="section-head">
+            <h3>Retrieval quality</h3>
+            <p class="section-note">Controls sit in the store so the test can fail.</p>
+          </div>
+          <div id="retrieval-body"></div>
+        </section>
+
+        <footer class="page-foot">
+          Read-only local research surface. No ATrad session, broker, order or execution path is
+          reachable from this view, and no output here constitutes a buy, sell, hold or rating.
+          Figures are read from local analysis artifacts and trace to source filings held on disk.
+        </footer>
+      </main>
+    </div>
+
+    <script src="/research.js" type="module"></script>
+  </body>
+</html>
