@@ -87,6 +87,24 @@ def metric_value(aggregated_metric: AggregatedMetricResult | None) -> float | No
     return None
 
 
+def metric_current_value(aggregated_metric: AggregatedMetricResult | None) -> float | None:
+    """Return the CURRENT-period input behind an aggregated growth metric.
+
+    Growth metrics only carry a percentage. The underlying current/previous
+    values live on the selected calculation audit entry's ``inputs`` mapping,
+    which is the same accessor path the gold-label validator uses. This does
+    not recompute anything and never derives a value from another metric.
+    """
+    if aggregated_metric is None:
+        return None
+    value = aggregated_metric.selected_audit_entry.inputs.get("current")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def direction_from_metric_value(metric_name: str, value: float) -> MetricDirection:
     tolerance = 0.05
     if abs(value) <= tolerance:
@@ -153,6 +171,7 @@ def build_fundamental_scorecard_from_aggregated_metrics(
     capital_strength = _build_capital_strength(
         aggregated,
         metric_names_used=metric_names_used,
+        manual_review_reasons=manual_review_reasons,
     )
     accounting_risk = (
         RedFlagSeverity.MEDIUM if has_metric_conflicts(aggregated) else None
@@ -298,6 +317,7 @@ def _build_capital_strength(
     aggregated: list[AggregatedMetricResult],
     *,
     metric_names_used: list[str],
+    manual_review_reasons: list[str],
 ) -> R11ConfidenceLevel | None:
     equity_name = "group_total_equity_growth"
     equity_metric = find_aggregated_metric(aggregated, equity_name)
@@ -306,6 +326,34 @@ def _build_capital_strength(
         return None
 
     _append_metric_name(metric_names_used, equity_name)
+
+    # Negative-equity guard.
+    #
+    # Equity growth is a percentage change on a SIGNED quantity, so growth
+    # alone cannot describe the level or sign of the balance. Equity of
+    # -70,800,000 improving to -64,300,000 is roughly +9.2% growth: the
+    # growth-only branches below would return HIGH and the case would report
+    # as capital-strong while the company is book-insolvent.
+    #
+    # We refuse to score rather than downgrading, because an
+    # R11ConfidenceLevel cannot express "this company has negative equity".
+    # Returning LOW would still leave the case scored, clean and promotable,
+    # and a reader would see LOW and move on without ever learning that equity
+    # is negative. Declining to score and routing to manual review is
+    # CLAUDE.md's "missing beats wrong" applied at the scorecard layer.
+    equity_current = metric_current_value(equity_metric)
+    if equity_current is not None and equity_current <= 0.0:
+        manual_review_reasons.append(
+            "Capital strength was not scored: current group total equity is "
+            f"{equity_current} (<= 0). Equity growth of {equity_growth} percent "
+            "describes the change, not the negative equity position itself."
+        )
+        return None
+
+    # If the current-period input is unavailable we do NOT guard on absent
+    # data: an unknown level is not evidence of a negative one, and guessing
+    # in either direction would be a synthesized judgement. Behaviour then
+    # stays exactly as it was before this guard existed.
     if equity_growth > 5.0:
         return R11ConfidenceLevel.HIGH
     if equity_growth >= 0.0:
@@ -344,6 +392,7 @@ __all__ = [
     "ScorecardBuildResult",
     "find_aggregated_metric",
     "metric_value",
+    "metric_current_value",
     "direction_from_metric_value",
     "build_fundamental_scorecard_from_aggregated_metrics",
 ]
