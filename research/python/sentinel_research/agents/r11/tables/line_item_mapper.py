@@ -196,6 +196,13 @@ _ALIAS_MAP: dict[str, str] = {
     "retained earnings": "retained_earnings",
     "other reserves": "other_reserves",
     "total equity attributable to equity holders of the bank": "total_equity_attributable_to_equity_holders",
+    # HVA.N0000 prints one combined caption where a bank prints two rows. The
+    # slash form explicitly names total equity, and the row reconciles against
+    # the same page: total equity & liabilities 1,241,119,072 less total
+    # liabilities 1,305,409,748 is the printed (64,290,676). This is the
+    # issuer's own caption, reachable only after the wrapped-label continuation
+    # join in pypdf_row_parser -- it is not an alias for the wrap fragment.
+    "total equity attributable to the equity holders of the company total equity": "total_equity",
     "total equity": "total_equity",
     "total liabilities and equity": "total_liabilities_and_equity",
     "net assets value per ordinary share rs": "net_asset_value_per_share",
